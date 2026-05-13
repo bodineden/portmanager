@@ -45,12 +45,12 @@ export async function saveAssetAction(formData: FormData) {
     status: readStatus(formData),
   });
 
-  revalidatePath("/asset-master");
+  revalidatePath("/asset-list");
 }
 
 export async function updatePriceAction(formData: FormData) {
   updateAssetPrice(readNumber(formData, "id"), readNumber(formData, "latestPrice"));
-  revalidatePath("/asset-master");
+  revalidatePath("/asset-list");
 }
 
 export async function removeAssetAction(formData: FormData) {
@@ -59,5 +59,5 @@ export async function removeAssetAction(formData: FormData) {
   }
 
   removeAsset(readNumber(formData, "id"));
-  revalidatePath("/asset-master");
+  revalidatePath("/asset-list");
 }
