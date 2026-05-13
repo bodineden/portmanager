@@ -35,7 +35,7 @@ export async function saveAssetAction(formData: FormData) {
     throw new Error("Ticker and asset name are required");
   }
 
-  upsertAsset({
+  await upsertAsset({
     ticker,
     name,
     type,
@@ -49,7 +49,7 @@ export async function saveAssetAction(formData: FormData) {
 }
 
 export async function updatePriceAction(formData: FormData) {
-  updateAssetPrice(readNumber(formData, "id"), readNumber(formData, "latestPrice"));
+  await updateAssetPrice(readNumber(formData, "id"), readNumber(formData, "latestPrice"));
   revalidatePath("/asset-list");
 }
 
@@ -58,6 +58,6 @@ export async function removeAssetAction(formData: FormData) {
     return;
   }
 
-  removeAsset(readNumber(formData, "id"));
+  await removeAsset(readNumber(formData, "id"));
   revalidatePath("/asset-list");
 }

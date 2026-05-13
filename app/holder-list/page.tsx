@@ -2,6 +2,7 @@ import Link from "next/link";
 import {
   formatMoney,
   getHoldingMetrics,
+  isNeonConfigured,
   listAssets,
   listInvestorHoldings,
   listInvestors,
@@ -95,9 +96,13 @@ function InvestorGroup({ name, holdings }: { name: string; holdings: InvestorHol
 }
 
 export default async function HolderListPage() {
-  const assets = listAssets();
-  const investors = listInvestors();
-  const holdings = listInvestorHoldings();
+  if (!isNeonConfigured()) {
+    return <NeonSetupPage title="Holder List" />;
+  }
+
+  const assets = await listAssets();
+  const investors = await listInvestors();
+  const holdings = await listInvestorHoldings();
   const metrics = getHoldingMetrics(investors, holdings);
   const holdingsByInvestor = investors.map((investor) => ({
     investor,
@@ -251,6 +256,21 @@ export default async function HolderListPage() {
           </div>
         </section>
       </div>
+    </main>
+  );
+}
+
+function NeonSetupPage({ title }: { title: string }) {
+  return (
+    <main className="min-h-screen bg-[#f5f7fb] px-6 py-8 text-slate-950">
+      <section className="mx-auto max-w-3xl rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
+        <Link href="/" className="text-sm font-semibold text-blue-600">Back to Home</Link>
+        <h1 className="mt-4 text-2xl font-bold">{title}</h1>
+        <p className="mt-3 text-sm leading-6 text-slate-600">
+          Neon is enabled in the code, but `DATABASE_URL` is not set yet. Add your Neon Postgres connection string to `.env.local`,
+          then restart the dev server.
+        </p>
+      </section>
     </main>
   );
 }

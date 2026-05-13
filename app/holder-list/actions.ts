@@ -25,7 +25,7 @@ export async function saveInvestorAction(formData: FormData) {
     throw new Error("Investor name is required");
   }
 
-  upsertInvestor({
+  await upsertInvestor({
     name,
     email: readText(formData, "email"),
     capitalContributed: readNumber(formData, "capitalContributed"),
@@ -34,12 +34,12 @@ export async function saveInvestorAction(formData: FormData) {
 }
 
 export async function removeInvestorAction(formData: FormData) {
-  removeInvestor(readNumber(formData, "id"));
+  await removeInvestor(readNumber(formData, "id"));
   revalidatePath("/holder-list");
 }
 
 export async function saveHoldingAction(formData: FormData) {
-  addInvestorHolding({
+  await addInvestorHolding({
     investorId: readNumber(formData, "investorId"),
     assetTicker: readText(formData, "assetTicker"),
     units: readNumber(formData, "units"),
@@ -49,6 +49,6 @@ export async function saveHoldingAction(formData: FormData) {
 }
 
 export async function removeHoldingAction(formData: FormData) {
-  removeInvestorHolding(readNumber(formData, "id"));
+  await removeInvestorHolding(readNumber(formData, "id"));
   revalidatePath("/holder-list");
 }
