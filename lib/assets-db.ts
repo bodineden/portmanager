@@ -1,53 +1,53 @@
 import { neon, type NeonQueryFunction } from "@neondatabase/serverless";
 
-export type Asset = {
-  id: number;
-  ticker: string;
+export type Currency = {
+  code: string;
   name: string;
-  type: string;
-  currency: string;
-  latestPrice: number;
-  previousPrice: number;
-  priceSource: string;
-  status: "Synced" | "Review" | "Manual" | "Stale";
-  lastPriceUpdate: string;
-  active: boolean;
+  symbol: string;
 };
 
-export type AssetChange = {
-  id: number;
+export type Asset = {
+  id: string;
   ticker: string;
-  action: string;
-  detail: string;
-  user: string;
-  createdAt: string;
+  fullName: string;
+  sourceLink: string;
+  currencyCode: string;
+  currentPrice: number;
+  priceUpdatedAt: string;
+  previousPrice: number;
 };
 
 export type Investor = {
-  id: number;
+  id: string;
   name: string;
-  email: string;
-  capitalContributed: number;
-  active: boolean;
 };
 
 export type Holding = {
-  id: number;
-  investorId: number;
-  assetTicker: string;
-  units: number;
-  costBasis: number;
-  active: boolean;
+  id: string;
+  investorId: string;
+  assetId: string;
+  shares: number;
+  acquiredCost: number;
+  acquiredAt: string;
 };
 
 export type InvestorHolding = Holding & {
   investorName: string;
+  ticker: string;
   assetName: string;
-  assetType: string;
-  currency: string;
+  sourceLink: string;
+  currencyCode: string;
   currentPrice: number;
   currentValue: number;
   gainLoss: number;
+};
+
+export type PriceHistory = {
+  id: string;
+  assetId: string;
+  ticker: string;
+  price: number;
+  recordedAt: string;
 };
 
 type Sql = NeonQueryFunction<false, false>;
@@ -77,55 +77,57 @@ async function ensureSchema(sql = getSql()) {
 }
 
 async function createSchema(sql: Sql) {
+  await sql`CREATE EXTENSION IF NOT EXISTS pgcrypto`;
   await sql`
-    CREATE TABLE IF NOT EXISTS assets (
-      id BIGSERIAL PRIMARY KEY,
-      ticker TEXT NOT NULL UNIQUE,
+    CREATE TABLE IF NOT EXISTS currency (
+      code TEXT PRIMARY KEY,
       name TEXT NOT NULL,
-      type TEXT NOT NULL,
-      currency TEXT NOT NULL DEFAULT 'USD',
-      latest_price NUMERIC NOT NULL DEFAULT 0,
-      previous_price NUMERIC NOT NULL DEFAULT 0,
-      price_source TEXT NOT NULL DEFAULT 'Manual',
-      status TEXT NOT NULL DEFAULT 'Manual',
-      last_price_update TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      active BOOLEAN NOT NULL DEFAULT TRUE,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      symbol TEXT
     )
   `;
   await sql`
-    CREATE TABLE IF NOT EXISTS asset_changes (
-      id BIGSERIAL PRIMARY KEY,
-      ticker TEXT NOT NULL,
-      action TEXT NOT NULL,
-      detail TEXT NOT NULL,
-      actor TEXT NOT NULL DEFAULT 'Admin User',
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    CREATE TABLE IF NOT EXISTS investor (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      name TEXT NOT NULL UNIQUE
     )
   `;
   await sql`
-    CREATE TABLE IF NOT EXISTS investors (
-      id BIGSERIAL PRIMARY KEY,
-      name TEXT NOT NULL UNIQUE,
-      email TEXT NOT NULL DEFAULT '',
-      capital_contributed NUMERIC NOT NULL DEFAULT 0,
-      active BOOLEAN NOT NULL DEFAULT TRUE,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    CREATE TABLE IF NOT EXISTS asset (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      ticker TEXT NOT NULL UNIQUE,
+      full_name TEXT NOT NULL,
+      source_link TEXT,
+      currency_code TEXT NOT NULL REFERENCES currency(code),
+      current_price NUMERIC NOT NULL,
+      price_updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `;
   await sql`
-    CREATE TABLE IF NOT EXISTS holdings (
-      id BIGSERIAL PRIMARY KEY,
-      investor_id BIGINT NOT NULL REFERENCES investors(id),
-      asset_ticker TEXT NOT NULL REFERENCES assets(ticker),
-      units NUMERIC NOT NULL DEFAULT 0,
-      cost_basis NUMERIC NOT NULL DEFAULT 0,
-      active BOOLEAN NOT NULL DEFAULT TRUE,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      UNIQUE (investor_id, asset_ticker)
+    CREATE TABLE IF NOT EXISTS holding (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      investor_id UUID NOT NULL REFERENCES investor(id) ON DELETE CASCADE,
+      asset_id UUID NOT NULL REFERENCES asset(id) ON DELETE CASCADE,
+      shares NUMERIC NOT NULL,
+      acquired_cost NUMERIC NOT NULL,
+      acquired_at DATE NOT NULL,
+      UNIQUE (investor_id, asset_id)
+    )
+  `;
+  await sql`
+    CREATE TABLE IF NOT EXISTS price_history (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      asset_id UUID NOT NULL REFERENCES asset(id) ON DELETE CASCADE,
+      price NUMERIC NOT NULL,
+      recorded_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `;
+  await sql`
+    CREATE TABLE IF NOT EXISTS exchange_rate (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      from_currency TEXT NOT NULL REFERENCES currency(code),
+      to_currency TEXT NOT NULL REFERENCES currency(code),
+      rate NUMERIC NOT NULL,
+      recorded_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `;
 
@@ -134,52 +136,87 @@ async function createSchema(sql: Sql) {
 
 async function seedDatabase(sql: Sql) {
   await sql`
-    INSERT INTO assets (ticker, name, type, currency, latest_price, previous_price, price_source, status, last_price_update)
+    INSERT INTO currency (code, name, symbol)
     VALUES
-      ('VOO', 'Vanguard S&P 500 ETF', 'ETF', 'USD', 485.23, 481.14, 'Yahoo Finance', 'Synced', '2024-05-13 10:24:00+00'),
-      ('IWDA', 'iShares Core MSCI World ETF', 'ETF', 'USD', 78.91, 78.42, 'Yahoo Finance', 'Synced', '2024-05-13 10:18:00+00'),
-      ('AAPL', 'Apple Inc.', 'Stock', 'USD', 189.98, 187.45, 'Nasdaq', 'Synced', '2024-05-13 09:55:00+00'),
-      ('MSFT', 'Microsoft Corp.', 'Stock', 'USD', 415.37, 412.36, 'Nasdaq', 'Synced', '2024-05-13 09:52:00+00'),
-      ('TSLA', 'Tesla Inc.', 'Stock', 'USD', 171.89, 172.65, 'Nasdaq', 'Review', '2024-05-12 16:00:00+00'),
-      ('BND', 'Vanguard Total Bond Market ETF', 'Bond ETF', 'USD', 72.36, 72.27, 'Manual', 'Manual', '2024-05-12 15:45:00+00'),
-      ('GLD', 'SPDR Gold Shares', 'Commodity', 'USD', 215.64, 214.97, 'Manual', 'Stale', '2024-05-11 17:12:00+00')
-    ON CONFLICT (ticker) DO NOTHING
+      ('USD', 'US Dollar', '$'),
+      ('EUR', 'Euro', '€'),
+      ('GBP', 'British Pound', '£'),
+      ('THB', 'Thai Baht', '฿')
+    ON CONFLICT (code) DO UPDATE SET name = EXCLUDED.name, symbol = EXCLUDED.symbol
   `;
   await sql`
-    INSERT INTO asset_changes (ticker, action, detail, actor, created_at)
-    VALUES
-      ('VOO', 'Updated price', '$481.14 -> $485.23', 'Alice Johnson', '2024-05-13 10:24:00+00'),
-      ('AAPL', 'Added asset', 'Stock / USD / Nasdaq', 'Admin User', '2024-05-13 09:55:00+00'),
-      ('BND', 'Changed source', 'Manual -> Yahoo Finance', 'Bob Smith', '2024-05-12 15:45:00+00'),
-      ('ARKK', 'Removed inactive asset', 'No active holdings', 'Admin User', '2024-05-11 12:10:00+00')
-  `;
-  await sql`
-    INSERT INTO investors (name, email, capital_contributed)
-    VALUES
-      ('Alice Johnson', 'alice@example.com', 1100000),
-      ('Bob Smith', 'bob@example.com', 800000),
-      ('Carol Williams', 'carol@example.com', 450000),
-      ('David Brown', 'david@example.com', 180069.8)
+    INSERT INTO investor (name)
+    VALUES ('Alice Johnson'), ('Bob Smith'), ('Carol Williams'), ('David Brown')
     ON CONFLICT (name) DO NOTHING
   `;
   await sql`
-    INSERT INTO holdings (investor_id, asset_ticker, units, cost_basis)
-    SELECT investors.id, seed.asset_ticker, seed.units, seed.cost_basis
+    INSERT INTO asset (ticker, full_name, source_link, currency_code, current_price, price_updated_at)
+    VALUES
+      ('VOO', 'Vanguard S&P 500 ETF', 'https://investor.vanguard.com/investment-products/etfs/profile/voo', 'USD', 485.23, '2024-05-13 10:24:00+00'),
+      ('IWDA', 'iShares Core MSCI World UCITS ETF', 'https://www.ishares.com/uk/individual/en/products/251882/', 'USD', 78.91, '2024-05-13 10:18:00+00'),
+      ('AAPL', 'Apple Inc.', 'https://finance.yahoo.com/quote/AAPL', 'USD', 189.98, '2024-05-13 09:55:00+00'),
+      ('MSFT', 'Microsoft Corp.', 'https://finance.yahoo.com/quote/MSFT', 'USD', 415.37, '2024-05-13 09:52:00+00'),
+      ('TSLA', 'Tesla Inc.', 'https://finance.yahoo.com/quote/TSLA', 'USD', 171.89, '2024-05-12 16:00:00+00'),
+      ('BND', 'Vanguard Total Bond Market ETF', 'https://investor.vanguard.com/investment-products/etfs/profile/bnd', 'USD', 72.36, '2024-05-12 15:45:00+00'),
+      ('GLD', 'SPDR Gold Shares', 'https://finance.yahoo.com/quote/GLD', 'USD', 215.64, '2024-05-11 17:12:00+00')
+    ON CONFLICT (ticker) DO NOTHING
+  `;
+  await sql`
+    INSERT INTO price_history (asset_id, price, recorded_at)
+    SELECT asset.id, seed.price, seed.recorded_at::timestamptz
     FROM (
       VALUES
-        ('Alice Johnson', 'VOO', 1200, 540000),
-        ('Alice Johnson', 'AAPL', 850, 142000),
-        ('Alice Johnson', 'MSFT', 400, 152000),
-        ('Bob Smith', 'IWDA', 5200, 365000),
-        ('Bob Smith', 'VOO', 650, 292000),
-        ('Bob Smith', 'BND', 2100, 151000),
-        ('Carol Williams', 'AAPL', 620, 98000),
-        ('Carol Williams', 'TSLA', 740, 144000),
-        ('David Brown', 'GLD', 510, 98000),
-        ('David Brown', 'BND', 900, 64800)
-    ) AS seed(investor_name, asset_ticker, units, cost_basis)
-    JOIN investors ON investors.name = seed.investor_name
-    ON CONFLICT (investor_id, asset_ticker) DO NOTHING
+        ('VOO', 481.14, '2024-05-12 10:24:00+00'),
+        ('VOO', 485.23, '2024-05-13 10:24:00+00'),
+        ('IWDA', 78.42, '2024-05-12 10:18:00+00'),
+        ('IWDA', 78.91, '2024-05-13 10:18:00+00'),
+        ('AAPL', 187.45, '2024-05-12 09:55:00+00'),
+        ('AAPL', 189.98, '2024-05-13 09:55:00+00'),
+        ('MSFT', 412.36, '2024-05-12 09:52:00+00'),
+        ('MSFT', 415.37, '2024-05-13 09:52:00+00')
+    ) AS seed(ticker, price, recorded_at)
+    JOIN asset ON asset.ticker = seed.ticker
+    WHERE NOT EXISTS (
+      SELECT 1 FROM price_history
+      WHERE price_history.asset_id = asset.id
+        AND price_history.recorded_at = seed.recorded_at::timestamptz
+    )
+  `;
+  await sql`
+    INSERT INTO holding (investor_id, asset_id, shares, acquired_cost, acquired_at)
+    SELECT investor.id, asset.id, seed.shares, seed.acquired_cost, seed.acquired_at::date
+    FROM (
+      VALUES
+        ('Alice Johnson', 'VOO', 1200, 540000, '2023-06-15'),
+        ('Alice Johnson', 'AAPL', 850, 142000, '2023-08-02'),
+        ('Alice Johnson', 'MSFT', 400, 152000, '2023-09-18'),
+        ('Bob Smith', 'IWDA', 5200, 365000, '2023-07-05'),
+        ('Bob Smith', 'VOO', 650, 292000, '2023-10-10'),
+        ('Bob Smith', 'BND', 2100, 151000, '2023-11-21'),
+        ('Carol Williams', 'AAPL', 620, 98000, '2024-01-11'),
+        ('Carol Williams', 'TSLA', 740, 144000, '2024-02-09'),
+        ('David Brown', 'GLD', 510, 98000, '2024-03-19'),
+        ('David Brown', 'BND', 900, 64800, '2024-04-03')
+    ) AS seed(investor_name, ticker, shares, acquired_cost, acquired_at)
+    JOIN investor ON investor.name = seed.investor_name
+    JOIN asset ON asset.ticker = seed.ticker
+    ON CONFLICT (investor_id, asset_id) DO NOTHING
+  `;
+  await sql`
+    INSERT INTO exchange_rate (from_currency, to_currency, rate, recorded_at)
+    SELECT from_currency, to_currency, rate, NOW()
+    FROM (
+      VALUES
+        ('USD', 'USD', 1),
+        ('EUR', 'USD', 1.08),
+        ('GBP', 'USD', 1.25),
+        ('THB', 'USD', 0.027)
+    ) AS seed(from_currency, to_currency, rate)
+    WHERE NOT EXISTS (
+      SELECT 1 FROM exchange_rate
+      WHERE exchange_rate.from_currency = seed.from_currency
+        AND exchange_rate.to_currency = seed.to_currency
+    )
   `;
 }
 
@@ -191,31 +228,34 @@ export async function listAssets() {
   const sql = getSql();
   await ensureSchema(sql);
   const rows = await sql`
-    SELECT id, ticker, name, type, currency, latest_price, previous_price, price_source, status, last_price_update, active
-    FROM assets
-    WHERE active = TRUE
-    ORDER BY ticker
+    SELECT
+      asset.id,
+      asset.ticker,
+      asset.full_name,
+      COALESCE(asset.source_link, '') AS source_link,
+      asset.currency_code,
+      asset.current_price,
+      asset.price_updated_at,
+      COALESCE(previous.price, asset.current_price) AS previous_price
+    FROM asset
+    LEFT JOIN LATERAL (
+      SELECT price
+      FROM price_history
+      WHERE price_history.asset_id = asset.id
+        AND price_history.recorded_at < asset.price_updated_at
+      ORDER BY recorded_at DESC
+      LIMIT 1
+    ) previous ON TRUE
+    ORDER BY asset.ticker
   `;
   return rows.map(mapAsset);
 }
 
 export async function listQueuedAssets() {
-  if (!isNeonConfigured()) {
-    return [];
-  }
-
-  const sql = getSql();
-  await ensureSchema(sql);
-  const rows = await sql`
-    SELECT id, ticker, name, type, currency, latest_price, previous_price, price_source, status, last_price_update, active
-    FROM assets
-    WHERE active = TRUE AND status IN ('Review', 'Manual', 'Stale')
-    ORDER BY CASE status WHEN 'Stale' THEN 0 WHEN 'Review' THEN 1 ELSE 2 END, last_price_update
-  `;
-  return rows.map(mapAsset);
+  return listAssets();
 }
 
-export async function listAssetChanges() {
+export async function listPriceHistory() {
   if (!isNeonConfigured()) {
     return [];
   }
@@ -223,12 +263,24 @@ export async function listAssetChanges() {
   const sql = getSql();
   await ensureSchema(sql);
   const rows = await sql`
-    SELECT id, ticker, action, detail, actor, created_at
-    FROM asset_changes
-    ORDER BY created_at DESC, id DESC
+    SELECT price_history.id, price_history.asset_id, asset.ticker, price_history.price, price_history.recorded_at
+    FROM price_history
+    JOIN asset ON asset.id = price_history.asset_id
+    ORDER BY price_history.recorded_at DESC
     LIMIT 8
   `;
-  return rows.map(mapChange);
+  return rows.map(mapPriceHistory);
+}
+
+export async function listCurrencies() {
+  if (!isNeonConfigured()) {
+    return [];
+  }
+
+  const sql = getSql();
+  await ensureSchema(sql);
+  const rows = await sql`SELECT code, name, COALESCE(symbol, '') AS symbol FROM currency ORDER BY code`;
+  return rows.map(mapCurrency);
 }
 
 export async function listInvestors() {
@@ -238,12 +290,7 @@ export async function listInvestors() {
 
   const sql = getSql();
   await ensureSchema(sql);
-  const rows = await sql`
-    SELECT id, name, email, capital_contributed, active
-    FROM investors
-    WHERE active = TRUE
-    ORDER BY name
-  `;
+  const rows = await sql`SELECT id, name FROM investor ORDER BY name`;
   return rows.map(mapInvestor);
 }
 
@@ -256,165 +303,138 @@ export async function listInvestorHoldings() {
   await ensureSchema(sql);
   const rows = await sql`
     SELECT
-      holdings.id,
-      holdings.investor_id,
-      holdings.asset_ticker,
-      holdings.units,
-      holdings.cost_basis,
-      holdings.active,
-      investors.name AS investor_name,
-      assets.name AS asset_name,
-      assets.type AS asset_type,
-      assets.currency,
-      assets.latest_price AS current_price,
-      holdings.units * assets.latest_price AS current_value,
-      holdings.units * assets.latest_price - holdings.cost_basis AS gain_loss
-    FROM holdings
-    JOIN investors ON investors.id = holdings.investor_id
-    JOIN assets ON assets.ticker = holdings.asset_ticker
-    WHERE holdings.active = TRUE AND investors.active = TRUE AND assets.active = TRUE
-    ORDER BY investors.name, holdings.asset_ticker
+      holding.id,
+      holding.investor_id,
+      holding.asset_id,
+      holding.shares,
+      holding.acquired_cost,
+      holding.acquired_at,
+      investor.name AS investor_name,
+      asset.ticker,
+      asset.full_name AS asset_name,
+      COALESCE(asset.source_link, '') AS source_link,
+      asset.currency_code,
+      asset.current_price,
+      holding.shares * asset.current_price AS current_value,
+      holding.shares * asset.current_price - holding.acquired_cost AS gain_loss
+    FROM holding
+    JOIN investor ON investor.id = holding.investor_id
+    JOIN asset ON asset.id = holding.asset_id
+    ORDER BY investor.name, asset.ticker
   `;
   return rows.map(mapInvestorHolding);
 }
 
 export async function upsertAsset(input: {
   ticker: string;
-  name: string;
-  type: string;
-  currency: string;
-  latestPrice: number;
-  priceSource: string;
-  status: Asset["status"];
+  fullName: string;
+  sourceLink: string;
+  currencyCode: string;
+  currentPrice: number;
 }) {
   const sql = getSql();
   await ensureSchema(sql);
   const ticker = input.ticker.trim().toUpperCase();
-  const existing = await sql`SELECT latest_price FROM assets WHERE ticker = ${ticker}`;
-  const previousPrice = existing[0] ? Number(existing[0].latest_price) : input.latestPrice;
-
-  await sql`
-    INSERT INTO assets (ticker, name, type, currency, latest_price, previous_price, price_source, status, last_price_update, active, updated_at)
-    VALUES (${ticker}, ${input.name}, ${input.type}, ${input.currency}, ${input.latestPrice}, ${input.latestPrice}, ${input.priceSource}, ${input.status}, NOW(), TRUE, NOW())
+  const existing = await sql`SELECT id, current_price FROM asset WHERE ticker = ${ticker}`;
+  const rows = await sql`
+    INSERT INTO asset (ticker, full_name, source_link, currency_code, current_price, price_updated_at)
+    VALUES (${ticker}, ${input.fullName}, ${input.sourceLink || null}, ${input.currencyCode}, ${input.currentPrice}, NOW())
     ON CONFLICT (ticker) DO UPDATE SET
-      name = EXCLUDED.name,
-      type = EXCLUDED.type,
-      currency = EXCLUDED.currency,
-      previous_price = assets.latest_price,
-      latest_price = EXCLUDED.latest_price,
-      price_source = EXCLUDED.price_source,
-      status = EXCLUDED.status,
-      last_price_update = NOW(),
-      active = TRUE,
-      updated_at = NOW()
+      full_name = EXCLUDED.full_name,
+      source_link = EXCLUDED.source_link,
+      currency_code = EXCLUDED.currency_code,
+      current_price = EXCLUDED.current_price,
+      price_updated_at = NOW()
+    RETURNING id
   `;
-  await logChange(sql, ticker, existing[0] ? "Updated asset" : "Added asset", existing[0] ? `${formatMoney(previousPrice)} -> ${formatMoney(input.latestPrice)}` : `${input.type} / ${input.currency} / ${input.priceSource}`);
+  const assetId = String(rows[0].id);
+
+  if (!existing[0] || Number(existing[0].current_price) !== input.currentPrice) {
+    await sql`INSERT INTO price_history (asset_id, price, recorded_at) VALUES (${assetId}, ${input.currentPrice}, NOW())`;
+  }
 }
 
-export async function updateAssetPrice(id: number, latestPrice: number) {
+export async function updateAssetPrice(id: string, currentPrice: number) {
   const sql = getSql();
   await ensureSchema(sql);
-  const existing = await sql`SELECT ticker, latest_price FROM assets WHERE id = ${id} AND active = TRUE`;
+  const existing = await sql`SELECT id FROM asset WHERE id = ${id}`;
 
   if (!existing[0]) {
     return;
   }
 
-  await sql`
-    UPDATE assets
-    SET previous_price = latest_price,
-      latest_price = ${latestPrice},
-      status = 'Synced',
-      last_price_update = NOW(),
-      updated_at = NOW()
-    WHERE id = ${id}
-  `;
-  await logChange(sql, String(existing[0].ticker), "Updated price", `${formatMoney(Number(existing[0].latest_price))} -> ${formatMoney(latestPrice)}`);
+  await sql`UPDATE asset SET current_price = ${currentPrice}, price_updated_at = NOW() WHERE id = ${id}`;
+  await sql`INSERT INTO price_history (asset_id, price, recorded_at) VALUES (${id}, ${currentPrice}, NOW())`;
 }
 
-export async function removeAsset(id: number) {
+export async function removeAsset(id: string) {
   const sql = getSql();
   await ensureSchema(sql);
-  const existing = await sql`SELECT ticker FROM assets WHERE id = ${id} AND active = TRUE`;
-
-  if (!existing[0]) {
-    return;
-  }
-
-  await sql`UPDATE assets SET active = FALSE, status = 'Stale', updated_at = NOW() WHERE id = ${id}`;
-  await sql`UPDATE holdings SET active = FALSE, updated_at = NOW() WHERE asset_ticker = ${existing[0].ticker}`;
-  await logChange(sql, String(existing[0].ticker), "Removed asset", "Marked inactive in Asset List");
+  await sql`DELETE FROM asset WHERE id = ${id}`;
 }
 
-export async function upsertInvestor(input: { name: string; email: string; capitalContributed: number }) {
+export async function upsertInvestor(input: { name: string }) {
   const sql = getSql();
   await ensureSchema(sql);
   await sql`
-    INSERT INTO investors (name, email, capital_contributed, active, updated_at)
-    VALUES (${input.name.trim()}, ${input.email}, ${input.capitalContributed}, TRUE, NOW())
-    ON CONFLICT (name) DO UPDATE SET
-      email = EXCLUDED.email,
-      capital_contributed = EXCLUDED.capital_contributed,
-      active = TRUE,
-      updated_at = NOW()
+    INSERT INTO investor (name)
+    VALUES (${input.name.trim()})
+    ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name
   `;
 }
 
-export async function removeInvestor(id: number) {
+export async function removeInvestor(id: string) {
   const sql = getSql();
   await ensureSchema(sql);
-  await sql`UPDATE investors SET active = FALSE, updated_at = NOW() WHERE id = ${id}`;
-  await sql`UPDATE holdings SET active = FALSE, updated_at = NOW() WHERE investor_id = ${id}`;
+  await sql`DELETE FROM investor WHERE id = ${id}`;
 }
 
-export async function addInvestorHolding(input: { investorId: number; assetTicker: string; units: number; costBasis: number }) {
+export async function addInvestorHolding(input: { investorId: string; assetId: string; shares: number; acquiredCost: number; acquiredAt: string }) {
   const sql = getSql();
   await ensureSchema(sql);
-  const assetTicker = input.assetTicker.trim().toUpperCase();
   await sql`
-    INSERT INTO holdings (investor_id, asset_ticker, units, cost_basis, active, updated_at)
-    VALUES (${input.investorId}, ${assetTicker}, ${input.units}, ${input.costBasis}, TRUE, NOW())
-    ON CONFLICT (investor_id, asset_ticker) DO UPDATE SET
-      units = EXCLUDED.units,
-      cost_basis = EXCLUDED.cost_basis,
-      active = TRUE,
-      updated_at = NOW()
+    INSERT INTO holding (investor_id, asset_id, shares, acquired_cost, acquired_at)
+    VALUES (${input.investorId}, ${input.assetId}, ${input.shares}, ${input.acquiredCost}, ${input.acquiredAt})
+    ON CONFLICT (investor_id, asset_id) DO UPDATE SET
+      shares = EXCLUDED.shares,
+      acquired_cost = EXCLUDED.acquired_cost,
+      acquired_at = EXCLUDED.acquired_at
   `;
 }
 
-export async function removeInvestorHolding(id: number) {
+export async function removeInvestorHolding(id: string) {
   const sql = getSql();
   await ensureSchema(sql);
-  await sql`UPDATE holdings SET active = FALSE, updated_at = NOW() WHERE id = ${id}`;
+  await sql`DELETE FROM holding WHERE id = ${id}`;
 }
 
 export function getAssetMetrics(assets: Asset[]) {
-  const trackedMarketValue = assets.reduce((sum, asset) => sum + asset.latestPrice, 0);
+  const trackedMarketValue = assets.reduce((sum, asset) => sum + asset.currentPrice, 0);
   const previousMarketValue = assets.reduce((sum, asset) => sum + asset.previousPrice, 0);
-  const needingUpdate = assets.filter((asset) => asset.status !== "Synced").length;
+  const updatedToday = assets.filter((asset) => isToday(asset.priceUpdatedAt)).length;
   const averageDailyChange =
     assets.length === 0
       ? 0
       : assets.reduce((sum, asset) => sum + getDailyChangePercent(asset), 0) / assets.length;
 
   return [
-    { label: "Total Assets", value: String(assets.length), detail: "Active records in Neon", tone: "text-emerald-600" },
-    { label: "Tracked Market Value", value: formatMoney(trackedMarketValue), detail: `${formatSignedMoney(trackedMarketValue - previousMarketValue)} today`, tone: "text-emerald-600" },
-    { label: "Assets Needing Update", value: String(needingUpdate), detail: `${Math.max(needingUpdate - 1, 0)} stale over 24h`, tone: "text-orange-500" },
-    { label: "Avg. Daily Change", value: `${averageDailyChange >= 0 ? "+" : ""}${averageDailyChange.toFixed(2)}%`, detail: "Across active assets", tone: averageDailyChange >= 0 ? "text-emerald-600" : "text-rose-600" },
+    { label: "Total Assets", value: String(assets.length), detail: "Rows in ERD Asset", tone: "text-emerald-600" },
+    { label: "Current Price Sum", value: formatMoney(trackedMarketValue), detail: `${formatSignedMoney(trackedMarketValue - previousMarketValue)} vs. history`, tone: "text-emerald-600" },
+    { label: "Updated Today", value: String(updatedToday), detail: "price_updated_at is today", tone: "text-blue-600" },
+    { label: "Avg. Price Change", value: `${averageDailyChange >= 0 ? "+" : ""}${averageDailyChange.toFixed(2)}%`, detail: "Current vs. previous price", tone: averageDailyChange >= 0 ? "text-emerald-600" : "text-rose-600" },
   ];
 }
 
 export function getHoldingMetrics(investors: Investor[], holdings: InvestorHolding[]) {
-  const totalCostBasis = holdings.reduce((sum, holding) => sum + holding.costBasis, 0);
+  const totalAcquiredCost = holdings.reduce((sum, holding) => sum + holding.acquiredCost, 0);
   const currentValue = holdings.reduce((sum, holding) => sum + holding.currentValue, 0);
-  const gainLoss = currentValue - totalCostBasis;
+  const gainLoss = currentValue - totalAcquiredCost;
 
   return [
-    { label: "Active Investors", value: String(investors.length), detail: "Holding records grouped by owner", tone: "text-emerald-600" },
-    { label: "Active Holdings", value: String(holdings.length), detail: "Investor-asset positions", tone: "text-emerald-600" },
-    { label: "Total Cost Basis", value: formatMoney(totalCostBasis), detail: "Across all holdings", tone: "text-slate-600" },
-    { label: "Current Value", value: formatMoney(currentValue), detail: `${formatSignedMoney(gainLoss)} vs. cost`, tone: gainLoss >= 0 ? "text-emerald-600" : "text-rose-600" },
+    { label: "Investors", value: String(investors.length), detail: "Rows in ERD Investor", tone: "text-emerald-600" },
+    { label: "Holdings", value: String(holdings.length), detail: "Investor-asset joins", tone: "text-emerald-600" },
+    { label: "Acquired Cost", value: formatMoney(totalAcquiredCost), detail: "Base currency cost", tone: "text-slate-600" },
+    { label: "Current Value", value: formatMoney(currentValue), detail: `${formatSignedMoney(gainLoss)} vs. acquired`, tone: gainLoss >= 0 ? "text-emerald-600" : "text-rose-600" },
   ];
 }
 
@@ -423,7 +443,7 @@ export function getDailyChangePercent(asset: Asset) {
     return 0;
   }
 
-  return ((asset.latestPrice - asset.previousPrice) / asset.previousPrice) * 100;
+  return ((asset.currentPrice - asset.previousPrice) / asset.previousPrice) * 100;
 }
 
 export function formatMoney(value: number, currency = "USD") {
@@ -457,64 +477,63 @@ export function formatDate(value: string) {
   }).format(new Date(value));
 }
 
+function isToday(value: string) {
+  return new Date(value).toDateString() === new Date().toDateString();
+}
+
 function mapAsset(row: Record<string, unknown>): Asset {
   return {
-    id: Number(row.id),
+    id: String(row.id),
     ticker: String(row.ticker),
-    name: String(row.name),
-    type: String(row.type),
-    currency: String(row.currency),
-    latestPrice: Number(row.latest_price),
+    fullName: String(row.full_name),
+    sourceLink: String(row.source_link),
+    currencyCode: String(row.currency_code),
+    currentPrice: Number(row.current_price),
+    priceUpdatedAt: String(row.price_updated_at),
     previousPrice: Number(row.previous_price),
-    priceSource: String(row.price_source),
-    status: row.status as Asset["status"],
-    lastPriceUpdate: String(row.last_price_update),
-    active: Boolean(row.active),
   };
 }
 
-function mapChange(row: Record<string, unknown>): AssetChange {
+function mapCurrency(row: Record<string, unknown>): Currency {
   return {
-    id: Number(row.id),
-    ticker: String(row.ticker),
-    action: String(row.action),
-    detail: String(row.detail),
-    user: String(row.actor),
-    createdAt: String(row.created_at),
+    code: String(row.code),
+    name: String(row.name),
+    symbol: String(row.symbol),
   };
 }
 
 function mapInvestor(row: Record<string, unknown>): Investor {
   return {
-    id: Number(row.id),
+    id: String(row.id),
     name: String(row.name),
-    email: String(row.email),
-    capitalContributed: Number(row.capital_contributed),
-    active: Boolean(row.active),
   };
 }
 
 function mapInvestorHolding(row: Record<string, unknown>): InvestorHolding {
   return {
-    id: Number(row.id),
-    investorId: Number(row.investor_id),
-    assetTicker: String(row.asset_ticker),
-    units: Number(row.units),
-    costBasis: Number(row.cost_basis),
-    active: Boolean(row.active),
+    id: String(row.id),
+    investorId: String(row.investor_id),
+    assetId: String(row.asset_id),
+    shares: Number(row.shares),
+    acquiredCost: Number(row.acquired_cost),
+    acquiredAt: String(row.acquired_at),
     investorName: String(row.investor_name),
+    ticker: String(row.ticker),
     assetName: String(row.asset_name),
-    assetType: String(row.asset_type),
-    currency: String(row.currency),
+    sourceLink: String(row.source_link),
+    currencyCode: String(row.currency_code),
     currentPrice: Number(row.current_price),
     currentValue: Number(row.current_value),
     gainLoss: Number(row.gain_loss),
   };
 }
 
-async function logChange(sql: Sql, ticker: string, action: string, detail: string) {
-  await sql`
-    INSERT INTO asset_changes (ticker, action, detail, actor)
-    VALUES (${ticker}, ${action}, ${detail}, 'Admin User')
-  `;
+function mapPriceHistory(row: Record<string, unknown>): PriceHistory {
+  return {
+    id: String(row.id),
+    assetId: String(row.asset_id),
+    ticker: String(row.ticker),
+    price: Number(row.price),
+    recordedAt: String(row.recorded_at),
+  };
 }

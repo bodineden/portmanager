@@ -1,4 +1,4 @@
-import Link from "next/link";
+import { WorkspaceLink } from "./components/workspace-link";
 
 export default function Home() {
   return (
@@ -30,33 +30,21 @@ export default function Home() {
             </div>
             <div className="p-4">
               <div className="grid gap-3">
-                <Link
+                <WorkspaceLink
                   href="/asset-list"
-                  className="group grid gap-4 rounded-lg border border-slate-200 bg-white p-5 transition hover:border-blue-300 hover:bg-blue-50/40 sm:grid-cols-[56px_1fr_auto] sm:items-center"
-                >
-                  <div className="grid h-14 w-14 place-items-center rounded-lg bg-blue-600 text-xl font-bold text-white shadow-sm shadow-blue-900/20">A</div>
-                  <div>
-                    <h3 className="text-xl font-bold text-slate-950">Asset List</h3>
-                    <p className="mt-1 text-sm leading-6 text-slate-600">Enter, remove, and update asset prices from the persisted asset registry.</p>
-                  </div>
-                  <span className="grid h-10 w-10 place-items-center rounded-md border border-slate-200 bg-white text-lg font-bold text-blue-600 transition group-hover:border-blue-300">
-                    &gt;
-                  </span>
-                </Link>
+                  icon="A"
+                  iconClassName="grid h-14 w-14 place-items-center rounded-lg bg-blue-600 text-xl font-bold text-white shadow-sm shadow-blue-900/20"
+                  title="Asset List"
+                  description="Enter, remove, and update asset prices from the persisted asset registry."
+                />
 
-                <Link
+                <WorkspaceLink
                   href="/holder-list"
-                  className="group grid gap-4 rounded-lg border border-slate-200 bg-white p-5 transition hover:border-blue-300 hover:bg-blue-50/40 sm:grid-cols-[56px_1fr_auto] sm:items-center"
-                >
-                  <div className="grid h-14 w-14 place-items-center rounded-lg bg-emerald-600 text-xl font-bold text-white shadow-sm shadow-emerald-900/20">H</div>
-                  <div>
-                    <h3 className="text-xl font-bold text-slate-950">Holder List</h3>
-                    <p className="mt-1 text-sm leading-6 text-slate-600">Manage investors and the assets, units, cost basis, and current value each holder owns.</p>
-                  </div>
-                  <span className="grid h-10 w-10 place-items-center rounded-md border border-slate-200 bg-white text-lg font-bold text-blue-600 transition group-hover:border-blue-300">
-                    &gt;
-                  </span>
-                </Link>
+                  icon="H"
+                  iconClassName="grid h-14 w-14 place-items-center rounded-lg bg-emerald-600 text-xl font-bold text-white shadow-sm shadow-emerald-900/20"
+                  title="Holder List"
+                  description="Manage investors and each holding's asset, shares, acquired cost, acquired date, and current value."
+                />
               </div>
             </div>
           </div>

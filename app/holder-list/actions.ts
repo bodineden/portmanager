@@ -27,28 +27,27 @@ export async function saveInvestorAction(formData: FormData) {
 
   await upsertInvestor({
     name,
-    email: readText(formData, "email"),
-    capitalContributed: readNumber(formData, "capitalContributed"),
   });
   revalidatePath("/holder-list");
 }
 
 export async function removeInvestorAction(formData: FormData) {
-  await removeInvestor(readNumber(formData, "id"));
+  await removeInvestor(readText(formData, "id"));
   revalidatePath("/holder-list");
 }
 
 export async function saveHoldingAction(formData: FormData) {
   await addInvestorHolding({
-    investorId: readNumber(formData, "investorId"),
-    assetTicker: readText(formData, "assetTicker"),
-    units: readNumber(formData, "units"),
-    costBasis: readNumber(formData, "costBasis"),
+    investorId: readText(formData, "investorId"),
+    assetId: readText(formData, "assetId"),
+    shares: readNumber(formData, "shares"),
+    acquiredCost: readNumber(formData, "acquiredCost"),
+    acquiredAt: readText(formData, "acquiredAt"),
   });
   revalidatePath("/holder-list");
 }
 
 export async function removeHoldingAction(formData: FormData) {
-  await removeInvestorHolding(readNumber(formData, "id"));
+  await removeInvestorHolding(readText(formData, "id"));
   revalidatePath("/holder-list");
 }
