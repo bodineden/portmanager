@@ -4,7 +4,6 @@ import {
   formatMoney,
   getAssetMetrics,
   getDailyChangePercent,
-  getTypeBreakdown,
   listAssetChanges,
   listAssets,
   listQueuedAssets,
@@ -69,7 +68,6 @@ export default async function AssetMasterPage() {
   const queuedAssets = listQueuedAssets();
   const changes = listAssetChanges();
   const metrics = getAssetMetrics(assets);
-  const breakdown = getTypeBreakdown(assets);
   const pendingCount = queuedAssets.length;
 
   return (
@@ -114,7 +112,7 @@ export default async function AssetMasterPage() {
               <h1 className="text-2xl font-bold tracking-normal text-slate-950">Asset Master</h1>
             </div>
             <div className="flex flex-wrap items-center gap-4 text-sm text-slate-600">
-              <span>Last updated from SQLite</span>
+              <span>Last updated from local store</span>
               <a href="/asset-master" aria-label="Refresh prices" title="Refresh prices" className="text-lg font-semibold text-slate-700">R</a>
               <span className="h-6 w-px bg-slate-200" />
               <button aria-label="Open calendar" title="Open calendar" className="text-lg font-semibold text-slate-700">C</button>
@@ -292,7 +290,7 @@ export default async function AssetMasterPage() {
             </aside>
           </div>
 
-          <div className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1fr)_390px]">
+          <div className="mt-4">
             <section className="rounded-lg border border-slate-200 bg-white shadow-sm">
               <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
                 <h2 className="text-lg font-bold text-slate-950">Recent Asset Changes</h2>
@@ -319,33 +317,6 @@ export default async function AssetMasterPage() {
                     ))}
                   </tbody>
                 </table>
-              </div>
-            </section>
-
-            <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
-              <h2 className="text-lg font-bold text-slate-950">Type Breakdown</h2>
-              <div className="mt-5 flex items-center gap-6">
-                <div
-                  aria-label="Asset type allocation chart"
-                  className="h-36 w-36 shrink-0 rounded-full"
-                  style={{
-                    background: "conic-gradient(#3b6df6 0 46.2%, #10b981 46.2% 78%, #8b5cf6 78% 90.4%, #fb923c 90.4% 96.5%, #06b6d4 96.5% 100%)",
-                  }}
-                >
-                  <div className="m-auto mt-[30px] grid h-20 w-20 place-items-center rounded-full bg-white text-center text-sm font-bold text-slate-950 shadow-inner">
-                    {assets.length}
-                    <span className="block text-xs font-medium text-slate-500">assets</span>
-                  </div>
-                </div>
-                <div className="min-w-0 flex-1 space-y-3">
-                  {breakdown.map((item) => (
-                    <div key={item.label} className="flex items-center gap-2 text-sm">
-                      <span className={`h-2.5 w-2.5 rounded-full ${item.color}`} />
-                      <span className="font-medium text-slate-700">{item.label}</span>
-                      <span className="ml-auto font-bold text-slate-950">{item.value}</span>
-                    </div>
-                  ))}
-                </div>
               </div>
             </section>
           </div>
