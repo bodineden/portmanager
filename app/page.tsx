@@ -20,7 +20,7 @@ export default function Home() {
             <p className="mb-3 text-sm font-bold uppercase tracking-wide text-blue-600">Workspace</p>
             <h1 className="max-w-xl text-4xl font-bold tracking-normal text-slate-950 sm:text-5xl">Choose where to work</h1>
             <p className="mt-4 max-w-xl text-base leading-7 text-slate-600">
-              Start with the asset registry. More portfolio modules can be added here as the system grows.
+              Start with the asset registry, holder list, or exchange rates that feed THB performance values.
             </p>
           </div>
 
@@ -44,6 +44,14 @@ export default function Home() {
                   iconClassName="grid h-14 w-14 place-items-center rounded-lg bg-emerald-600 text-xl font-bold text-white shadow-sm shadow-emerald-900/20"
                   title="Holder List"
                   description="Manage investors and each holding's asset, shares, acquired cost, acquired date, and current value."
+                />
+
+                <WorkspaceLink
+                  href="/exchange-rate"
+                  icon="E"
+                  iconClassName="grid h-14 w-14 place-items-center rounded-lg bg-slate-700 text-xl font-bold text-white shadow-sm shadow-slate-900/20"
+                  title="Exchange Rate"
+                  description="Maintain the latest FX rates used to convert holdings into the THB base currency."
                 />
               </div>
             </div>

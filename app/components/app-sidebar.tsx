@@ -4,9 +4,10 @@ const navItems = [
   { label: "Home", icon: "H", href: "/" },
   { label: "Asset List", icon: "A", href: "/asset-list" },
   { label: "Holder List", icon: "L", href: "/holder-list" },
+  { label: "Exchange Rate", icon: "E", href: "/exchange-rate" },
 ];
 
-export function AppSidebar({ active }: { active: "home" | "asset-list" | "holder-list" }) {
+export function AppSidebar({ active }: { active: "home" | "asset-list" | "holder-list" | "exchange-rate" }) {
   return (
     <aside className="hidden bg-[#061d3c] px-3 py-7 text-white shadow-2xl lg:flex lg:flex-col">
       <div className="mb-9 flex items-center gap-3 px-3">

@@ -7,17 +7,18 @@ import {
   getHoldingMetrics,
   isNeonConfigured,
   listAssets,
+  listDeletedInvestors,
   listInvestorHoldings,
   listInvestors,
   type InvestorHolding,
 } from "@/lib/assets-db";
-import { removeHoldingAction, removeInvestorAction, saveHoldingAction, saveInvestorAction } from "./actions";
+import { recoverInvestorAction, removeHoldingAction, removeInvestorAction, saveHoldingAction, saveInvestorAction } from "./actions";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 function InvestorGroup({ name, holdings }: { name: string; holdings: InvestorHolding[] }) {
-  const currentValue = holdings.reduce((sum, holding) => sum + holding.currentValue, 0);
+  const currentValue = holdings.reduce((sum, holding) => sum + holding.currentValueBase, 0);
   const acquiredCost = holdings.reduce((sum, holding) => sum + holding.acquiredCost, 0);
   const gainLoss = currentValue - acquiredCost;
 
@@ -26,21 +27,21 @@ function InvestorGroup({ name, holdings }: { name: string; holdings: InvestorHol
       <div className="flex flex-col gap-2 border-b border-slate-200 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h2 className="text-lg font-bold text-slate-950">{name}</h2>
-          <p className="text-sm text-slate-500">{holdings.length} active holdings</p>
+          <p className="text-sm text-slate-500">{holdings.length} active holdings / base currency THB</p>
         </div>
         <div className="text-sm">
-          <span className="font-semibold text-slate-950">{formatMoney(currentValue)}</span>
+          <span className="font-semibold text-slate-950">{formatMoney(currentValue, "THB")}</span>
           <span className={`ml-3 font-semibold ${gainLoss >= 0 ? "text-emerald-600" : "text-rose-600"}`}>
             {gainLoss >= 0 ? "+" : ""}
-            {formatMoney(gainLoss)}
+            {formatMoney(gainLoss, "THB")}
           </span>
         </div>
       </div>
       <div className="overflow-x-auto">
-        <table className="w-full min-w-[840px] text-left text-sm">
+        <table className="w-full min-w-[1100px] text-left text-sm">
           <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
             <tr>
-              {["Asset", "Shares", "Current Price", "Acquired Cost", "Acquired At", "Current Value", "Gain / Loss", "Actions"].map((heading) => (
+              {["Asset", "Shares", "Current Price", "FX to THB", "Acquired Cost (THB)", "Acquired At", "Current Value (THB)", "Gain / Loss (THB)", "Actions"].map((heading) => (
                 <th key={heading} className="border-b border-slate-200 px-4 py-3 font-bold">{heading}</th>
               ))}
             </tr>
@@ -54,12 +55,13 @@ function InvestorGroup({ name, holdings }: { name: string; holdings: InvestorHol
                 </td>
                 <td className="px-4 py-3 font-semibold text-slate-950">{holding.shares.toLocaleString("en-US")}</td>
                 <td className="px-4 py-3 text-slate-700">{formatMoney(holding.currentPrice, holding.currencyCode)}</td>
-                <td className="px-4 py-3 text-slate-700">{formatMoney(holding.acquiredCost, holding.currencyCode)}</td>
+                <td className="px-4 py-3 text-slate-700">{holding.exchangeRateToBase.toLocaleString("en-US", { maximumFractionDigits: 6 })}</td>
+                <td className="px-4 py-3 text-slate-700">{formatMoney(holding.acquiredCost, "THB")}</td>
                 <td className="px-4 py-3 text-slate-600">{formatDateOnly(holding.acquiredAt)}</td>
-                <td className="px-4 py-3 font-semibold text-slate-950">{formatMoney(holding.currentValue, holding.currencyCode)}</td>
+                <td className="px-4 py-3 font-semibold text-slate-950">{formatMoney(holding.currentValueBase, "THB")}</td>
                 <td className={`px-4 py-3 font-semibold ${holding.gainLoss >= 0 ? "text-emerald-600" : "text-rose-600"}`}>
                   {holding.gainLoss >= 0 ? "+" : ""}
-                  {formatMoney(holding.gainLoss, holding.currencyCode)}
+                  {formatMoney(holding.gainLoss, "THB")}
                 </td>
                 <td className="px-4 py-3">
                   <form action={removeHoldingAction}>
@@ -94,6 +96,7 @@ export default async function HolderListPage() {
 
   const assets = await listAssets();
   const investors = await listInvestors();
+  const deletedInvestors = await listDeletedInvestors();
   const holdings = await listInvestorHoldings();
   const metrics = getHoldingMetrics(investors, holdings);
   const holdingsByInvestor = investors.map((investor) => ({
@@ -115,6 +118,9 @@ export default async function HolderListPage() {
             <div className="flex flex-wrap items-center gap-4 text-sm text-slate-600">
               <Link href="/" className="rounded-md border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 shadow-sm transition hover:border-blue-200 hover:bg-blue-50">
                 Back to Home
+              </Link>
+              <Link href="/exchange-rate" className="rounded-md border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 shadow-sm transition hover:border-blue-200 hover:bg-blue-50">
+                Exchange Rate
               </Link>
               <span>Investor Holding Management</span>
               <Link href="/holder-list" aria-label="Refresh holders" title="Refresh holders" className="text-lg font-semibold text-slate-700">R</Link>
@@ -208,7 +214,7 @@ export default async function HolderListPage() {
                       <input name="shares" placeholder="100" required inputMode="decimal" className="h-10 w-full rounded-md border border-slate-200 bg-slate-50 px-3 text-sm outline-none transition focus:border-blue-400 focus:bg-white" />
                     </label>
                     <label>
-                      <span className="mb-1 block text-xs font-bold uppercase tracking-wide text-slate-500">Acquired Cost</span>
+                      <span className="mb-1 block text-xs font-bold uppercase tracking-wide text-slate-500">Acquired Cost (THB)</span>
                       <input name="acquiredCost" placeholder="25000" required inputMode="decimal" className="h-10 w-full rounded-md border border-slate-200 bg-slate-50 px-3 text-sm outline-none transition focus:border-blue-400 focus:bg-white" />
                     </label>
                     <label>
@@ -220,6 +226,34 @@ export default async function HolderListPage() {
                     Save Holding
                   </PendingButton>
                 </form>
+              </section>
+
+              <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+                <div className="mb-4 flex items-center justify-between">
+                  <h2 className="text-lg font-bold text-slate-950">Deleted Investors</h2>
+                  <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-bold text-slate-600">{deletedInvestors.length} recoverable</span>
+                </div>
+                <div className="space-y-3">
+                  {deletedInvestors.length === 0 ? (
+                    <p className="rounded-md border border-dashed border-slate-200 p-4 text-sm text-slate-500">No deleted investors to recover.</p>
+                  ) : (
+                    deletedInvestors.map((investor) => (
+                      <div key={investor.id} className="flex items-center gap-3 rounded-md border border-slate-200 p-3">
+                        <div className="grid h-10 w-10 place-items-center rounded-md bg-slate-100 text-xs font-bold text-slate-700">{investor.name.slice(0, 1)}</div>
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-sm font-semibold text-slate-950">{investor.name}</p>
+                          <p className="text-xs text-slate-500">Deleted investor</p>
+                        </div>
+                        <form action={recoverInvestorAction}>
+                          <input type="hidden" name="id" value={investor.id} />
+                          <PendingButton className="h-9 rounded-md border border-slate-200 px-3 text-xs font-bold text-slate-700 transition hover:bg-slate-50" pendingLabel="Restoring">
+                            Recover
+                          </PendingButton>
+                        </form>
+                      </div>
+                    ))
+                  )}
+                </div>
               </section>
             </aside>
           </div>

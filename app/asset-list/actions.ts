@@ -1,7 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { removeAsset, updateAssetPrice, upsertAsset } from "@/lib/assets-db";
+import { recoverAsset, removeAsset, updateAssetPrice, upsertAsset } from "@/lib/assets-db";
 
 function readText(formData: FormData, key: string) {
   const value = formData.get(key);
@@ -51,4 +51,11 @@ export async function removeAssetAction(formData: FormData) {
 
   await removeAsset(readText(formData, "id"));
   revalidatePath("/asset-list");
+  revalidatePath("/holder-list");
+}
+
+export async function recoverAssetAction(formData: FormData) {
+  await recoverAsset(readText(formData, "id"));
+  revalidatePath("/asset-list");
+  revalidatePath("/holder-list");
 }

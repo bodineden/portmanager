@@ -6,6 +6,14 @@ export type Currency = {
   symbol: string;
 };
 
+export type ExchangeRate = {
+  id: string;
+  fromCurrency: string;
+  toCurrency: string;
+  rate: number;
+  recordedAt: string;
+};
+
 export type Asset = {
   id: string;
   ticker: string;
@@ -15,11 +23,13 @@ export type Asset = {
   currentPrice: number;
   priceUpdatedAt: string;
   previousPrice: number;
+  deletedAt?: string;
 };
 
 export type Investor = {
   id: string;
   name: string;
+  deletedAt?: string;
 };
 
 export type Holding = {
@@ -38,7 +48,9 @@ export type InvestorHolding = Holding & {
   sourceLink: string;
   currencyCode: string;
   currentPrice: number;
-  currentValue: number;
+  exchangeRateToBase: number;
+  currentValueNative: number;
+  currentValueBase: number;
   gainLoss: number;
 };
 
@@ -88,7 +100,8 @@ async function createSchema(sql: Sql) {
   await sql`
     CREATE TABLE IF NOT EXISTS investor (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      name TEXT NOT NULL UNIQUE
+      name TEXT NOT NULL UNIQUE,
+      deleted_at TIMESTAMPTZ
     )
   `;
   await sql`
@@ -99,7 +112,8 @@ async function createSchema(sql: Sql) {
       source_link TEXT,
       currency_code TEXT NOT NULL REFERENCES currency(code),
       current_price NUMERIC NOT NULL,
-      price_updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      price_updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      deleted_at TIMESTAMPTZ
     )
   `;
   await sql`
@@ -130,6 +144,8 @@ async function createSchema(sql: Sql) {
       recorded_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `;
+  await sql`ALTER TABLE investor ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ`;
+  await sql`ALTER TABLE asset ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ`;
 
   await seedDatabase(sql);
 }
@@ -207,6 +223,10 @@ async function seedDatabase(sql: Sql) {
     SELECT from_currency, to_currency, rate, NOW()
     FROM (
       VALUES
+        ('THB', 'THB', 1),
+        ('USD', 'THB', 36.50),
+        ('EUR', 'THB', 39.40),
+        ('GBP', 'THB', 45.60),
         ('USD', 'USD', 1),
         ('EUR', 'USD', 1.08),
         ('GBP', 'USD', 1.25),
@@ -236,6 +256,7 @@ export async function listAssets() {
       asset.currency_code,
       asset.current_price,
       asset.price_updated_at,
+      COALESCE(asset.deleted_at::text, '') AS deleted_at,
       COALESCE(previous.price, asset.current_price) AS previous_price
     FROM asset
     LEFT JOIN LATERAL (
@@ -246,6 +267,7 @@ export async function listAssets() {
       ORDER BY recorded_at DESC
       LIMIT 1
     ) previous ON TRUE
+    WHERE asset.deleted_at IS NULL
     ORDER BY asset.ticker
   `;
   return rows.map(mapAsset);
@@ -253,6 +275,39 @@ export async function listAssets() {
 
 export async function listQueuedAssets() {
   return listAssets();
+}
+
+export async function listDeletedAssets() {
+  if (!isNeonConfigured()) {
+    return [];
+  }
+
+  const sql = getSql();
+  await ensureSchema(sql);
+  const rows = await sql`
+    SELECT
+      asset.id,
+      asset.ticker,
+      asset.full_name,
+      COALESCE(asset.source_link, '') AS source_link,
+      asset.currency_code,
+      asset.current_price,
+      asset.price_updated_at,
+      COALESCE(asset.deleted_at::text, '') AS deleted_at,
+      COALESCE(previous.price, asset.current_price) AS previous_price
+    FROM asset
+    LEFT JOIN LATERAL (
+      SELECT price
+      FROM price_history
+      WHERE price_history.asset_id = asset.id
+        AND price_history.recorded_at < asset.price_updated_at
+      ORDER BY recorded_at DESC
+      LIMIT 1
+    ) previous ON TRUE
+    WHERE asset.deleted_at IS NOT NULL
+    ORDER BY asset.deleted_at DESC
+  `;
+  return rows.map(mapAsset);
 }
 
 export async function listPriceHistory() {
@@ -283,6 +338,22 @@ export async function listCurrencies() {
   return rows.map(mapCurrency);
 }
 
+export async function listExchangeRates() {
+  if (!isNeonConfigured()) {
+    return [];
+  }
+
+  const sql = getSql();
+  await ensureSchema(sql);
+  const rows = await sql`
+    SELECT DISTINCT ON (from_currency, to_currency)
+      id, from_currency, to_currency, rate, recorded_at
+    FROM exchange_rate
+    ORDER BY from_currency, to_currency, recorded_at DESC
+  `;
+  return rows.map(mapExchangeRate);
+}
+
 export async function listInvestors() {
   if (!isNeonConfigured()) {
     return [];
@@ -290,7 +361,23 @@ export async function listInvestors() {
 
   const sql = getSql();
   await ensureSchema(sql);
-  const rows = await sql`SELECT id, name FROM investor ORDER BY name`;
+  const rows = await sql`SELECT id, name, COALESCE(deleted_at::text, '') AS deleted_at FROM investor WHERE deleted_at IS NULL ORDER BY name`;
+  return rows.map(mapInvestor);
+}
+
+export async function listDeletedInvestors() {
+  if (!isNeonConfigured()) {
+    return [];
+  }
+
+  const sql = getSql();
+  await ensureSchema(sql);
+  const rows = await sql`
+    SELECT id, name, COALESCE(deleted_at::text, '') AS deleted_at
+    FROM investor
+    WHERE deleted_at IS NOT NULL
+    ORDER BY deleted_at DESC
+  `;
   return rows.map(mapInvestor);
 }
 
@@ -315,11 +402,22 @@ export async function listInvestorHoldings() {
       COALESCE(asset.source_link, '') AS source_link,
       asset.currency_code,
       asset.current_price,
-      holding.shares * asset.current_price AS current_value,
-      holding.shares * asset.current_price - holding.acquired_cost AS gain_loss
+      COALESCE(rate.rate, CASE WHEN asset.currency_code = 'THB' THEN 1 ELSE 0 END) AS exchange_rate_to_base,
+      holding.shares * asset.current_price AS current_value_native,
+      holding.shares * asset.current_price * COALESCE(rate.rate, CASE WHEN asset.currency_code = 'THB' THEN 1 ELSE 0 END) AS current_value_base,
+      holding.shares * asset.current_price * COALESCE(rate.rate, CASE WHEN asset.currency_code = 'THB' THEN 1 ELSE 0 END) - holding.acquired_cost AS gain_loss
     FROM holding
     JOIN investor ON investor.id = holding.investor_id
     JOIN asset ON asset.id = holding.asset_id
+    LEFT JOIN LATERAL (
+      SELECT exchange_rate.rate
+      FROM exchange_rate
+      WHERE exchange_rate.from_currency = asset.currency_code
+        AND exchange_rate.to_currency = 'THB'
+      ORDER BY recorded_at DESC
+      LIMIT 1
+    ) rate ON TRUE
+    WHERE investor.deleted_at IS NULL AND asset.deleted_at IS NULL
     ORDER BY investor.name, asset.ticker
   `;
   return rows.map(mapInvestorHolding);
@@ -344,7 +442,8 @@ export async function upsertAsset(input: {
       source_link = EXCLUDED.source_link,
       currency_code = EXCLUDED.currency_code,
       current_price = EXCLUDED.current_price,
-      price_updated_at = NOW()
+      price_updated_at = NOW(),
+      deleted_at = NULL
     RETURNING id
   `;
   const assetId = String(rows[0].id);
@@ -370,7 +469,13 @@ export async function updateAssetPrice(id: string, currentPrice: number) {
 export async function removeAsset(id: string) {
   const sql = getSql();
   await ensureSchema(sql);
-  await sql`DELETE FROM asset WHERE id = ${id}`;
+  await sql`UPDATE asset SET deleted_at = NOW() WHERE id = ${id}`;
+}
+
+export async function recoverAsset(id: string) {
+  const sql = getSql();
+  await ensureSchema(sql);
+  await sql`UPDATE asset SET deleted_at = NULL WHERE id = ${id}`;
 }
 
 export async function upsertInvestor(input: { name: string }) {
@@ -379,14 +484,20 @@ export async function upsertInvestor(input: { name: string }) {
   await sql`
     INSERT INTO investor (name)
     VALUES (${input.name.trim()})
-    ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name
+    ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name, deleted_at = NULL
   `;
 }
 
 export async function removeInvestor(id: string) {
   const sql = getSql();
   await ensureSchema(sql);
-  await sql`DELETE FROM investor WHERE id = ${id}`;
+  await sql`UPDATE investor SET deleted_at = NOW() WHERE id = ${id}`;
+}
+
+export async function recoverInvestor(id: string) {
+  const sql = getSql();
+  await ensureSchema(sql);
+  await sql`UPDATE investor SET deleted_at = NULL WHERE id = ${id}`;
 }
 
 export async function addInvestorHolding(input: { investorId: string; assetId: string; shares: number; acquiredCost: number; acquiredAt: string }) {
@@ -408,6 +519,17 @@ export async function removeInvestorHolding(id: string) {
   await sql`DELETE FROM holding WHERE id = ${id}`;
 }
 
+export async function addExchangeRate(input: { fromCurrency: string; toCurrency: string; rate: number }) {
+  const sql = getSql();
+  await ensureSchema(sql);
+  await sql`
+    INSERT INTO exchange_rate (from_currency, to_currency, rate, recorded_at)
+    VALUES (${input.fromCurrency}, ${input.toCurrency}, ${input.rate}, NOW())
+  `;
+}
+
+export const upsertExchangeRate = addExchangeRate;
+
 export function getAssetMetrics(assets: Asset[]) {
   const trackedMarketValue = assets.reduce((sum, asset) => sum + asset.currentPrice, 0);
   const previousMarketValue = assets.reduce((sum, asset) => sum + asset.previousPrice, 0);
@@ -419,7 +541,7 @@ export function getAssetMetrics(assets: Asset[]) {
 
   return [
     { label: "Total Assets", value: String(assets.length), detail: "Rows in ERD Asset", tone: "text-emerald-600" },
-    { label: "Current Price Sum", value: formatMoney(trackedMarketValue), detail: `${formatSignedMoney(trackedMarketValue - previousMarketValue)} vs. history`, tone: "text-emerald-600" },
+    { label: "Current Price Sum", value: formatMoney(trackedMarketValue), detail: `${formatSignedMoney(trackedMarketValue - previousMarketValue, "USD")} vs. history`, tone: "text-emerald-600" },
     { label: "Updated Today", value: String(updatedToday), detail: "price_updated_at is today", tone: "text-blue-600" },
     { label: "Avg. Price Change", value: `${averageDailyChange >= 0 ? "+" : ""}${averageDailyChange.toFixed(2)}%`, detail: "Current vs. previous price", tone: averageDailyChange >= 0 ? "text-emerald-600" : "text-rose-600" },
   ];
@@ -427,14 +549,14 @@ export function getAssetMetrics(assets: Asset[]) {
 
 export function getHoldingMetrics(investors: Investor[], holdings: InvestorHolding[]) {
   const totalAcquiredCost = holdings.reduce((sum, holding) => sum + holding.acquiredCost, 0);
-  const currentValue = holdings.reduce((sum, holding) => sum + holding.currentValue, 0);
+  const currentValue = holdings.reduce((sum, holding) => sum + holding.currentValueBase, 0);
   const gainLoss = currentValue - totalAcquiredCost;
 
   return [
     { label: "Investors", value: String(investors.length), detail: "Rows in ERD Investor", tone: "text-emerald-600" },
     { label: "Holdings", value: String(holdings.length), detail: "Investor-asset joins", tone: "text-emerald-600" },
-    { label: "Acquired Cost", value: formatMoney(totalAcquiredCost), detail: "Base currency cost", tone: "text-slate-600" },
-    { label: "Current Value", value: formatMoney(currentValue), detail: `${formatSignedMoney(gainLoss)} vs. acquired`, tone: gainLoss >= 0 ? "text-emerald-600" : "text-rose-600" },
+    { label: "Acquired Cost", value: formatMoney(totalAcquiredCost, "THB"), detail: "Base currency: THB", tone: "text-slate-600" },
+    { label: "Current Value", value: formatMoney(currentValue, "THB"), detail: `${formatSignedMoney(gainLoss)} vs. acquired`, tone: gainLoss >= 0 ? "text-emerald-600" : "text-rose-600" },
   ];
 }
 
@@ -455,8 +577,8 @@ export function formatMoney(value: number, currency = "USD") {
   }).format(value);
 }
 
-export function formatSignedMoney(value: number) {
-  const formatted = formatMoney(Math.abs(value));
+export function formatSignedMoney(value: number, currency = "THB") {
+  const formatted = formatMoney(Math.abs(value), currency);
   return `${value >= 0 ? "+" : "-"}${formatted}`;
 }
 
@@ -491,6 +613,7 @@ function mapAsset(row: Record<string, unknown>): Asset {
     currentPrice: Number(row.current_price),
     priceUpdatedAt: String(row.price_updated_at),
     previousPrice: Number(row.previous_price),
+    deletedAt: String(row.deleted_at ?? ""),
   };
 }
 
@@ -506,6 +629,7 @@ function mapInvestor(row: Record<string, unknown>): Investor {
   return {
     id: String(row.id),
     name: String(row.name),
+    deletedAt: String(row.deleted_at ?? ""),
   };
 }
 
@@ -523,8 +647,20 @@ function mapInvestorHolding(row: Record<string, unknown>): InvestorHolding {
     sourceLink: String(row.source_link),
     currencyCode: String(row.currency_code),
     currentPrice: Number(row.current_price),
-    currentValue: Number(row.current_value),
+    exchangeRateToBase: Number(row.exchange_rate_to_base),
+    currentValueNative: Number(row.current_value_native),
+    currentValueBase: Number(row.current_value_base),
     gainLoss: Number(row.gain_loss),
+  };
+}
+
+function mapExchangeRate(row: Record<string, unknown>): ExchangeRate {
+  return {
+    id: String(row.id),
+    fromCurrency: String(row.from_currency),
+    toCurrency: String(row.to_currency),
+    rate: Number(row.rate),
+    recordedAt: String(row.recorded_at),
   };
 }
 

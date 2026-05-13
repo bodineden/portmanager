@@ -1,7 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { addInvestorHolding, removeInvestor, removeInvestorHolding, upsertInvestor } from "@/lib/assets-db";
+import { addInvestorHolding, recoverInvestor, removeInvestor, removeInvestorHolding, upsertInvestor } from "@/lib/assets-db";
 
 function readText(formData: FormData, key: string) {
   const value = formData.get(key);
@@ -33,6 +33,11 @@ export async function saveInvestorAction(formData: FormData) {
 
 export async function removeInvestorAction(formData: FormData) {
   await removeInvestor(readText(formData, "id"));
+  revalidatePath("/holder-list");
+}
+
+export async function recoverInvestorAction(formData: FormData) {
+  await recoverInvestor(readText(formData, "id"));
   revalidatePath("/holder-list");
 }
 
