@@ -62,6 +62,12 @@ export type PriceHistory = {
   recordedAt: string;
 };
 
+export type PortfolioValuePoint = {
+  date: string;
+  valueThb: number;
+  holdingCount: number;
+};
+
 type Sql = NeonQueryFunction<false, false>;
 
 let schemaReady: Promise<void> | undefined;
@@ -384,6 +390,7 @@ export async function listInvestorHoldings() {
 
   const sql = getSql();
   await ensureSchema(sql);
+
   const rows = await sql`
     SELECT
       holding.id,
@@ -417,6 +424,97 @@ export async function listInvestorHoldings() {
     ORDER BY investor.name, asset.ticker
   `;
   return rows.map(mapInvestorHolding);
+}
+
+function toDateKey(iso: string): string {
+  return iso.slice(0, 10);
+}
+
+export async function listPortfolioValueSeries(): Promise<PortfolioValuePoint[]> {
+  if (!isNeonConfigured()) {
+    return [];
+  }
+
+  const sql = getSql();
+  await ensureSchema(sql);
+
+  const holdings = await sql`
+    SELECT h.id, h.asset_id, h.shares, h.acquired_at,
+           a.ticker, a.currency_code, a.current_price
+    FROM holding h
+    JOIN asset a ON a.id = h.asset_id
+    JOIN investor i ON i.id = h.investor_id
+    WHERE a.deleted_at IS NULL AND i.deleted_at IS NULL
+  `;
+  const priceRows = await sql`SELECT asset_id, price, recorded_at FROM price_history ORDER BY recorded_at`;
+  const rateRows = await sql`
+    SELECT from_currency, to_currency, rate, recorded_at
+    FROM exchange_rate
+    ORDER BY recorded_at
+  `;
+
+  // as-of indexes: asset_id -> sorted [{t, price}], "FROM->TO" -> sorted [{t, rate}]
+  const priceByAsset = new Map<string, { t: number; price: number }[]>();
+  for (const r of priceRows) {
+    const key = String(r.asset_id);
+    if (!priceByAsset.has(key)) priceByAsset.set(key, []);
+    priceByAsset.get(key)!.push({ t: new Date(String(r.recorded_at)).getTime(), price: Number(r.price) });
+  }
+  const rateByPair = new Map<string, { t: number; rate: number }[]>();
+  for (const r of rateRows) {
+    const key = `${String(r.from_currency)}->${String(r.to_currency)}`;
+    if (!rateByPair.has(key)) rateByPair.set(key, []);
+    rateByPair.get(key)!.push({ t: new Date(String(r.recorded_at)).getTime(), rate: Number(r.rate) });
+  }
+
+  function asOf<T extends { t: number }>(list: T[] | undefined, t: number): T | undefined {
+    if (!list || list.length === 0) return undefined;
+    // list is sorted by t; find last entry with entry.t <= t
+    let lo = 0;
+    let hi = list.length - 1;
+    let ans: T | undefined;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (list[mid].t <= t) {
+        ans = list[mid];
+        lo = mid + 1;
+      } else {
+        hi = mid - 1;
+      }
+    }
+    return ans;
+  }
+
+  // series dates: every date that has price or FX data, plus today
+  const dateSet = new Set<string>();
+  for (const r of priceRows) dateSet.add(toDateKey(String(r.recorded_at)));
+  for (const r of rateRows) dateSet.add(toDateKey(String(r.recorded_at)));
+  dateSet.add(toDateKey(new Date().toISOString()));
+  const dates = [...dateSet].sort();
+
+  const points: PortfolioValuePoint[] = [];
+  for (const date of dates) {
+    const dayEnd = new Date(`${date}T23:59:59.999Z`).getTime();
+    let value = 0;
+    let counted = 0;
+    for (const h of holdings) {
+      const acquiredDate = toDateKey(String(h.acquired_at));
+      if (acquiredDate > date) continue; // holding didn't exist yet
+
+      const priceRec = asOf(priceByAsset.get(String(h.asset_id)), dayEnd);
+      const price = priceRec ? priceRec.price : Number(h.current_price);
+
+      const pair = `${String(h.currency_code)}->THB`;
+      const rateRec = asOf(rateByPair.get(pair), dayEnd);
+      const rate = rateRec ? rateRec.rate : String(h.currency_code) === "THB" ? 1 : 0;
+
+      value += Number(h.shares) * price * rate;
+      counted += 1;
+    }
+    points.push({ date, valueThb: Math.round(value * 100) / 100, holdingCount: counted });
+  }
+
+  return points;
 }
 
 export async function upsertAsset(input: {

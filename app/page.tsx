@@ -31,6 +31,14 @@ export default function Home() {
             <div className="p-4">
               <div className="grid gap-3">
                 <WorkspaceLink
+                  href="/portfolio"
+                  icon="P"
+                  iconClassName="grid h-14 w-14 place-items-center rounded-lg bg-indigo-600 text-xl font-bold text-white shadow-sm shadow-indigo-900/20"
+                  title="Portfolio Value"
+                  description="Track total portfolio value over time in THB, charted from daily price and FX history."
+                />
+
+                <WorkspaceLink
                   href="/asset-list"
                   icon="A"
                   iconClassName="grid h-14 w-14 place-items-center rounded-lg bg-blue-600 text-xl font-bold text-white shadow-sm shadow-blue-900/20"
