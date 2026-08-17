@@ -507,7 +507,11 @@ export async function listPortfolioValueSeries(): Promise<PortfolioValuePoint[]>
       const acquiredDate = toDateKey(h.acquired_at);
       if (acquiredDate > date) continue; // holding didn't exist yet
 
-      const priceRec = asOf(priceByAsset.get(String(h.asset_id)), dayEnd);
+      const history = priceByAsset.get(String(h.asset_id));
+      const priceRec = asOf(history, dayEnd);
+      if (history && history.length > 0 && !priceRec) {
+        continue; // asset was not tracked yet on this date — no fake prices
+      }
       const price = priceRec ? priceRec.price : Number(h.current_price);
 
       const pair = `${String(h.currency_code)}->THB`;
