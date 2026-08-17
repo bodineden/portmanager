@@ -524,7 +524,9 @@ export async function listPortfolioValueSeries(): Promise<PortfolioValuePoint[]>
     points.push({ date, valueThb: Math.round(value * 100) / 100, holdingCount: counted });
   }
 
-  return points;
+  // drop dates with no holdings at all (e.g. 2024 seed-era price_history rows
+  // whose assets are deleted) — they are noise, not portfolio history
+  return points.filter((p) => p.holdingCount > 0);
 }
 
 export async function upsertAsset(input: {
