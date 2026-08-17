@@ -146,6 +146,18 @@ async function createSchema(sql: Sql) {
   `;
   await sql`ALTER TABLE investor ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ`;
   await sql`ALTER TABLE asset ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ`;
+  await sql`ALTER TABLE asset ADD COLUMN IF NOT EXISTS previous_price NUMERIC`;
+  // one-time backfill: previous = last history row before the last update
+  await sql`
+    UPDATE asset
+    SET previous_price = COALESCE((
+      SELECT price_history.price FROM price_history
+      WHERE price_history.asset_id = asset.id
+        AND price_history.recorded_at < asset.price_updated_at
+      ORDER BY price_history.recorded_at DESC LIMIT 1
+    ), current_price)
+    WHERE previous_price IS NULL
+  `;
 
   await seedDatabase(sql);
 }
@@ -257,16 +269,8 @@ export async function listAssets() {
       asset.current_price,
       asset.price_updated_at,
       COALESCE(asset.deleted_at::text, '') AS deleted_at,
-      COALESCE(previous.price, asset.current_price) AS previous_price
+      COALESCE(asset.previous_price, asset.current_price) AS previous_price
     FROM asset
-    LEFT JOIN LATERAL (
-      SELECT price
-      FROM price_history
-      WHERE price_history.asset_id = asset.id
-        AND price_history.recorded_at < asset.price_updated_at
-      ORDER BY recorded_at DESC
-      LIMIT 1
-    ) previous ON TRUE
     WHERE asset.deleted_at IS NULL
     ORDER BY asset.ticker
   `;
@@ -294,16 +298,8 @@ export async function listDeletedAssets() {
       asset.current_price,
       asset.price_updated_at,
       COALESCE(asset.deleted_at::text, '') AS deleted_at,
-      COALESCE(previous.price, asset.current_price) AS previous_price
+      COALESCE(asset.previous_price, asset.current_price) AS previous_price
     FROM asset
-    LEFT JOIN LATERAL (
-      SELECT price
-      FROM price_history
-      WHERE price_history.asset_id = asset.id
-        AND price_history.recorded_at < asset.price_updated_at
-      ORDER BY recorded_at DESC
-      LIMIT 1
-    ) previous ON TRUE
     WHERE asset.deleted_at IS NOT NULL
     ORDER BY asset.deleted_at DESC
   `;
@@ -435,12 +431,13 @@ export async function upsertAsset(input: {
   const ticker = input.ticker.trim().toUpperCase();
   const existing = await sql`SELECT id, current_price FROM asset WHERE ticker = ${ticker}`;
   const rows = await sql`
-    INSERT INTO asset (ticker, full_name, source_link, currency_code, current_price, price_updated_at)
-    VALUES (${ticker}, ${input.fullName}, ${input.sourceLink || null}, ${input.currencyCode}, ${input.currentPrice}, NOW())
+    INSERT INTO asset (ticker, full_name, source_link, currency_code, current_price, previous_price, price_updated_at)
+    VALUES (${ticker}, ${input.fullName}, ${input.sourceLink || null}, ${input.currencyCode}, ${input.currentPrice}, ${input.currentPrice}, NOW())
     ON CONFLICT (ticker) DO UPDATE SET
       full_name = EXCLUDED.full_name,
       source_link = EXCLUDED.source_link,
       currency_code = EXCLUDED.currency_code,
+      previous_price = asset.current_price,
       current_price = EXCLUDED.current_price,
       price_updated_at = NOW(),
       deleted_at = NULL
@@ -462,7 +459,7 @@ export async function updateAssetPrice(id: string, currentPrice: number) {
     return;
   }
 
-  await sql`UPDATE asset SET current_price = ${currentPrice}, price_updated_at = NOW() WHERE id = ${id}`;
+  await sql`UPDATE asset SET previous_price = current_price, current_price = ${currentPrice}, price_updated_at = NOW() WHERE id = ${id}`;
   await sql`INSERT INTO price_history (asset_id, price, recorded_at) VALUES (${id}, ${currentPrice}, NOW())`;
 }
 
