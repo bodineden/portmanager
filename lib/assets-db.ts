@@ -426,8 +426,14 @@ export async function listInvestorHoldings() {
   return rows.map(mapInvestorHolding);
 }
 
-function toDateKey(iso: string): string {
-  return iso.slice(0, 10);
+function toDateKey(value: string | Date): string {
+  // Neon returns timestamptz as Date objects and DATE as "YYYY-MM-DD" strings;
+  // never slice a String(Date) — it renders "Mon Aug 17 ..." and breaks keys.
+  return new Date(value).toISOString().slice(0, 10);
+}
+
+function toMs(value: string | Date): number {
+  return new Date(value).getTime();
 }
 
 export async function listPortfolioValueSeries(): Promise<PortfolioValuePoint[]> {
@@ -458,13 +464,13 @@ export async function listPortfolioValueSeries(): Promise<PortfolioValuePoint[]>
   for (const r of priceRows) {
     const key = String(r.asset_id);
     if (!priceByAsset.has(key)) priceByAsset.set(key, []);
-    priceByAsset.get(key)!.push({ t: new Date(String(r.recorded_at)).getTime(), price: Number(r.price) });
+    priceByAsset.get(key)!.push({ t: toMs(r.recorded_at), price: Number(r.price) });
   }
   const rateByPair = new Map<string, { t: number; rate: number }[]>();
   for (const r of rateRows) {
     const key = `${String(r.from_currency)}->${String(r.to_currency)}`;
     if (!rateByPair.has(key)) rateByPair.set(key, []);
-    rateByPair.get(key)!.push({ t: new Date(String(r.recorded_at)).getTime(), rate: Number(r.rate) });
+    rateByPair.get(key)!.push({ t: toMs(r.recorded_at), rate: Number(r.rate) });
   }
 
   function asOf<T extends { t: number }>(list: T[] | undefined, t: number): T | undefined {
@@ -487,9 +493,9 @@ export async function listPortfolioValueSeries(): Promise<PortfolioValuePoint[]>
 
   // series dates: every date that has price or FX data, plus today
   const dateSet = new Set<string>();
-  for (const r of priceRows) dateSet.add(toDateKey(String(r.recorded_at)));
-  for (const r of rateRows) dateSet.add(toDateKey(String(r.recorded_at)));
-  dateSet.add(toDateKey(new Date().toISOString()));
+  for (const r of priceRows) dateSet.add(toDateKey(r.recorded_at));
+  for (const r of rateRows) dateSet.add(toDateKey(r.recorded_at));
+  dateSet.add(toDateKey(new Date()));
   const dates = [...dateSet].sort();
 
   const points: PortfolioValuePoint[] = [];
@@ -498,7 +504,7 @@ export async function listPortfolioValueSeries(): Promise<PortfolioValuePoint[]>
     let value = 0;
     let counted = 0;
     for (const h of holdings) {
-      const acquiredDate = toDateKey(String(h.acquired_at));
+      const acquiredDate = toDateKey(h.acquired_at);
       if (acquiredDate > date) continue; // holding didn't exist yet
 
       const priceRec = asOf(priceByAsset.get(String(h.asset_id)), dayEnd);
