@@ -13,6 +13,7 @@ import {
   type InvestorHolding,
 } from "@/lib/assets-db";
 import { recoverInvestorAction, removeHoldingAction, removeInvestorAction, saveHoldingAction, saveInvestorAction } from "./actions";
+import { CsvExportButton } from "./csv-export-button";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -116,6 +117,7 @@ export default async function HolderListPage() {
               <h1 className="text-2xl font-bold tracking-normal text-slate-950">Holder List</h1>
             </div>
             <div className="flex flex-wrap items-center gap-4 text-sm text-slate-600">
+              <CsvExportButton holdings={holdings.map((holding) => ({ ticker: holding.ticker, name: holding.assetName, shares: holding.shares, currentPrice: holding.currentPrice, valueThb: holding.currentValueBase }))} />
               <Link href="/" className="rounded-md border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 shadow-sm transition hover:border-blue-200 hover:bg-blue-50">
                 Back to Home
               </Link>
