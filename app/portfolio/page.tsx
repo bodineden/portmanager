@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { AppSidebar } from "../components/app-sidebar";
-import { formatMoney, formatSignedMoney, isNeonConfigured, listPortfolioValueSeries } from "@/lib/assets-db";
+import { formatMoney, formatSignedMoney, isNeonConfigured, listInvestorHoldings, listPortfolioValueSeries } from "@/lib/assets-db";
 import { PortfolioChart } from "./portfolio-chart";
 
 export const dynamic = "force-dynamic";
@@ -25,11 +25,12 @@ export default async function PortfolioPage() {
   }
 
   const points = await listPortfolioValueSeries();
+  const holdings = await listInvestorHoldings();
+  const invested = holdings.reduce((sum, h) => sum + h.acquiredCost, 0);
 
   const latest = points.length > 0 ? points[points.length - 1].valueThb : 0;
-  const first = points.length > 0 ? points[0].valueThb : 0;
-  const change = latest - first;
-  const changePct = first !== 0 ? (change / first) * 100 : 0;
+  const change = latest - invested;
+  const changePct = invested !== 0 ? (change / invested) * 100 : 0;
 
   return (
     <main className="min-h-screen bg-[#f5f7fb] text-slate-950">
@@ -57,7 +58,7 @@ export default async function PortfolioPage() {
               <p className="mt-1 text-sm font-semibold text-slate-500">Latest tracked day</p>
             </div>
             <div className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
-              <p className="text-sm font-medium text-slate-500">Change vs. First Day</p>
+              <p className="text-sm font-medium text-slate-500">Return vs. Invested</p>
               <p className="mt-2 text-2xl font-bold tracking-normal text-slate-950">{formatSignedMoney(change, "THB")}</p>
               <p className={`mt-1 text-sm font-semibold ${change >= 0 ? "text-emerald-600" : "text-rose-600"}`}>
                 {changePct >= 0 ? "+" : ""}{changePct.toFixed(2)}%
