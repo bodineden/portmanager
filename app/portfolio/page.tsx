@@ -1,74 +1,10 @@
 import Link from "next/link";
 import { AppSidebar } from "../components/app-sidebar";
 import { formatMoney, formatSignedMoney, isNeonConfigured, listPortfolioValueSeries } from "@/lib/assets-db";
+import { PortfolioChart } from "./portfolio-chart";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
-
-const W = 900;
-const H = 320;
-const PAD = { top: 20, right: 24, bottom: 44, left: 64 };
-
-function buildChart(points: { date: string; valueThb: number }[]) {
-  const values = points.map((p) => p.valueThb);
-  let min = Math.min(...values);
-  let max = Math.max(...values);
-  if (min === max) {
-    min -= 1;
-    max += 1;
-  }
-  const pad = (max - min) * 0.08;
-  min -= pad;
-  max += pad;
-
-  const iw = W - PAD.left - PAD.right;
-  const ih = H - PAD.top - PAD.bottom;
-  const x = (i: number) => PAD.left + (points.length === 1 ? iw / 2 : (i / (points.length - 1)) * iw);
-  const y = (v: number) => PAD.top + (1 - (v - min) / (max - min)) * ih;
-
-  const path = points.map((p, i) => `${i === 0 ? "M" : "L"}${x(i).toFixed(1)},${y(p.valueThb).toFixed(1)}`).join(" ");
-  const area = `${path} L${x(points.length - 1).toFixed(1)},${(PAD.top + ih).toFixed(1)} L${x(0).toFixed(1)},${(PAD.top + ih).toFixed(1)} Z`;
-
-  // y gridlines: 5 nice-ish ticks
-  const ticks = 5;
-  const grid = [];
-  for (let t = 0; t <= ticks; t += 1) {
-    const v = min + ((max - min) * t) / ticks;
-    const gy = y(v);
-    grid.push(
-      <g key={t}>
-        <line x1={PAD.left} y1={gy} x2={W - PAD.right} y2={gy} stroke="#e2e8f0" strokeWidth={1} />
-        <text x={PAD.left - 8} y={gy + 4} textAnchor="end" className="fill-slate-400" fontSize={11}>
-          {formatCompact(v)}
-        </text>
-      </g>,
-    );
-  }
-
-  // x labels: ~6 dates spread evenly
-  const xLabels: React.ReactElement[] = [];
-  const step = Math.max(1, Math.ceil(points.length / 6));
-  points.forEach((p, i) => {
-    if (i % step !== 0 && i !== points.length - 1) return;
-    xLabels.push(
-      <text key={p.date} x={x(i)} y={H - PAD.bottom + 20} textAnchor="middle" className="fill-slate-400" fontSize={11}>
-        {shortDate(p.date)}
-      </text>,
-    );
-  });
-
-  const dots = points.map((p, i) => (
-    <circle key={p.date} cx={x(i)} cy={y(p.valueThb)} r={3.5} fill="#2563eb" stroke="#fff" strokeWidth={1.5} />
-  ));
-
-  return { area, path, grid, xLabels, dots };
-}
-
-function formatCompact(v: number) {
-  if (Math.abs(v) >= 1_000_000) return `${(v / 1_000_000).toFixed(1)}M`;
-  if (Math.abs(v) >= 1_000) return `${(v / 1_000).toFixed(0)}k`;
-  return v.toFixed(0);
-}
 
 function shortDate(iso: string) {
   const d = new Date(`${iso}T00:00:00Z`);
@@ -94,7 +30,6 @@ export default async function PortfolioPage() {
   const first = points.length > 0 ? points[0].valueThb : 0;
   const change = latest - first;
   const changePct = first !== 0 ? (change / first) * 100 : 0;
-  const { area, path, grid, xLabels, dots } = buildChart(points);
 
   return (
     <main className="min-h-screen bg-[#f5f7fb] text-slate-950">
@@ -144,27 +79,7 @@ export default async function PortfolioPage() {
             </div>
           </section>
 
-          <section className="mb-4 rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
-            <div className="mb-3 flex items-center justify-between">
-              <h2 className="text-lg font-bold text-slate-950">Value Over Time</h2>
-              <span className="rounded-full bg-blue-50 px-2.5 py-1 text-xs font-bold text-blue-700 ring-1 ring-blue-200">
-                {points.length} points
-              </span>
-            </div>
-            {points.length < 2 ? (
-              <p className="rounded-md border border-dashed border-slate-200 p-8 text-center text-sm text-slate-500">
-                Not enough history yet — the chart appears once two or more days are tracked. Daily price + FX cron keeps adding points.
-              </p>
-            ) : (
-              <svg viewBox={`0 0 ${W} ${H}`} className="w-full" role="img" aria-label="Portfolio value over time">
-                {grid}
-                <path d={area} fill="#2563eb" opacity={0.08} />
-                <path d={path} fill="none" stroke="#2563eb" strokeWidth={2.5} strokeLinejoin="round" strokeLinecap="round" />
-                {dots}
-                {xLabels}
-              </svg>
-            )}
-          </section>
+          <PortfolioChart points={points} />
 
           <section className="rounded-lg border border-slate-200 bg-white shadow-sm">
             <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">

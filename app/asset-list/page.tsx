@@ -11,9 +11,11 @@ import {
   listAssets,
   listCurrencies,
   listDeletedAssets,
+  listInvestorHoldings,
   listPriceHistory,
 } from "@/lib/assets-db";
 import { recoverAssetAction, removeAssetAction, saveAssetAction, updatePriceAction } from "./actions";
+import { AssetDashboard } from "./asset-dashboard";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -27,7 +29,27 @@ export default async function AssetListPage() {
   const deletedAssets = await listDeletedAssets();
   const currencies = await listCurrencies();
   const priceHistory = await listPriceHistory();
+  const holdings = await listInvestorHoldings();
   const metrics = getAssetMetrics(assets);
+  const dashboardAssets = assets.map((asset) => ({
+    id: asset.id,
+    ticker: asset.ticker,
+    fullName: asset.fullName,
+    currencyCode: asset.currencyCode,
+    currentPrice: asset.currentPrice,
+    previousPrice: asset.previousPrice,
+    valueThb: holdings.filter((holding) => holding.assetId === asset.id).reduce((sum, holding) => sum + holding.currentValueBase, 0),
+    updatedAt: formatDate(asset.priceUpdatedAt),
+  }));
+  const totalValue = holdings.reduce((sum, holding) => sum + holding.currentValueBase, 0);
+  const totalPreviousValue = holdings.reduce((sum, holding) => {
+    const asset = assets.find((candidate) => candidate.id === holding.assetId);
+    return sum + (asset && asset.currentPrice !== 0 ? holding.currentValueBase * asset.previousPrice / asset.currentPrice : holding.currentValueBase);
+  }, 0);
+  const totalChange = totalValue - totalPreviousValue;
+  const totalChangePct = totalPreviousValue === 0 ? 0 : totalChange / totalPreviousValue * 100;
+  const gainers = [...assets].filter((asset) => getDailyChangePercent(asset) >= 0).sort((a, b) => getDailyChangePercent(b) - getDailyChangePercent(a)).slice(0, 3);
+  const losers = [...assets].filter((asset) => getDailyChangePercent(asset) < 0).sort((a, b) => getDailyChangePercent(a) - getDailyChangePercent(b)).slice(0, 3);
 
   return (
     <main className="min-h-screen bg-[#f5f7fb] text-slate-950">
@@ -49,7 +71,14 @@ export default async function AssetListPage() {
             </div>
           </header>
 
-          <section className="mb-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+          <section className="mb-6 overflow-hidden rounded-2xl bg-slate-950 p-6 text-white shadow-lg sm:p-8">
+            <div className="flex flex-col gap-5 sm:flex-row sm:items-end sm:justify-between">
+              <div><p className="text-sm font-semibold text-blue-300">Portfolio value</p><p className="mt-2 text-3xl font-bold tracking-tight sm:text-4xl">{formatMoney(totalValue, "THB")}</p><p className="mt-2 text-sm text-slate-400">Across {holdings.length} holdings and {assets.length} tracked assets</p></div>
+              <div className={`rounded-xl px-4 py-3 ${totalChange >= 0 ? "bg-emerald-400/10 text-emerald-300" : "bg-rose-400/10 text-rose-300"}`}><p className="text-xs font-semibold uppercase tracking-wide">Daily change</p><p className="mt-1 text-xl font-bold">{totalChange >= 0 ? "+" : ""}{formatMoney(totalChange, "THB")} <span className="text-sm">({totalChangePct >= 0 ? "+" : ""}{totalChangePct.toFixed(2)}%)</span></p></div>
+            </div>
+          </section>
+
+          <section className="mb-6 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
             {metrics.map((metric) => (
               <div key={metric.label} className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
                 <p className="text-sm font-medium text-slate-500">{metric.label}</p>
@@ -59,42 +88,26 @@ export default async function AssetListPage() {
             ))}
           </section>
 
-          <div className="mb-4 grid gap-4 xl:grid-cols-[minmax(0,1.35fr)_minmax(360px,0.65fr)]">
-            <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
-              <div className="mb-4 flex items-center justify-between">
-                <h2 className="text-lg font-bold text-slate-950">Update Current Price</h2>
-                <span className="rounded-full bg-blue-50 px-2.5 py-1 text-xs font-bold text-blue-700 ring-1 ring-blue-200">PriceHistory</span>
-              </div>
-              <div className="grid gap-3 md:grid-cols-2">
-                {assets.map((asset) => (
-                  <form key={asset.id} action={updatePriceAction} className="flex items-center gap-3 rounded-md border border-slate-200 p-3">
-                    <input type="hidden" name="id" value={asset.id} />
-                    <div className="grid h-10 w-10 shrink-0 place-items-center rounded-md bg-blue-50 text-xs font-bold text-blue-700">{asset.ticker}</div>
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate text-sm font-semibold text-slate-950">{asset.fullName}</p>
-                      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-500">
-                        <span>{asset.currencyCode} / {formatDateTime(asset.priceUpdatedAt)}</span>
-                        {asset.sourceLink ? (
-                          <a href={asset.sourceLink} target="_blank" rel="noreferrer" className="font-bold text-blue-600">Open source</a>
-                        ) : (
-                          <span className="text-slate-400">No source link</span>
-                        )}
-                      </div>
+          <div className="mb-6 grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
+            <AssetDashboard assets={dashboardAssets} updatePriceAction={updatePriceAction} />
+            <div className="grid content-start gap-4">
+            <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+              <h2 className="text-lg font-bold">Biggest movers</h2>
+              <p className="mt-1 text-sm text-slate-500">Top daily gainers and losers</p>
+              <div className="mt-4 grid gap-5 sm:grid-cols-2 xl:grid-cols-1">
+                {[["Gainers", gainers], ["Losers", losers]].map(([label, items]) => (
+                  <div key={label as string}>
+                    <p className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-400">{label as string}</p>
+                    <div className="space-y-2">
+                      {(items as typeof assets).length === 0 ? <p className="text-sm text-slate-400">None today</p> : (items as typeof assets).map((asset) => {
+                        const change = getDailyChangePercent(asset);
+                        return <div key={asset.id} className="flex items-center justify-between"><p className="text-sm font-bold">{asset.ticker}</p><span className={`rounded-full px-2 py-1 text-xs font-bold ${change >= 0 ? "bg-emerald-50 text-emerald-700" : "bg-rose-50 text-rose-700"}`}>{change >= 0 ? "+" : ""}{change.toFixed(2)}%</span></div>;
+                      })}
                     </div>
-                    <input
-                      aria-label={`${asset.ticker} price`}
-                      name="currentPrice"
-                      defaultValue={asset.currentPrice.toFixed(2)}
-                      className="h-9 w-24 rounded-md border border-slate-200 px-2 text-right text-sm font-semibold"
-                    />
-                    <PendingButton className="h-9 rounded-md bg-blue-600 px-3 text-xs font-bold text-white transition hover:bg-blue-700" pendingLabel="Saving">
-                      Save
-                    </PendingButton>
-                  </form>
+                  </div>
                 ))}
               </div>
             </section>
-
             <section id="asset-form" className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
               <h2 className="mb-4 text-lg font-bold text-slate-950">Add / Edit Asset</h2>
               <form action={saveAssetAction}>
@@ -132,6 +145,7 @@ export default async function AssetListPage() {
                 </div>
               </form>
             </section>
+            </div>
           </div>
 
           <section className="rounded-lg border border-slate-200 bg-white shadow-sm">

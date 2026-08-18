@@ -14,6 +14,8 @@ As of: 2026-08-17
 - VUAG −84.67% change bug FIXED 2026-08-17: root cause was previous_price derived from price_history scan; now stored as column shifted atomically on save (commit ae8efcc)
 - FX regex hardened 2026-08-17: spread trap (0.00014 vs 0.85494) + sanity bounds in fetch_rates
 - Exchange rates refreshed 2026-08-17 12:33: USD/THB 33.14, GBP/THB 44.87, EUR/THB 38.34 + crosses. Holder value THB 138,249.81
+- Portfolio value time-series page added 2026-08-17 (/portfolio): daily total in THB from holding shares × as-of price × as-of FX, SVG chart + table. Verified current value matches holder list.
+- KNOWN: price_history contains polluted rows from bug era → chart spikes on Aug 6 (+86k, XTB widget trap: VUAG/USPY ~720) and Aug 16 (+64k, another bad write corrected Aug 17). Needs DB cleanup (delete bad rows) — requires DATABASE_URL access.
 
 ## Next actions
-- None urgent — prices + exchange rates both cron-updated daily (08:00 UTC)
+- Clean polluted price_history rows (Aug 6: VUAG 720.42, USPY 720.84; Aug 16: investigate + delete bad rows) — need DATABASE_URL from Vercel env
