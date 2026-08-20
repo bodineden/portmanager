@@ -145,23 +145,23 @@
   background-size: 32px 32px;
 }
 
-.portfolio-chart-host .plottable .axis line,
-.portfolio-chart-host .plottable .axis path {
+.portfolio-chart-host .axis line,
+.portfolio-chart-host .axis path {
   stroke: #334155;
 }
 
-.portfolio-chart-host .plottable .axis text {
+.portfolio-chart-host .axis text {
   fill: #7c8aa0;
   font-family: var(--font-geist-mono), ui-monospace, monospace;
   font-size: 9px;
 }
 
-.portfolio-chart-host .plottable .gridlines line {
+.portfolio-chart-host .gridlines line {
   stroke: #1e2635;
   stroke-opacity: 0.82;
 }
 
-.portfolio-chart-host .plottable .line-plot path {
+.portfolio-chart-host .line-plot path {
   vector-effect: non-scaling-stroke;
 }
 
