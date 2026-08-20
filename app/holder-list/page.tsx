@@ -14,6 +14,7 @@ import {
 } from "@/lib/assets-db";
 import { recoverInvestorAction, removeHoldingAction, removeInvestorAction, saveHoldingAction, saveInvestorAction } from "./actions";
 import { CsvExportButton } from "./csv-export-button";
+import "./holder-list.css";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -24,61 +25,92 @@ function InvestorGroup({ name, holdings }: { name: string; holdings: InvestorHol
   const gainLoss = currentValue - acquiredCost;
 
   return (
-    <section className="rounded-lg border border-slate-200 bg-white shadow-sm">
-      <div className="flex flex-col gap-2 border-b border-slate-200 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <h2 className="text-lg font-bold text-slate-950">{name}</h2>
-          <p className="text-sm text-slate-500">{holdings.length} active holdings / base currency THB</p>
+    <section className="holder-investor-panel panel">
+      <header className="holder-investor-header">
+        <div className="holder-investor-identity">
+          <span className="holder-investor-status" aria-hidden="true" />
+          <div>
+            <div className="holder-investor-title-line">
+              <h2>{name}</h2>
+              <span className="data-tag">ACTIVE</span>
+            </div>
+            <p>{holdings.length} active holdings <span aria-hidden="true">/</span> base currency THB</p>
+          </div>
         </div>
-        <div className="text-sm">
-          <span className="font-semibold text-slate-950">{formatMoney(currentValue, "THB")}</span>
-          <span className={`ml-3 font-semibold ${gainLoss >= 0 ? "text-emerald-600" : "text-rose-600"}`}>
-            {gainLoss >= 0 ? "+" : ""}
-            {formatMoney(gainLoss, "THB")}
-          </span>
-        </div>
-      </div>
-      <div className="overflow-x-auto">
-        <table className="w-full min-w-[1100px] text-left text-sm">
-          <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
+        <dl className="holder-investor-totals">
+          <div>
+            <dt>Current value</dt>
+            <dd className="numeric">{formatMoney(currentValue, "THB")}</dd>
+          </div>
+          <div>
+            <dt>Gain / loss</dt>
+            <dd className={`numeric ${gainLoss >= 0 ? "positive" : "negative"}`}>
+              {gainLoss >= 0 ? "+" : ""}
+              {formatMoney(gainLoss, "THB")}
+            </dd>
+          </div>
+        </dl>
+      </header>
+
+      <div className="holder-table-wrap">
+        <table className="holder-table data-table">
+          <thead>
             <tr>
-              {["Asset", "Shares", "Current Price", "FX to THB", "Acquired Cost (THB)", "Acquired At", "Current Value (THB)", "Gain / Loss (THB)", "Actions"].map((heading) => (
-                <th key={heading} className="border-b border-slate-200 px-4 py-3 font-bold">{heading}</th>
+              {[
+                "Asset",
+                "Shares",
+                "Current Price",
+                "FX to THB",
+                "Acquired Cost (THB)",
+                "Acquired At",
+                "Current Value (THB)",
+                "Gain / Loss (THB)",
+                "Actions",
+              ].map((heading) => (
+                <th key={heading}>{heading}</th>
               ))}
             </tr>
           </thead>
-          <tbody className="divide-y divide-slate-200">
-            {holdings.map((holding) => (
-              <tr key={holding.id} className="hover:bg-slate-50/80">
-                <td className="px-4 py-3">
-                  <p className="font-bold text-slate-950">{holding.ticker}</p>
-                  <p className="text-xs text-slate-500">{holding.assetName}</p>
-                </td>
-                <td className="px-4 py-3 font-semibold text-slate-950">{holding.shares.toLocaleString("en-US")}</td>
-                <td className="px-4 py-3 text-slate-700">{formatMoney(holding.currentPrice, holding.currencyCode)}</td>
-                <td className="px-4 py-3 text-slate-700">{holding.exchangeRateToBase.toLocaleString("en-US", { maximumFractionDigits: 6 })}</td>
-                <td className="px-4 py-3 text-slate-700">{formatMoney(holding.acquiredCost, "THB")}</td>
-                <td className="px-4 py-3 text-slate-600">{formatDateOnly(holding.acquiredAt)}</td>
-                <td className="px-4 py-3 font-semibold text-slate-950">{formatMoney(holding.currentValueBase, "THB")}</td>
-                <td className={`px-4 py-3 font-semibold ${holding.gainLoss >= 0 ? "text-emerald-600" : "text-rose-600"}`}>
-                  {holding.gainLoss >= 0 ? "+" : ""}
-                  {formatMoney(holding.gainLoss, "THB")}
-                </td>
-                <td className="px-4 py-3">
-                  <form action={removeHoldingAction}>
-                    <input type="hidden" name="id" value={holding.id} />
-                    <PendingButton
-                      aria-label={`Remove ${holding.ticker} from ${holding.investorName}`}
-                      title={`Remove ${holding.ticker} from ${holding.investorName}`}
-                      pendingLabel=""
-                      className="grid h-8 w-8 place-items-center rounded-md border border-slate-200 bg-white text-sm font-bold text-rose-500 shadow-sm transition hover:border-blue-200 hover:bg-blue-50"
-                    >
-                      x
-                    </PendingButton>
-                  </form>
-                </td>
+          <tbody>
+            {holdings.length === 0 ? (
+              <tr>
+                <td colSpan={9} className="holder-empty-cell">No active holdings assigned to this investor.</td>
               </tr>
-            ))}
+            ) : (
+              holdings.map((holding) => (
+                <tr key={holding.id}>
+                  <td>
+                    <div className="holder-asset-cell">
+                      <span className="ticker-badge">{holding.ticker}</span>
+                      <span title={holding.assetName}>{holding.assetName}</span>
+                    </div>
+                  </td>
+                  <td className="numeric holder-number-strong">{holding.shares.toLocaleString("en-US")}</td>
+                  <td className="numeric">{formatMoney(holding.currentPrice, holding.currencyCode)}</td>
+                  <td className="numeric">{holding.exchangeRateToBase.toLocaleString("en-US", { maximumFractionDigits: 6 })}</td>
+                  <td className="numeric">{formatMoney(holding.acquiredCost, "THB")}</td>
+                  <td className="numeric holder-date">{formatDateOnly(holding.acquiredAt)}</td>
+                  <td className="numeric holder-number-strong">{formatMoney(holding.currentValueBase, "THB")}</td>
+                  <td className={`numeric holder-number-strong ${holding.gainLoss >= 0 ? "positive" : "negative"}`}>
+                    {holding.gainLoss >= 0 ? "+" : ""}
+                    {formatMoney(holding.gainLoss, "THB")}
+                  </td>
+                  <td className="holder-action-cell">
+                    <form action={removeHoldingAction}>
+                      <input type="hidden" name="id" value={holding.id} />
+                      <PendingButton
+                        aria-label={`Remove ${holding.ticker} from ${holding.investorName}`}
+                        title={`Remove ${holding.ticker} from ${holding.investorName}`}
+                        pendingLabel=""
+                        className="pm-button pm-button-danger pm-button-icon holder-remove-button"
+                      >
+                        x
+                      </PendingButton>
+                    </form>
+                  </td>
+                </tr>
+              ))
+            )}
           </tbody>
         </table>
       </div>
@@ -106,158 +138,202 @@ export default async function HolderListPage() {
   }));
 
   return (
-    <main className="min-h-screen bg-[#f5f7fb] text-slate-950">
-      <div className="grid min-h-screen lg:grid-cols-[260px_1fr]">
+    <main className="app-root holder-page">
+      <div className="workspace-shell">
         <AppSidebar active="holder-list" />
 
-        <section className="min-w-0 px-4 py-5 sm:px-6 lg:px-8">
-          <header className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <p className="text-sm font-medium text-blue-600 lg:hidden">Portfolio Manager</p>
-              <h1 className="text-2xl font-bold tracking-normal text-slate-950">Holder List</h1>
+        <section className="workspace-main">
+          <header className="page-header">
+            <div className="page-title-group">
+              <p className="eyebrow">OWNERSHIP CONTROL</p>
+              <h1 className="page-title">Holder List</h1>
+              <p className="page-subtitle">Investor positions, acquisition basis, and THB valuation</p>
             </div>
-            <div className="flex flex-wrap items-center gap-4 text-sm text-slate-600">
+            <div className="header-tools">
+              <span className="header-status"><span className="status-light" aria-hidden="true" /> LIVE REGISTRY</span>
               <CsvExportButton holdings={holdings.map((holding) => ({ ticker: holding.ticker, name: holding.assetName, shares: holding.shares, currentPrice: holding.currentPrice, valueThb: holding.currentValueBase }))} />
-              <Link href="/" className="rounded-md border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 shadow-sm transition hover:border-blue-200 hover:bg-blue-50">
-                Back to Home
-              </Link>
-              <Link href="/exchange-rate" className="rounded-md border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 shadow-sm transition hover:border-blue-200 hover:bg-blue-50">
-                Exchange Rate
-              </Link>
-              <span>Investor Holding Management</span>
-              <Link href="/holder-list" aria-label="Refresh holders" title="Refresh holders" className="text-lg font-semibold text-slate-700">R</Link>
+              <Link href="/exchange-rate" className="toolbar-link">Exchange Rates</Link>
+              <Link href="/" className="toolbar-link">Home</Link>
+              <Link href="/holder-list" aria-label="Refresh holders" title="Refresh holders" className="refresh-link">R</Link>
             </div>
           </header>
 
-          <section className="mb-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-            {metrics.map((metric) => (
-              <div key={metric.label} className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
-                <p className="text-sm font-medium text-slate-500">{metric.label}</p>
-                <p className="mt-2 text-2xl font-bold tracking-normal text-slate-950">{metric.value}</p>
-                <p className={`mt-1 text-sm font-semibold ${metric.tone}`}>{metric.detail}</p>
-              </div>
-            ))}
-          </section>
+          <div className="page-content holder-content">
+            <section className="holder-kpi-grid" aria-label="Holder metrics">
+              {metrics.map((metric, index) => {
+                const tone = metric.tone.includes("rose") ? "negative" : metric.tone.includes("emerald") ? "positive" : "muted";
 
-          <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_390px]">
-            <section className="space-y-4">
-              {holdingsByInvestor.map(({ investor, holdings: investorHoldings }) => (
-                <InvestorGroup key={investor.id} name={investor.name} holdings={investorHoldings} />
-              ))}
+                return (
+                  <article key={metric.label} className="holder-kpi panel">
+                    <div className="holder-kpi-heading">
+                      <p>{metric.label}</p>
+                      <span aria-hidden="true">0{index + 1}</span>
+                    </div>
+                    <p className="holder-kpi-value metric-value">{metric.value}</p>
+                    <p className={`holder-kpi-detail ${tone}`}>{metric.detail}</p>
+                  </article>
+                );
+              })}
             </section>
 
-            <aside className="grid content-start gap-4">
-              <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
-                <div className="mb-4 flex items-center justify-between">
-                  <h2 className="text-lg font-bold text-slate-950">Investors</h2>
-                  <span className="rounded-full bg-blue-50 px-2.5 py-1 text-xs font-bold text-blue-700 ring-1 ring-blue-200">{investors.length} active</span>
+            <div className="holder-layout">
+              <section className="holder-investor-stack" aria-label="Investor holdings">
+                <div className="holder-section-label">
+                  <div>
+                    <p className="eyebrow">POSITION REGISTER</p>
+                    <h2>Holdings by investor</h2>
+                  </div>
+                  <span className="panel-count">{holdings.length} POSITIONS</span>
                 </div>
-                <div className="space-y-3">
-                  {investors.map((investor) => (
-                    <div key={investor.id} className="flex items-center gap-3 rounded-md border border-slate-200 p-3">
-                      <div className="grid h-10 w-10 place-items-center rounded-md bg-blue-50 text-xs font-bold text-blue-700">{investor.name.slice(0, 1)}</div>
-                      <div className="min-w-0 flex-1">
-                        <p className="truncate text-sm font-semibold text-slate-950">{investor.name}</p>
-                        <p className="text-xs text-slate-500">Investor.id: {investor.id.slice(0, 8)}</p>
-                      </div>
-                      <form action={removeInvestorAction}>
-                        <input type="hidden" name="id" value={investor.id} />
-                        <PendingButton
-                          aria-label={`Remove ${investor.name}`}
-                          title={`Remove ${investor.name}`}
-                          pendingLabel=""
-                          className="grid h-8 w-8 place-items-center rounded-md border border-slate-200 bg-white text-sm font-bold text-rose-500 shadow-sm transition hover:border-blue-200 hover:bg-blue-50"
-                        >
-                          x
-                        </PendingButton>
-                      </form>
+
+                {holdingsByInvestor.length === 0 ? (
+                  <div className="holder-empty-panel panel">
+                    <span className="holder-empty-mark" aria-hidden="true">00</span>
+                    <div>
+                      <h3>No active investors</h3>
+                      <p>Add an investor from the control panel to begin assigning holdings.</p>
                     </div>
-                  ))}
-                </div>
-              </section>
-
-              <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
-                <h2 className="mb-4 text-lg font-bold text-slate-950">Add / Edit Investor</h2>
-                <form action={saveInvestorAction}>
-                  <div className="grid gap-3">
-                    <label>
-                      <span className="mb-1 block text-xs font-bold uppercase tracking-wide text-slate-500">Investor Name</span>
-                      <input name="name" placeholder="Alice Johnson" required className="h-10 w-full rounded-md border border-slate-200 bg-slate-50 px-3 text-sm outline-none transition focus:border-blue-400 focus:bg-white" />
-                    </label>
                   </div>
-                  <PendingButton className="mt-4 h-10 w-full rounded-md bg-blue-600 text-sm font-semibold text-white transition hover:bg-blue-700" pendingLabel="Saving Investor">
-                    Save Investor
-                  </PendingButton>
-                </form>
+                ) : (
+                  holdingsByInvestor.map(({ investor, holdings: investorHoldings }) => (
+                    <InvestorGroup key={investor.id} name={investor.name} holdings={investorHoldings} />
+                  ))
+                )}
               </section>
 
-              <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
-                <h2 className="mb-4 text-lg font-bold text-slate-950">Add Asset to Holder</h2>
-                <form action={saveHoldingAction}>
-                  <div className="grid gap-3">
-                    <label>
-                      <span className="mb-1 block text-xs font-bold uppercase tracking-wide text-slate-500">Investor</span>
-                      <select name="investorId" className="h-10 w-full rounded-md border border-slate-200 bg-slate-50 px-3 text-sm outline-none transition focus:border-blue-400 focus:bg-white">
-                        {investors.map((investor) => (
-                          <option key={investor.id} value={investor.id}>{investor.name}</option>
-                        ))}
-                      </select>
-                    </label>
-                    <label>
-                      <span className="mb-1 block text-xs font-bold uppercase tracking-wide text-slate-500">Asset</span>
-                      <select name="assetId" className="h-10 w-full rounded-md border border-slate-200 bg-slate-50 px-3 text-sm outline-none transition focus:border-blue-400 focus:bg-white">
-                        {assets.map((asset) => (
-                          <option key={asset.id} value={asset.id}>{asset.ticker} - {asset.fullName}</option>
-                        ))}
-                      </select>
-                    </label>
-                    <label>
-                      <span className="mb-1 block text-xs font-bold uppercase tracking-wide text-slate-500">Shares</span>
-                      <input name="shares" placeholder="100" required inputMode="decimal" className="h-10 w-full rounded-md border border-slate-200 bg-slate-50 px-3 text-sm outline-none transition focus:border-blue-400 focus:bg-white" />
-                    </label>
-                    <label>
-                      <span className="mb-1 block text-xs font-bold uppercase tracking-wide text-slate-500">Acquired Cost (THB)</span>
-                      <input name="acquiredCost" placeholder="25000" required inputMode="decimal" className="h-10 w-full rounded-md border border-slate-200 bg-slate-50 px-3 text-sm outline-none transition focus:border-blue-400 focus:bg-white" />
-                    </label>
-                    <label>
-                      <span className="mb-1 block text-xs font-bold uppercase tracking-wide text-slate-500">Acquired At</span>
-                      <input name="acquiredAt" type="date" required className="h-10 w-full rounded-md border border-slate-200 bg-slate-50 px-3 text-sm outline-none transition focus:border-blue-400 focus:bg-white" />
-                    </label>
+              <aside className="holder-control-stack">
+                <section className="holder-side-panel panel">
+                  <div className="panel-header">
+                    <div>
+                      <p className="eyebrow">REGISTRY</p>
+                      <h2 className="panel-title">Investors</h2>
+                    </div>
+                    <span className="panel-count">{investors.length} ACTIVE</span>
                   </div>
-                  <PendingButton className="mt-4 h-10 w-full rounded-md bg-blue-600 text-sm font-semibold text-white transition hover:bg-blue-700" pendingLabel="Saving Holding">
-                    Save Holding
-                  </PendingButton>
-                </form>
-              </section>
-
-              <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
-                <div className="mb-4 flex items-center justify-between">
-                  <h2 className="text-lg font-bold text-slate-950">Deleted Investors</h2>
-                  <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-bold text-slate-600">{deletedInvestors.length} recoverable</span>
-                </div>
-                <div className="space-y-3">
-                  {deletedInvestors.length === 0 ? (
-                    <p className="rounded-md border border-dashed border-slate-200 p-4 text-sm text-slate-500">No deleted investors to recover.</p>
-                  ) : (
-                    deletedInvestors.map((investor) => (
-                      <div key={investor.id} className="flex items-center gap-3 rounded-md border border-slate-200 p-3">
-                        <div className="grid h-10 w-10 place-items-center rounded-md bg-slate-100 text-xs font-bold text-slate-700">{investor.name.slice(0, 1)}</div>
-                        <div className="min-w-0 flex-1">
-                          <p className="truncate text-sm font-semibold text-slate-950">{investor.name}</p>
-                          <p className="text-xs text-slate-500">Deleted investor</p>
+                  <div className="holder-roster panel-body">
+                    {investors.length === 0 ? (
+                      <p className="holder-empty-note">No active investors in the registry.</p>
+                    ) : (
+                      investors.map((investor) => (
+                        <div key={investor.id} className="holder-person-row">
+                          <span className="holder-person-mark" aria-hidden="true">{investor.name.slice(0, 1)}</span>
+                          <div className="holder-person-copy">
+                            <strong title={investor.name}>{investor.name}</strong>
+                            <small className="mono">ID {investor.id.slice(0, 8).toUpperCase()}</small>
+                          </div>
+                          <form action={removeInvestorAction}>
+                            <input type="hidden" name="id" value={investor.id} />
+                            <PendingButton
+                              aria-label={`Remove ${investor.name}`}
+                              title={`Remove ${investor.name}`}
+                              pendingLabel=""
+                              className="pm-button pm-button-danger pm-button-icon holder-remove-button"
+                            >
+                              x
+                            </PendingButton>
+                          </form>
                         </div>
-                        <form action={recoverInvestorAction}>
-                          <input type="hidden" name="id" value={investor.id} />
-                          <PendingButton className="h-9 rounded-md border border-slate-200 px-3 text-xs font-bold text-slate-700 transition hover:bg-slate-50" pendingLabel="Restoring">
-                            Recover
-                          </PendingButton>
-                        </form>
-                      </div>
-                    ))
-                  )}
-                </div>
-              </section>
-            </aside>
+                      ))
+                    )}
+                  </div>
+                </section>
+
+                <section className="holder-side-panel panel">
+                  <div className="panel-header">
+                    <div>
+                      <p className="eyebrow">IDENTITY</p>
+                      <h2 className="panel-title">Add / Edit Investor</h2>
+                    </div>
+                    <span className="data-tag">PERSON</span>
+                  </div>
+                  <form action={saveInvestorAction} className="holder-form panel-body">
+                    <label className="holder-field">
+                      <span className="holder-field-label">Investor Name</span>
+                      <input name="name" placeholder="Alice Johnson" required className="bp6-input holder-input" />
+                    </label>
+                    <PendingButton className="pm-button pm-button-primary holder-submit" pendingLabel="Saving Investor">
+                      Save Investor
+                    </PendingButton>
+                  </form>
+                </section>
+
+                <section className="holder-side-panel panel">
+                  <div className="panel-header">
+                    <div>
+                      <p className="eyebrow">ALLOCATION</p>
+                      <h2 className="panel-title">Add Asset to Holder</h2>
+                    </div>
+                    <span className="data-tag">POSITION</span>
+                  </div>
+                  <form action={saveHoldingAction} className="holder-form panel-body">
+                    <div className="holder-form-grid">
+                      <label className="holder-field holder-field-wide">
+                        <span className="holder-field-label">Investor</span>
+                        <select name="investorId" className="holder-input holder-select">
+                          {investors.map((investor) => (
+                            <option key={investor.id} value={investor.id}>{investor.name}</option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="holder-field holder-field-wide">
+                        <span className="holder-field-label">Asset</span>
+                        <select name="assetId" className="holder-input holder-select">
+                          {assets.map((asset) => (
+                            <option key={asset.id} value={asset.id}>{asset.ticker} - {asset.fullName}</option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="holder-field">
+                        <span className="holder-field-label">Shares</span>
+                        <input name="shares" placeholder="100" required inputMode="decimal" className="bp6-input holder-input numeric" />
+                      </label>
+                      <label className="holder-field">
+                        <span className="holder-field-label">Acquired Cost (THB)</span>
+                        <input name="acquiredCost" placeholder="25000" required inputMode="decimal" className="bp6-input holder-input numeric" />
+                      </label>
+                      <label className="holder-field holder-field-wide">
+                        <span className="holder-field-label">Acquired At</span>
+                        <input name="acquiredAt" type="date" required className="bp6-input holder-input numeric" />
+                      </label>
+                    </div>
+                    <PendingButton className="pm-button pm-button-primary holder-submit" pendingLabel="Saving Holding">
+                      Save Holding
+                    </PendingButton>
+                  </form>
+                </section>
+
+                <section className="holder-side-panel panel">
+                  <div className="panel-header">
+                    <div>
+                      <p className="eyebrow">RECOVERY QUEUE</p>
+                      <h2 className="panel-title">Deleted Investors</h2>
+                    </div>
+                    <span className="panel-count">{deletedInvestors.length} RECOVERABLE</span>
+                  </div>
+                  <div className="holder-roster panel-body">
+                    {deletedInvestors.length === 0 ? (
+                      <p className="holder-empty-note">No deleted investors to recover.</p>
+                    ) : (
+                      deletedInvestors.map((investor) => (
+                        <div key={investor.id} className="holder-person-row is-deleted">
+                          <span className="holder-person-mark" aria-hidden="true">{investor.name.slice(0, 1)}</span>
+                          <div className="holder-person-copy">
+                            <strong title={investor.name}>{investor.name}</strong>
+                            <small>DELETED INVESTOR</small>
+                          </div>
+                          <form action={recoverInvestorAction}>
+                            <input type="hidden" name="id" value={investor.id} />
+                            <PendingButton className="pm-button holder-recover-button" pendingLabel="Restoring">
+                              Recover
+                            </PendingButton>
+                          </form>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </section>
+              </aside>
+            </div>
           </div>
         </section>
       </div>
@@ -267,14 +343,15 @@ export default async function HolderListPage() {
 
 function NeonSetupPage({ title }: { title: string }) {
   return (
-    <main className="min-h-screen bg-[#f5f7fb] px-6 py-8 text-slate-950">
-      <section className="mx-auto max-w-3xl rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
-        <Link href="/" className="text-sm font-semibold text-blue-600">Back to Home</Link>
-        <h1 className="mt-4 text-2xl font-bold">{title}</h1>
-        <p className="mt-3 text-sm leading-6 text-slate-600">
-          Neon is enabled in the code, but `DATABASE_URL` is not set yet. Add your Neon Postgres connection string to `.env.local`,
-          then restart the dev server.
+    <main className="setup-canvas holder-setup">
+      <section className="setup-panel">
+        <p className="eyebrow">DATA CONNECTION REQUIRED</p>
+        <h1>{title}</h1>
+        <p>
+          Neon is enabled in the code, but <code>DATABASE_URL</code> is not set yet. Add your Neon Postgres connection string to <code>.env.local</code>,
+          then restart the development server.
         </p>
+        <Link href="/" className="toolbar-link holder-setup-link">Back to Home</Link>
       </section>
     </main>
   );

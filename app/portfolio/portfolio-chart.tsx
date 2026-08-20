@@ -1,70 +1,177 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { Button, ButtonGroup, Icon } from "@blueprintjs/core";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 type Point = { date: string; valueThb: number };
 type Range = "1M" | "3M" | "6M" | "ALL";
-const W = 900;
-const H = 320;
-const PAD = { top: 20, right: 24, bottom: 44, left: 64 };
 
-function compact(value: number) {
-  if (Math.abs(value) >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
-  if (Math.abs(value) >= 1_000) return `${(value / 1_000).toFixed(0)}k`;
-  return value.toFixed(0);
+const ranges: Range[] = ["1M", "3M", "6M", "ALL"];
+
+function dateValue(date: string) {
+  return new Date(`${date}T00:00:00Z`);
 }
 
-function label(date: string) {
-  return new Date(`${date}T00:00:00Z`).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+function compactNumber(value: number) {
+  return new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 }).format(value);
+}
+
+function pointLabel(point: Point) {
+  const date = new Intl.DateTimeFormat("en-GB", { day: "2-digit", month: "short", year: "numeric", timeZone: "UTC" }).format(dateValue(point.date));
+  const value = new Intl.NumberFormat("en-US", { style: "currency", currency: "THB", maximumFractionDigits: 0 }).format(point.valueThb);
+  return `${date} · ${value}`;
 }
 
 export function PortfolioChart({ points }: { points: Point[] }) {
   const [range, setRange] = useState<Range>("ALL");
+  const [chartError, setChartError] = useState("");
+  const target = useRef<HTMLDivElement>(null);
+
   const selected = useMemo(() => {
     if (range === "ALL" || points.length === 0) return points;
-    const latest = new Date(`${points.at(-1)!.date}T00:00:00Z`);
-    latest.setUTCMonth(latest.getUTCMonth() - Number.parseInt(range));
-    return points.filter((point) => new Date(`${point.date}T00:00:00Z`) >= latest);
+    const latest = dateValue(points.at(-1)!.date);
+    latest.setUTCMonth(latest.getUTCMonth() - Number.parseInt(range, 10));
+    return points.filter((point) => dateValue(point.date) >= latest);
   }, [points, range]);
 
   const monthly = useMemo(() => {
     const groups = new Map<string, Point[]>();
-    selected.forEach((point) => { const key = point.date.slice(0, 7); groups.set(key, [...(groups.get(key) ?? []), point]); });
-    return [...groups.values()].map((items) => ({ date: items[Math.floor(items.length / 2)].date, valueThb: items.reduce((sum, item) => sum + item.valueThb, 0) / items.length }));
+    selected.forEach((point) => {
+      const key = point.date.slice(0, 7);
+      groups.set(key, [...(groups.get(key) ?? []), point]);
+    });
+    return [...groups.values()].map((items) => ({
+      date: items[Math.floor(items.length / 2)].date,
+      valueThb: items.reduce((sum, item) => sum + item.valueThb, 0) / items.length,
+    }));
   }, [selected]);
 
-  const allValues = [...selected, ...monthly].map((point) => point.valueThb);
-  let min = Math.min(...allValues);
-  let max = Math.max(...allValues);
-  if (min === max) { min -= 1; max += 1; }
-  const padding = Number.isFinite(max - min) ? (max - min) * 0.08 : 1;
-  min -= padding; max += padding;
-  const innerWidth = W - PAD.left - PAD.right;
-  const innerHeight = H - PAD.top - PAD.bottom;
-  const timestamp = (date: string) => new Date(`${date}T00:00:00Z`).getTime();
-  const start = selected.length ? timestamp(selected[0].date) : 0;
-  const end = selected.length ? timestamp(selected.at(-1)!.date) : 1;
-  const x = (date: string) => PAD.left + (start === end ? innerWidth / 2 : (timestamp(date) - start) / (end - start) * innerWidth);
-  const y = (value: number) => PAD.top + (1 - (value - min) / (max - min)) * innerHeight;
-  const path = (items: Point[]) => items.map((point, index) => `${index ? "L" : "M"}${x(point.date).toFixed(1)},${y(point.valueThb).toFixed(1)}`).join(" ");
-  const dailyPath = path(selected);
-  const area = selected.length ? `${dailyPath} L${x(selected.at(-1)!.date)},${PAD.top + innerHeight} L${x(selected[0].date)},${PAD.top + innerHeight} Z` : "";
+  useEffect(() => {
+    if (!target.current || selected.length < 2) return undefined;
+
+    const host = target.current;
+    let disposed = false;
+    let release: (() => void) | undefined;
+    setChartError("");
+
+    async function renderChart() {
+      try {
+        const Plottable = await import("plottable");
+        if (disposed || !host.isConnected) return;
+
+        host.replaceChildren();
+        const xScale = new Plottable.Scales.Time();
+        const yScale = new Plottable.Scales.Linear();
+        const dailyDataset = new Plottable.Dataset(selected);
+        const monthlyDataset = new Plottable.Dataset(monthly);
+
+        const dailyLine = new Plottable.Plots.Line<Date>()
+          .addDataset(dailyDataset)
+          .x((point: Point) => dateValue(point.date), xScale)
+          .y((point: Point) => Number(point.valueThb), yScale)
+          .attr("stroke", "#38BDF8")
+          .attr("stroke-width", 2.5);
+
+        const dailyDots = new Plottable.Plots.Scatter<Date, number>()
+          .addDataset(dailyDataset)
+          .x((point: Point) => dateValue(point.date), xScale)
+          .y((point: Point) => Number(point.valueThb), yScale)
+          .size(5)
+          .attr("fill", "#38BDF8")
+          .attr("stroke", "#0B0E14")
+          .attr("stroke-width", 1.5);
+
+        const monthlyLine = new Plottable.Plots.Line<Date>()
+          .addDataset(monthlyDataset)
+          .x((point: Point) => dateValue(point.date), xScale)
+          .y((point: Point) => Number(point.valueThb), yScale)
+          .attr("stroke", "#FBBF24")
+          .attr("stroke-width", 2.25)
+          .attr("stroke-dasharray", "7 5");
+
+        const gridlines = new Plottable.Components.Gridlines(xScale, yScale);
+        const plotGroup = new Plottable.Components.Group([gridlines, dailyLine, monthlyLine, dailyDots]);
+        const xAxis = new Plottable.Axes.Time(xScale, "bottom");
+        const yAxis = new Plottable.Axes.Numeric(yScale, "left").formatter(compactNumber);
+        const chart = new Plottable.Components.Table([[yAxis, plotGroup], [null, xAxis]]);
+
+        chart.renderTo(host);
+        host.dataset.chartReady = "true";
+
+        const tooltip = document.createElement("div");
+        tooltip.className = "portfolio-chart-tooltip";
+        tooltip.setAttribute("role", "tooltip");
+        host.appendChild(tooltip);
+
+        const pointer = new Plottable.Interactions.Pointer();
+        pointer.attachTo(dailyDots);
+        pointer.onPointerMove((position) => {
+          const entity = dailyDots.entityNearest(position);
+          if (!entity) {
+            tooltip.classList.remove("is-visible");
+            return;
+          }
+          tooltip.textContent = pointLabel(entity.datum);
+          tooltip.style.left = `${Math.min(host.clientWidth - 12, Math.max(58, entity.position.x + 48))}px`;
+          tooltip.style.top = `${Math.max(12, entity.position.y - 4)}px`;
+          tooltip.classList.add("is-visible");
+        });
+        pointer.onPointerExit(() => tooltip.classList.remove("is-visible"));
+
+        const observer = new ResizeObserver(() => chart.redraw());
+        observer.observe(host);
+
+        release = () => {
+          pointer.detachFrom(dailyDots);
+          observer.disconnect();
+          tooltip.remove();
+          delete host.dataset.chartReady;
+          chart.destroy();
+        };
+
+        if (disposed) release();
+      } catch {
+        if (!disposed) setChartError("The chart engine could not render this series.");
+      }
+    }
+
+    void renderChart();
+    return () => {
+      disposed = true;
+      release?.();
+    };
+  }, [monthly, selected]);
+
+  const latest = selected.at(-1);
+  const earliest = selected[0];
+  const ariaLabel = selected.length > 0
+    ? `Portfolio value over ${range === "ALL" ? "all time" : range}, from ${pointLabel(earliest)} to ${pointLabel(latest!)}, with a dashed monthly average trend.`
+    : `No portfolio history for ${range === "ALL" ? "all time" : range}.`;
 
   return (
-    <section className="mb-4 rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-      <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div><h2 className="text-lg font-bold text-slate-950">Value over time</h2><div className="mt-1 flex gap-4 text-xs font-semibold"><span className="text-blue-600">— Daily value</span><span className="text-amber-600">— Monthly average</span></div></div>
-        <div className="inline-flex self-start rounded-lg bg-slate-100 p-1" aria-label="Chart range">
-          {(["1M", "3M", "6M", "ALL"] as Range[]).map((option) => <button key={option} type="button" onClick={() => setRange(option)} className={`rounded-md px-3 py-1.5 text-xs font-bold ${range === option ? "bg-white text-blue-700 shadow-sm" : "text-slate-500 hover:text-slate-800"}`}>{option}</button>)}
+    <section className="panel portfolio-chart-panel">
+      <div className="portfolio-chart-header">
+        <div>
+          <p className="eyebrow">VALUE SERIES / THB</p>
+          <h2 className="panel-title">Value over time</h2>
+          <div className="chart-legend" aria-label="Chart legend">
+            <span><i className="legend-line daily" /> Daily portfolio total</span>
+            <span><i className="legend-line monthly" /> Monthly average</span>
+          </div>
         </div>
+        <ButtonGroup className="range-selector" aria-label="Chart range" minimal>
+          {ranges.map((option) => (
+            <Button key={option} type="button" active={range === option} onClick={() => setRange(option)} text={option} aria-pressed={range === option} />
+          ))}
+        </ButtonGroup>
       </div>
-      {selected.length < 2 ? <p className="rounded-lg border border-dashed border-slate-200 p-10 text-center text-sm text-slate-500">Not enough history in this range. Choose a longer range or wait for more daily cron updates.</p> : (
-        <div className="overflow-x-auto"><svg viewBox={`0 0 ${W} ${H}`} className="min-w-[640px] w-full" role="img" aria-label={`Portfolio value over ${range === "ALL" ? "all time" : range}`}>
-          {Array.from({ length: 6 }, (_, index) => { const value = min + (max - min) * index / 5; const gy = y(value); return <g key={index}><line x1={PAD.left} y1={gy} x2={W - PAD.right} y2={gy} stroke="#e2e8f0" /><text x={PAD.left - 8} y={gy + 4} textAnchor="end" fill="#94a3b8" fontSize="11">{compact(value)}</text></g>; })}
-          <path d={area} fill="#2563eb" opacity=".08" /><path d={dailyPath} fill="none" stroke="#2563eb" strokeWidth="2.5" strokeLinejoin="round" />
-          {monthly.length > 1 ? <path d={path(monthly)} fill="none" stroke="#d97706" strokeWidth="2.5" strokeDasharray="7 5" strokeLinecap="round" /> : null}
-          {selected.filter((_, index) => index % Math.max(1, Math.ceil(selected.length / 6)) === 0 || index === selected.length - 1).map((point) => <text key={point.date} x={x(point.date)} y={H - 18} textAnchor="middle" fill="#94a3b8" fontSize="11">{label(point.date)}</text>)}
-        </svg></div>
+
+      {selected.length < 2 ? (
+        <div className="portfolio-chart-empty"><Icon icon="timeline-line-chart" size={24} /><span>Not enough history in this range.</span><small>Choose a longer range or wait for more daily price updates.</small></div>
+      ) : chartError ? (
+        <div className="portfolio-chart-empty is-error"><Icon icon="error" size={24} /><span>{chartError}</span></div>
+      ) : (
+        <div ref={target} className="portfolio-chart-host" role="img" aria-label={ariaLabel} data-range={range} />
       )}
     </section>
   );

@@ -16,9 +16,17 @@ import {
 } from "@/lib/assets-db";
 import { recoverAssetAction, removeAssetAction, saveAssetAction, updatePriceAction } from "./actions";
 import { AssetDashboard } from "./asset-dashboard";
+import "./asset-list.css";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
+
+function metricToneClass(tone: string) {
+  if (tone.includes("rose")) return "negative";
+  if (tone.includes("emerald")) return "positive";
+  if (tone.includes("blue")) return "accent";
+  return "muted";
+}
 
 export default async function AssetListPage() {
   if (!isNeonConfigured()) {
@@ -50,150 +58,196 @@ export default async function AssetListPage() {
   const totalChangePct = totalPreviousValue === 0 ? 0 : totalChange / totalPreviousValue * 100;
   const gainers = [...assets].filter((asset) => getDailyChangePercent(asset) >= 0).sort((a, b) => getDailyChangePercent(b) - getDailyChangePercent(a)).slice(0, 3);
   const losers = [...assets].filter((asset) => getDailyChangePercent(asset) < 0).sort((a, b) => getDailyChangePercent(a) - getDailyChangePercent(b)).slice(0, 3);
+  const moverGroups = [
+    { label: "Gainers", items: gainers, tone: "positive" },
+    { label: "Losers", items: losers, tone: "negative" },
+  ] as const;
 
   return (
-    <main className="min-h-screen bg-[#f5f7fb] text-slate-950">
-      <div className="grid min-h-screen lg:grid-cols-[260px_1fr]">
-        <AppSidebar active="asset-list" />
+    <main className="workspace-shell asset-list-shell">
+      <AppSidebar active="asset-list" />
 
-        <section className="min-w-0 px-4 py-5 sm:px-6 lg:px-8">
-          <header className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <p className="text-sm font-medium text-blue-600 lg:hidden">Portfolio Manager</p>
-              <h1 className="text-2xl font-bold tracking-normal text-slate-950">Asset List</h1>
-            </div>
-            <div className="flex flex-wrap items-center gap-4 text-sm text-slate-600">
-              <Link href="/" className="rounded-md border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 shadow-sm transition hover:border-blue-200 hover:bg-blue-50">
-                Back to Home
-              </Link>
-              <span>Last updated from Neon</span>
-              <Link href="/asset-list" aria-label="Refresh prices" title="Refresh prices" className="text-lg font-semibold text-slate-700">R</Link>
-            </div>
-          </header>
+      <section className="workspace-main">
+        <header className="page-header">
+          <div className="page-title-group">
+            <p className="eyebrow">Market operations / Asset intelligence</p>
+            <h1 className="page-title">Asset List</h1>
+            <p className="page-subtitle">Price control, market movement, and registry oversight</p>
+          </div>
+          <div className="header-tools">
+            <Link href="/" className="toolbar-link">Home</Link>
+            <span className="header-meta"><span className="status-light" aria-hidden="true" />Neon ledger online</span>
+            <Link href="/asset-list" aria-label="Refresh prices" title="Refresh prices" className="refresh-link">R</Link>
+          </div>
+        </header>
 
-          <section className="mb-6 overflow-hidden rounded-2xl bg-slate-950 p-6 text-white shadow-lg sm:p-8">
-            <div className="flex flex-col gap-5 sm:flex-row sm:items-end sm:justify-between">
-              <div><p className="text-sm font-semibold text-blue-300">Portfolio value</p><p className="mt-2 text-3xl font-bold tracking-tight sm:text-4xl">{formatMoney(totalValue, "THB")}</p><p className="mt-2 text-sm text-slate-400">Across {holdings.length} holdings and {assets.length} tracked assets</p></div>
-              <div className={`rounded-xl px-4 py-3 ${totalChange >= 0 ? "bg-emerald-400/10 text-emerald-300" : "bg-rose-400/10 text-rose-300"}`}><p className="text-xs font-semibold uppercase tracking-wide">Daily change</p><p className="mt-1 text-xl font-bold">{totalChange >= 0 ? "+" : ""}{formatMoney(totalChange, "THB")} <span className="text-sm">({totalChangePct >= 0 ? "+" : ""}{totalChangePct.toFixed(2)}%)</span></p></div>
+        <div className="page-content asset-list-content">
+          <section className="asset-list-overview">
+            <div className="asset-overview-copy">
+              <p className="eyebrow">Consolidated portfolio value</p>
+              <p className="asset-overview-value numeric">{formatMoney(totalValue, "THB")}</p>
+              <p className="asset-overview-meta">
+                <span><strong className="numeric">{holdings.length}</strong> active holdings</span>
+                <span><strong className="numeric">{assets.length}</strong> tracked assets</span>
+                <span>Base currency <strong className="mono">THB</strong></span>
+              </p>
+            </div>
+            <div className={`asset-daily-change ${totalChange >= 0 ? "is-positive" : "is-negative"}`}>
+              <span>Daily change</span>
+              <strong className="numeric">{totalChange >= 0 ? "+" : ""}{formatMoney(totalChange, "THB")}</strong>
+              <small className="numeric">{totalChangePct >= 0 ? "+" : ""}{totalChangePct.toFixed(2)}%</small>
             </div>
           </section>
 
-          <section className="mb-6 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-            {metrics.map((metric) => (
-              <div key={metric.label} className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
-                <p className="text-sm font-medium text-slate-500">{metric.label}</p>
-                <p className="mt-2 text-2xl font-bold tracking-normal text-slate-950">{metric.value}</p>
-                <p className={`mt-1 text-sm font-semibold ${metric.tone}`}>{metric.detail}</p>
+          <section className="asset-kpi-strip" aria-label="Asset metrics">
+            {metrics.map((metric, index) => (
+              <div key={metric.label} className="panel asset-kpi-card">
+                <div className="asset-kpi-head">
+                  <span>{metric.label}</span>
+                  <span className="asset-kpi-index mono">0{index + 1}</span>
+                </div>
+                <strong className="asset-kpi-value numeric">{metric.value}</strong>
+                <small className={metricToneClass(metric.tone)}>{metric.detail}</small>
               </div>
             ))}
           </section>
 
-          <div className="mb-6 grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
+          <div className="asset-list-primary-grid">
             <AssetDashboard assets={dashboardAssets} updatePriceAction={updatePriceAction} />
-            <div className="grid content-start gap-4">
-            <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-              <h2 className="text-lg font-bold">Biggest movers</h2>
-              <p className="mt-1 text-sm text-slate-500">Top daily gainers and losers</p>
-              <div className="mt-4 grid gap-5 sm:grid-cols-2 xl:grid-cols-1">
-                {[["Gainers", gainers], ["Losers", losers]].map(([label, items]) => (
-                  <div key={label as string}>
-                    <p className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-400">{label as string}</p>
-                    <div className="space-y-2">
-                      {(items as typeof assets).length === 0 ? <p className="text-sm text-slate-400">None today</p> : (items as typeof assets).map((asset) => {
-                        const change = getDailyChangePercent(asset);
-                        return <div key={asset.id} className="flex items-center justify-between"><p className="text-sm font-bold">{asset.ticker}</p><span className={`rounded-full px-2 py-1 text-xs font-bold ${change >= 0 ? "bg-emerald-50 text-emerald-700" : "bg-rose-50 text-rose-700"}`}>{change >= 0 ? "+" : ""}{change.toFixed(2)}%</span></div>;
-                      })}
-                    </div>
+
+            <aside className="asset-list-side-stack">
+              <section className="panel asset-movers-panel">
+                <div className="panel-header">
+                  <div>
+                    <h2 className="panel-title">Biggest movers</h2>
+                    <p className="panel-subtitle">Ranked by one-day price delta</p>
                   </div>
-                ))}
-              </div>
-            </section>
-            <section id="asset-form" className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
-              <h2 className="mb-4 text-lg font-bold text-slate-950">Add / Edit Asset</h2>
-              <form action={saveAssetAction}>
-                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-2">
-                  <label>
-                    <span className="mb-1 block text-xs font-bold uppercase tracking-wide text-slate-500">Ticker</span>
-                    <input name="ticker" placeholder="AAPL" required className="h-10 w-full rounded-md border border-slate-200 bg-slate-50 px-3 text-sm uppercase outline-none transition focus:border-blue-400 focus:bg-white" />
-                  </label>
-                  <label className="sm:col-span-2 xl:col-span-1 2xl:col-span-2">
-                    <span className="mb-1 block text-xs font-bold uppercase tracking-wide text-slate-500">Asset Name</span>
-                    <input name="fullName" placeholder="Apple Inc." required className="h-10 w-full rounded-md border border-slate-200 bg-slate-50 px-3 text-sm outline-none transition focus:border-blue-400 focus:bg-white" />
-                  </label>
-                  <label>
-                    <span className="mb-1 block text-xs font-bold uppercase tracking-wide text-slate-500">Source Link</span>
-                    <input name="sourceLink" placeholder="https://finance.yahoo.com/quote/AAPL" className="h-10 w-full rounded-md border border-slate-200 bg-slate-50 px-3 text-sm outline-none transition focus:border-blue-400 focus:bg-white" />
-                  </label>
-                  <label>
-                    <span className="mb-1 block text-xs font-bold uppercase tracking-wide text-slate-500">Currency Code</span>
-                    <select name="currencyCode" defaultValue="USD" className="h-10 w-full rounded-md border border-slate-200 bg-slate-50 px-3 text-sm outline-none transition focus:border-blue-400 focus:bg-white">
-                      {currencies.map((currency) => (
-                        <option key={currency.code} value={currency.code}>{currency.code} - {currency.name}</option>
-                      ))}
-                    </select>
-                  </label>
-                  <label>
-                    <span className="mb-1 block text-xs font-bold uppercase tracking-wide text-slate-500">Current Price</span>
-                    <input name="currentPrice" placeholder="189.98" required inputMode="decimal" className="h-10 w-full rounded-md border border-slate-200 bg-slate-50 px-3 text-sm outline-none transition focus:border-blue-400 focus:bg-white" />
-                  </label>
+                  <span className="panel-count">TOP 03</span>
                 </div>
-                <div className="mt-4 flex gap-2">
-                  <PendingButton className="h-10 flex-1 rounded-md bg-blue-600 text-sm font-semibold text-white transition hover:bg-blue-700" pendingLabel="Saving Asset">
-                    Save Asset
-                  </PendingButton>
-                  <Link href="/asset-list" className="grid h-10 place-items-center rounded-md border border-slate-200 px-4 text-sm font-semibold text-slate-700 transition hover:bg-slate-50">Cancel</Link>
+                <div className="asset-movers-body">
+                  {moverGroups.map((group) => (
+                    <div key={group.label} className="asset-mover-group">
+                      <div className="asset-mover-group-head">
+                        <span>{group.label}</span>
+                        <span className={group.tone}>{group.items.length}</span>
+                      </div>
+                      <div className="asset-mover-list">
+                        {group.items.length === 0 ? (
+                          <p className="asset-empty-inline">None today</p>
+                        ) : group.items.map((asset, index) => {
+                          const change = getDailyChangePercent(asset);
+                          return (
+                            <div key={asset.id} className="asset-mover-row">
+                              <span className="asset-mover-rank mono">0{index + 1}</span>
+                              <span className="asset-mover-name">
+                                <strong className="mono">{asset.ticker}</strong>
+                                <small>{asset.fullName}</small>
+                              </span>
+                              <span className={`change-badge numeric ${change >= 0 ? "positive" : "negative"}`}>
+                                {change >= 0 ? "+" : ""}{change.toFixed(2)}%
+                              </span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ))}
                 </div>
-              </form>
-            </section>
-            </div>
+              </section>
+
+              <section id="asset-form" className="panel asset-editor-panel">
+                <div className="panel-header">
+                  <div>
+                    <h2 className="panel-title">Add / Edit Asset</h2>
+                    <p className="panel-subtitle">Ticker is the registry identity</p>
+                  </div>
+                  <span className="panel-count">UPSERT</span>
+                </div>
+                <form action={saveAssetAction} className="asset-editor-form">
+                  <div className="asset-form-grid">
+                    <label className="asset-field">
+                      <span>Ticker</span>
+                      <input name="ticker" placeholder="AAPL" required className="asset-field-control asset-ticker-input mono" />
+                    </label>
+                    <label className="asset-field asset-field-wide">
+                      <span>Asset name</span>
+                      <input name="fullName" placeholder="Apple Inc." required className="asset-field-control" />
+                    </label>
+                    <label className="asset-field asset-field-wide">
+                      <span>Source link</span>
+                      <input name="sourceLink" placeholder="https://finance.yahoo.com/quote/AAPL" className="asset-field-control mono" />
+                    </label>
+                    <label className="asset-field">
+                      <span>Currency code</span>
+                      <select name="currencyCode" defaultValue="USD" className="asset-field-control mono">
+                        {currencies.map((currency) => (
+                          <option key={currency.code} value={currency.code}>{currency.code} — {currency.name}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="asset-field">
+                      <span>Current price</span>
+                      <input name="currentPrice" placeholder="189.98" required inputMode="decimal" className="asset-field-control asset-number-input" />
+                    </label>
+                  </div>
+                  <div className="asset-form-actions">
+                    <PendingButton className="pm-button pm-button-primary asset-form-submit" pendingLabel="Saving Asset">
+                      Save Asset
+                    </PendingButton>
+                    <Link href="/asset-list" className="asset-cancel-button">Cancel</Link>
+                  </div>
+                </form>
+              </section>
+            </aside>
           </div>
 
-          <section className="rounded-lg border border-slate-200 bg-white shadow-sm">
-            <div className="border-b border-slate-200 p-5">
-              <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
-                <h2 className="text-lg font-bold text-slate-950">Asset Registry</h2>
-                <div className="flex flex-col gap-2 sm:flex-row">
-                  <label className="sr-only" htmlFor="asset-search">Search assets</label>
-                  <input
-                    id="asset-search"
-                    placeholder="Search ticker or asset name"
-                    className="h-10 w-full rounded-md border border-slate-200 bg-slate-50 px-3 text-sm outline-none transition placeholder:text-slate-400 focus:border-blue-400 focus:bg-white sm:w-64"
-                  />
-                  <select aria-label="Filter by currency" className="h-10 rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-700">
-                    <option>All currencies</option>
-                    {currencies.map((currency) => (
-                      <option key={currency.code}>{currency.code}</option>
-                    ))}
-                  </select>
-                </div>
+          <section className="panel asset-registry-panel">
+            <div className="panel-header asset-registry-header">
+              <div>
+                <h2 className="panel-title">Asset Registry</h2>
+                <p className="panel-subtitle">Canonical instruments and latest recorded market state</p>
+              </div>
+              <div className="asset-registry-tools">
+                <label className="sr-only" htmlFor="asset-search">Search assets</label>
+                <input id="asset-search" placeholder="Search ticker or asset name" className="asset-field-control asset-registry-search" />
+                <select aria-label="Filter by currency" className="asset-field-control asset-registry-filter mono">
+                  <option>All currencies</option>
+                  {currencies.map((currency) => (
+                    <option key={currency.code}>{currency.code}</option>
+                  ))}
+                </select>
+                <span className="panel-count">{assets.length} ACTIVE</span>
               </div>
             </div>
 
-            <div className="overflow-x-auto">
-              <table className="w-full min-w-[860px] text-left text-sm">
-                <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
+            <div className="asset-table-scroll">
+              <table className="asset-data-table">
+                <thead>
                   <tr>
-                    {["Ticker", "Full Name", "Currency", "Current Price", "Price Change", "Price Updated At", "Actions"].map((heading) => (
-                      <th key={heading} className="border-b border-slate-200 px-4 py-3 font-bold">{heading}</th>
-                    ))}
+                    <th>Ticker</th>
+                    <th>Full name</th>
+                    <th>Currency</th>
+                    <th className="asset-cell-right">Current price</th>
+                    <th className="asset-cell-right">Price change</th>
+                    <th>Price updated at</th>
+                    <th className="asset-action-cell">Actions</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-slate-200">
+                <tbody>
                   {assets.map((asset) => {
                     const dailyChange = getDailyChangePercent(asset);
 
                     return (
-                      <tr key={asset.id} className="hover:bg-slate-50/80">
-                        <td className="px-4 py-3 font-bold text-slate-950">{asset.ticker}</td>
-                        <td className="px-4 py-3 text-slate-700">{asset.fullName}</td>
-                        <td className="px-4 py-3 text-slate-600">{asset.currencyCode}</td>
-                        <td className="px-4 py-3 font-semibold text-slate-950">{formatMoney(asset.currentPrice, asset.currencyCode)}</td>
-                        <td className={`px-4 py-3 font-semibold ${dailyChange < 0 ? "text-rose-600" : "text-emerald-600"}`}>
-                          {dailyChange >= 0 ? "+" : ""}
-                          {dailyChange.toFixed(2)}%
+                      <tr key={asset.id}>
+                        <td><span className="ticker-badge">{asset.ticker}</span></td>
+                        <td className="asset-name-cell">{asset.fullName}</td>
+                        <td><span className="currency-badge">{asset.currencyCode}</span></td>
+                        <td className="asset-cell-right numeric asset-price-cell">{formatMoney(asset.currentPrice, asset.currencyCode)}</td>
+                        <td className={`asset-cell-right numeric ${dailyChange < 0 ? "negative" : "positive"}`}>
+                          {dailyChange >= 0 ? "+" : ""}{dailyChange.toFixed(2)}%
                         </td>
-                        <td className="px-4 py-3 text-slate-600">{formatDateTime(asset.priceUpdatedAt)}</td>
-                        <td className="px-4 py-3">
+                        <td className="mono asset-date-cell">{formatDateTime(asset.priceUpdatedAt)}</td>
+                        <td className="asset-action-cell">
                           <form action={removeAssetAction}>
                             <input type="hidden" name="id" value={asset.id} />
                             <input type="hidden" name="confirmRemove" value="yes" />
@@ -201,7 +255,7 @@ export default async function AssetListPage() {
                               aria-label={`Remove ${asset.ticker}`}
                               title={`Remove ${asset.ticker}`}
                               pendingLabel=""
-                              className="grid h-8 w-8 place-items-center rounded-md border border-slate-200 bg-white text-sm font-bold text-rose-500 shadow-sm transition hover:border-blue-200 hover:bg-blue-50"
+                              className="pm-button pm-button-danger pm-button-icon asset-remove-button"
                             >
                               x
                             </PendingButton>
@@ -210,57 +264,70 @@ export default async function AssetListPage() {
                       </tr>
                     );
                   })}
+                  {assets.length === 0 ? (
+                    <tr><td colSpan={7} className="asset-table-empty">No active assets in the registry.</td></tr>
+                  ) : null}
                 </tbody>
               </table>
             </div>
           </section>
 
-          <div className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1fr)_420px]">
-            <section className="rounded-lg border border-slate-200 bg-white shadow-sm">
-              <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
-                <h2 className="text-lg font-bold text-slate-950">Price History</h2>
+          <div className="asset-list-secondary-grid">
+            <section className="panel asset-history-panel">
+              <div className="panel-header">
+                <div>
+                  <h2 className="panel-title">Price History</h2>
+                  <p className="panel-subtitle">Most recent persisted market observations</p>
+                </div>
+                <span className="panel-count">{priceHistory.length} RECORDS</span>
               </div>
-              <div className="overflow-x-auto">
-                <table className="w-full min-w-[720px] text-left text-sm">
-                  <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
+              <div className="asset-table-scroll">
+                <table className="asset-data-table asset-history-table">
+                  <thead>
                     <tr>
-                      {["Recorded At", "Ticker", "Price"].map((heading) => (
-                        <th key={heading} className="border-b border-slate-200 px-4 py-3 font-bold">{heading}</th>
-                      ))}
+                      <th>Recorded at</th>
+                      <th>Ticker</th>
+                      <th className="asset-cell-right">Price</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-slate-200">
+                  <tbody>
                     {priceHistory.map((history) => (
                       <tr key={history.id}>
-                        <td className="px-4 py-3 text-slate-600">{formatDate(history.recordedAt)}</td>
-                        <td className="px-4 py-3 font-bold text-slate-950">{history.ticker}</td>
-                        <td className="px-4 py-3 text-slate-700">{formatMoney(history.price)}</td>
+                        <td className="mono asset-date-cell">{formatDate(history.recordedAt)}</td>
+                        <td><span className="ticker-badge">{history.ticker}</span></td>
+                        <td className="asset-cell-right numeric asset-price-cell">{formatMoney(history.price)}</td>
                       </tr>
                     ))}
+                    {priceHistory.length === 0 ? (
+                      <tr><td colSpan={3} className="asset-table-empty">No price history has been recorded.</td></tr>
+                    ) : null}
                   </tbody>
                 </table>
               </div>
             </section>
 
-            <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
-              <div className="mb-4 flex items-center justify-between">
-                <h2 className="text-lg font-bold text-slate-950">Deleted Assets</h2>
-                <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-bold text-slate-600">{deletedAssets.length} recoverable</span>
+            <section className="panel asset-deleted-panel">
+              <div className="panel-header">
+                <div>
+                  <h2 className="panel-title">Deleted Assets</h2>
+                  <p className="panel-subtitle">Soft-deleted registry records</p>
+                </div>
+                <span className="panel-count">{deletedAssets.length} RECOVERABLE</span>
               </div>
-              <div className="space-y-3">
+              <div className="asset-deleted-list">
                 {deletedAssets.length === 0 ? (
-                  <p className="rounded-md border border-dashed border-slate-200 p-4 text-sm text-slate-500">No deleted assets to recover.</p>
+                  <p className="asset-empty-state">No deleted assets to recover.</p>
                 ) : (
                   deletedAssets.map((asset) => (
-                    <div key={asset.id} className="flex items-center gap-3 rounded-md border border-slate-200 p-3">
-                      <div className="grid h-10 w-10 place-items-center rounded-md bg-slate-100 text-xs font-bold text-slate-700">{asset.ticker}</div>
-                      <div className="min-w-0 flex-1">
-                        <p className="truncate text-sm font-semibold text-slate-950">{asset.fullName}</p>
-                        <p className="text-xs text-slate-500">Deleted {asset.deletedAt ? formatDateTime(asset.deletedAt) : "recently"}</p>
-                      </div>
+                    <div key={asset.id} className="asset-deleted-row">
+                      <span className="asset-deleted-mark mono">{asset.ticker}</span>
+                      <span className="asset-deleted-copy">
+                        <strong>{asset.fullName}</strong>
+                        <small className="mono">Deleted {asset.deletedAt ? formatDateTime(asset.deletedAt) : "recently"}</small>
+                      </span>
                       <form action={recoverAssetAction}>
                         <input type="hidden" name="id" value={asset.id} />
-                        <PendingButton className="h-9 rounded-md border border-slate-200 px-3 text-xs font-bold text-slate-700 transition hover:bg-slate-50" pendingLabel="Restoring">
+                        <PendingButton className="pm-button asset-recover-button" pendingLabel="Restoring">
                           Recover
                         </PendingButton>
                       </form>
@@ -270,22 +337,23 @@ export default async function AssetListPage() {
               </div>
             </section>
           </div>
-        </section>
-      </div>
+        </div>
+      </section>
     </main>
   );
 }
 
 function NeonSetupPage({ title }: { title: string }) {
   return (
-    <main className="min-h-screen bg-[#f5f7fb] px-6 py-8 text-slate-950">
-      <section className="mx-auto max-w-3xl rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
-        <Link href="/" className="text-sm font-semibold text-blue-600">Back to Home</Link>
-        <h1 className="mt-4 text-2xl font-bold">{title}</h1>
-        <p className="mt-3 text-sm leading-6 text-slate-600">
+    <main className="setup-canvas asset-list-setup">
+      <section className="setup-panel">
+        <p className="eyebrow">Connection required / Neon Postgres</p>
+        <h1>{title}</h1>
+        <p>
           Neon is enabled in the code, but `DATABASE_URL` is not set yet. Add your Neon Postgres connection string to `.env.local`,
-          then restart the dev server.
+          then restart the development server.
         </p>
+        <Link href="/" className="toolbar-link asset-setup-link">Return home</Link>
       </section>
     </main>
   );
