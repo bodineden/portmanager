@@ -2,23 +2,25 @@ import Link from "next/link";
 import { AppSidebar } from "../components/app-sidebar";
 import { formatMoney, formatSignedMoney, isNeonConfigured, listInvestorHoldings, listPortfolioValueSeries } from "@/lib/assets-db";
 import { PortfolioChart } from "./portfolio-chart";
+import "./portfolio.css";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 function shortDate(iso: string) {
-  const d = new Date(`${iso}T00:00:00Z`);
-  return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  const date = new Date(`${iso}T00:00:00Z`);
+  return date.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
 }
 
 export default async function PortfolioPage() {
   if (!isNeonConfigured()) {
     return (
-      <main className="min-h-screen bg-[#f5f7fb] px-6 py-8 text-slate-950">
-        <section className="mx-auto max-w-3xl rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
-          <Link href="/" className="text-sm font-semibold text-blue-600">Back to Home</Link>
-          <h1 className="mt-4 text-2xl font-bold">Portfolio Value</h1>
-          <p className="mt-3 text-sm leading-6 text-slate-600">Neon is not configured yet.</p>
+      <main className="setup-canvas portfolio-page">
+        <section className="setup-panel">
+          <p className="eyebrow">CONFIGURATION REQUIRED</p>
+          <h1>Portfolio Value</h1>
+          <p>Neon is not configured yet. Add the database connection to the local environment, then restart the workspace.</p>
+          <Link href="/" className="toolbar-link setup-link">Return to command center</Link>
         </section>
       </main>
     );
@@ -26,96 +28,93 @@ export default async function PortfolioPage() {
 
   const points = await listPortfolioValueSeries();
   const holdings = await listInvestorHoldings();
-  const invested = holdings.reduce((sum, h) => sum + h.acquiredCost, 0);
-
+  const invested = holdings.reduce((sum, holding) => sum + holding.acquiredCost, 0);
   const latest = points.length > 0 ? points[points.length - 1].valueThb : 0;
   const change = latest - invested;
-  const changePct = invested !== 0 ? (change / invested) * 100 : 0;
+  const changePct = invested !== 0 ? change / invested * 100 : 0;
+  const peak = Math.max(...points.map((point) => point.valueThb), 0);
 
   return (
-    <main className="min-h-screen bg-[#f5f7fb] text-slate-950">
-      <div className="grid min-h-screen lg:grid-cols-[260px_1fr]">
-        <AppSidebar active="portfolio" />
+    <main className="workspace-shell portfolio-page">
+      <AppSidebar active="portfolio" />
+      <section className="workspace-main">
+        <header className="page-header">
+          <div className="page-title-group">
+            <p className="eyebrow">ANALYTICS / PORTFOLIO</p>
+            <h1 className="page-title">Portfolio Value</h1>
+            <p className="page-subtitle">Daily valuation series and long-range THB performance</p>
+          </div>
+          <div className="header-tools">
+            <span className="header-meta">BASE CURRENCY / THB</span>
+            <Link href="/" className="toolbar-link">Command Center</Link>
+          </div>
+        </header>
 
-        <section className="min-w-0 px-4 py-5 sm:px-6 lg:px-8">
-          <header className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <p className="text-sm font-medium text-blue-600 lg:hidden">Portfolio Manager</p>
-              <h1 className="text-2xl font-bold tracking-normal text-slate-950">Portfolio Value</h1>
-            </div>
-            <div className="flex flex-wrap items-center gap-4 text-sm text-slate-600">
-              <Link href="/" className="rounded-md border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 shadow-sm transition hover:border-blue-200 hover:bg-blue-50">
-                Back to Home
-              </Link>
-              <span>Base currency: THB</span>
-            </div>
-          </header>
-
-          <section className="mb-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-            <div className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
-              <p className="text-sm font-medium text-slate-500">Current Value</p>
-              <p className="mt-2 text-2xl font-bold tracking-normal text-slate-950">{formatMoney(latest, "THB")}</p>
-              <p className="mt-1 text-sm font-semibold text-slate-500">Latest tracked day</p>
-            </div>
-            <div className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
-              <p className="text-sm font-medium text-slate-500">Return vs. Invested</p>
-              <p className="mt-2 text-2xl font-bold tracking-normal text-slate-950">{formatSignedMoney(change, "THB")}</p>
-              <p className={`mt-1 text-sm font-semibold ${change >= 0 ? "text-emerald-600" : "text-rose-600"}`}>
-                {changePct >= 0 ? "+" : ""}{changePct.toFixed(2)}%
-              </p>
-            </div>
-            <div className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
-              <p className="text-sm font-medium text-slate-500">Days Tracked</p>
-              <p className="mt-2 text-2xl font-bold tracking-normal text-slate-950">{points.length}</p>
-              <p className="mt-1 text-sm font-semibold text-slate-500">
-                {points.length > 0 ? `${shortDate(points[0].date)} → ${shortDate(points[points.length - 1].date)}` : "—"}
-              </p>
-            </div>
-            <div className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
-              <p className="text-sm font-medium text-slate-500">Peak Value</p>
-              <p className="mt-2 text-2xl font-bold tracking-normal text-slate-950">
-                {formatMoney(Math.max(...points.map((p) => p.valueThb), 0), "THB")}
-              </p>
-              <p className="mt-1 text-sm font-semibold text-slate-500">All-time high</p>
-            </div>
+        <div className="page-content portfolio-content">
+          <section className="portfolio-kpi-grid" aria-label="Portfolio summary">
+            <article className="portfolio-kpi-card">
+              <span className="metric-index">01 / VALUE</span>
+              <span className="metric-label">Current Value</span>
+              <strong className="metric-value">{formatMoney(latest, "THB")}</strong>
+              <small>Latest tracked day</small>
+            </article>
+            <article className={`portfolio-kpi-card ${change >= 0 ? "gain-edge" : "loss-edge"}`}>
+              <span className="metric-index">02 / RETURN</span>
+              <span className="metric-label">Return vs. Invested</span>
+              <strong className="metric-value">{formatSignedMoney(change, "THB")}</strong>
+              <small className={change >= 0 ? "positive" : "negative"}>{changePct >= 0 ? "+" : ""}{changePct.toFixed(2)}%</small>
+            </article>
+            <article className="portfolio-kpi-card">
+              <span className="metric-index">03 / HISTORY</span>
+              <span className="metric-label">Days Tracked</span>
+              <strong className="metric-value">{points.length.toLocaleString("en-US")}</strong>
+              <small>{points.length > 0 ? `${shortDate(points[0].date)} → ${shortDate(points[points.length - 1].date)}` : "No history"}</small>
+            </article>
+            <article className="portfolio-kpi-card">
+              <span className="metric-index">04 / PEAK</span>
+              <span className="metric-label">Peak Value</span>
+              <strong className="metric-value">{formatMoney(peak, "THB")}</strong>
+              <small>All-time high</small>
+            </article>
           </section>
 
           <PortfolioChart points={points} />
 
-          <section className="rounded-lg border border-slate-200 bg-white shadow-sm">
-            <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
-              <h2 className="text-lg font-bold text-slate-950">Daily Values</h2>
+          <section className="panel portfolio-ledger">
+            <div className="panel-header">
+              <div><p className="eyebrow">VALUATION LEDGER</p><h2 className="panel-title">Daily Values</h2></div>
+              <span className="panel-count">{points.length} RECORDS</span>
             </div>
-            <div className="overflow-x-auto">
-              <table className="w-full min-w-[480px] text-left text-sm">
-                <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
+            <div className="portfolio-table-scroll">
+              <table className="portfolio-table">
+                <thead>
                   <tr>
-                    {["Date", "Holdings", "Value (THB)", "Day Change"].map((heading) => (
-                      <th key={heading} className="border-b border-slate-200 px-4 py-3 font-bold">{heading}</th>
-                    ))}
+                    <th>Date</th>
+                    <th className="numeric">Holdings</th>
+                    <th className="numeric">Value (THB)</th>
+                    <th className="numeric">Day Change</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-slate-200">
-                  {points.map((p, i) => {
-                    const prev = i > 0 ? points[i - 1].valueThb : p.valueThb;
-                    const d = p.valueThb - prev;
+                <tbody>
+                  {points.map((point, index) => {
+                    const previous = index > 0 ? points[index - 1].valueThb : point.valueThb;
+                    const dailyChange = point.valueThb - previous;
                     return (
-                      <tr key={p.date} className="hover:bg-slate-50/80">
-                        <td className="px-4 py-3 font-semibold text-slate-950">{shortDate(p.date)}</td>
-                        <td className="px-4 py-3 text-slate-600">{p.holdingCount}</td>
-                        <td className="px-4 py-3 font-semibold text-slate-950">{formatMoney(p.valueThb, "THB")}</td>
-                        <td className={`px-4 py-3 font-semibold ${d >= 0 ? "text-emerald-600" : "text-rose-600"}`}>
-                          {d >= 0 ? "+" : ""}{formatMoney(d, "THB")}
-                        </td>
+                      <tr key={point.date}>
+                        <td><span className="ledger-date">{shortDate(point.date)}</span><small>{point.date}</small></td>
+                        <td className="numeric muted">{point.holdingCount.toLocaleString("en-US")}</td>
+                        <td className="numeric value-cell">{formatMoney(point.valueThb, "THB")}</td>
+                        <td className={`numeric ${dailyChange >= 0 ? "positive" : "negative"}`}>{dailyChange >= 0 ? "+" : ""}{formatMoney(dailyChange, "THB")}</td>
                       </tr>
                     );
                   })}
+                  {points.length === 0 ? <tr><td colSpan={4} className="portfolio-empty-cell">No portfolio history is available yet.</td></tr> : null}
                 </tbody>
               </table>
             </div>
           </section>
-        </section>
-      </div>
+        </div>
+      </section>
     </main>
   );
 }

@@ -1,0 +1,320 @@
+.portfolio-content {
+  display: grid;
+  gap: 14px;
+}
+
+.portfolio-page .setup-link {
+  margin-top: 20px;
+}
+
+.portfolio-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.portfolio-kpi-card {
+  position: relative;
+  display: grid;
+  min-height: 125px;
+  align-content: space-between;
+  gap: 7px;
+  overflow: hidden;
+  padding: 15px 16px;
+  background: linear-gradient(145deg, #141b28, #111722);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.13);
+}
+
+.portfolio-kpi-card::after {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 34px;
+  height: 1px;
+  content: "";
+  background: #3a485e;
+}
+
+.portfolio-kpi-card.gain-edge { box-shadow: inset 2px 0 0 var(--green), 0 10px 25px rgba(0, 0, 0, 0.13); }
+.portfolio-kpi-card.loss-edge { box-shadow: inset 2px 0 0 var(--red), 0 10px 25px rgba(0, 0, 0, 0.13); }
+
+.metric-index,
+.metric-label {
+  color: var(--muted);
+  font: 650 9px/1.2 var(--font-geist-mono), ui-monospace, monospace;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.metric-index {
+  color: #526077;
+  text-align: right;
+}
+
+.portfolio-kpi-card .metric-value {
+  overflow: hidden;
+  color: var(--text-strong);
+  font-size: clamp(18px, 1.55vw, 25px);
+  font-weight: 650;
+  letter-spacing: -0.045em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.portfolio-kpi-card small {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.portfolio-chart-panel {
+  overflow: hidden;
+}
+
+.portfolio-chart-header {
+  display: flex;
+  min-height: 79px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 15px 17px;
+  border-bottom: 1px solid var(--border);
+}
+
+.chart-legend {
+  display: flex;
+  gap: 16px;
+  margin-top: 10px;
+  color: #8492a6;
+  font: 600 9px/1 var(--font-geist-mono), ui-monospace, monospace;
+}
+
+.chart-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.legend-line {
+  display: inline-block;
+  width: 18px;
+  height: 2px;
+  background: var(--cyan);
+}
+
+.legend-line.monthly {
+  height: 1px;
+  background: repeating-linear-gradient(90deg, var(--amber) 0 5px, transparent 5px 8px);
+}
+
+.range-selector.bp6-button-group {
+  padding: 3px;
+  background: #0d131d;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+}
+
+.range-selector .bp6-button {
+  min-width: 45px;
+  min-height: 29px;
+  color: #738197 !important;
+  background: transparent !important;
+  border: 0 !important;
+  font: 700 9px/1 var(--font-geist-mono), ui-monospace, monospace;
+}
+
+.range-selector .bp6-button.bp6-active {
+  color: #07131b !important;
+  background: var(--cyan) !important;
+  box-shadow: none !important;
+}
+
+.portfolio-chart-host {
+  position: relative;
+  width: 100%;
+  height: 410px;
+  padding: 13px 11px 4px 5px;
+  background:
+    linear-gradient(rgba(30, 38, 53, 0.1) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(30, 38, 53, 0.08) 1px, transparent 1px),
+    #0f1420;
+  background-size: 32px 32px;
+}
+
+.portfolio-chart-host .plottable .axis line,
+.portfolio-chart-host .plottable .axis path {
+  stroke: #334155;
+}
+
+.portfolio-chart-host .plottable .axis text {
+  fill: #7c8aa0;
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-size: 9px;
+}
+
+.portfolio-chart-host .plottable .gridlines line {
+  stroke: #1e2635;
+  stroke-opacity: 0.82;
+}
+
+.portfolio-chart-host .plottable .line-plot path {
+  vector-effect: non-scaling-stroke;
+}
+
+.portfolio-chart-tooltip {
+  position: absolute;
+  z-index: 5;
+  max-width: 260px;
+  padding: 7px 9px;
+  color: var(--text-strong);
+  background: #05070b;
+  border: 1px solid #3b4d67;
+  border-radius: 3px;
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, -100%);
+  font: 650 10px/1.2 var(--font-geist-mono), ui-monospace, monospace;
+  white-space: nowrap;
+  transition: opacity 80ms ease;
+}
+
+.portfolio-chart-tooltip.is-visible {
+  opacity: 1;
+}
+
+.portfolio-chart-empty {
+  display: grid;
+  min-height: 270px;
+  place-content: center;
+  justify-items: center;
+  gap: 8px;
+  color: var(--muted);
+  background: #0f1420;
+}
+
+.portfolio-chart-empty .bp6-icon {
+  color: #52637a;
+}
+
+.portfolio-chart-empty span {
+  color: #a8b4c5;
+  font-size: 12px;
+  font-weight: 620;
+}
+
+.portfolio-chart-empty small {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.portfolio-chart-empty.is-error .bp6-icon,
+.portfolio-chart-empty.is-error span {
+  color: var(--red);
+}
+
+.portfolio-ledger {
+  overflow: hidden;
+}
+
+.portfolio-table-scroll {
+  max-height: 470px;
+  overflow: auto;
+}
+
+.portfolio-table {
+  width: 100%;
+  min-width: 620px;
+  border-collapse: collapse;
+  text-align: left;
+}
+
+.portfolio-table th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  padding: 10px 15px;
+  color: var(--muted);
+  background: #101621;
+  border-bottom: 1px solid var(--border);
+  font: 700 9px/1.2 var(--font-geist-mono), ui-monospace, monospace;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.portfolio-table td {
+  height: 48px;
+  padding: 8px 15px;
+  color: #aab6c7;
+  border-bottom: 1px solid rgba(30, 38, 53, 0.76);
+  font-size: 11px;
+}
+
+.portfolio-table th.numeric,
+.portfolio-table td.numeric {
+  text-align: right;
+}
+
+.portfolio-table tbody tr:hover {
+  background: rgba(56, 189, 248, 0.025);
+}
+
+.portfolio-table td:first-child {
+  display: grid;
+  align-content: center;
+}
+
+.ledger-date {
+  color: var(--text-strong);
+  font-size: 11px;
+  font-weight: 640;
+}
+
+.portfolio-table td:first-child small {
+  color: #5f6d81;
+  font: 500 8px/1.3 var(--font-geist-mono), ui-monospace, monospace;
+}
+
+.portfolio-table .value-cell {
+  color: var(--text-strong);
+  font-weight: 620;
+}
+
+.portfolio-empty-cell {
+  padding: 35px !important;
+  color: var(--muted) !important;
+  text-align: center !important;
+}
+
+@media (max-width: 1220px) {
+  .portfolio-kpi-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 650px) {
+  .portfolio-kpi-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .portfolio-kpi-card {
+    min-height: 110px;
+  }
+
+  .portfolio-chart-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .portfolio-chart-host {
+    height: 330px;
+    min-width: 590px;
+  }
+
+  .portfolio-chart-panel {
+    overflow-x: auto;
+  }
+}
