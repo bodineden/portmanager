@@ -45,21 +45,21 @@ try {
     requireCondition(assetResponse?.ok(), `HTTP ${assetResponse?.status() ?? "no response"}`);
   });
 
-  const priceInputs = page.locator('input[name="currentPrice"][aria-label$=" price"]');
-  const priceInputCount = await priceInputs.count();
+  const priceForms = page.locator("form.asset-price-card");
+  const priceFormCount = await priceForms.count();
   await check("asset-list exposes at least one price-update form", async () => {
-    requireCondition(priceInputCount > 0, "no cron price inputs rendered; verify DATABASE_URL and seeded assets");
-    return `${priceInputCount} asset forms`;
+    requireCondition(priceFormCount > 0, "no asset price cards rendered; verify DATABASE_URL and seeded assets");
+    return `${priceFormCount} asset forms`;
   });
 
-  for (let index = 0; index < priceInputCount; index += 1) {
-    const input = priceInputs.nth(index);
-    const ariaLabel = await input.getAttribute("aria-label");
-    const ticker = ariaLabel?.replace(/ price$/, "") ?? `asset ${index + 1}`;
+  for (let index = 0; index < priceFormCount; index += 1) {
+    const form = priceForms.nth(index);
+    const ticker = (await form.locator(".ticker-badge").first().textContent())?.trim() ?? "";
     await check(`asset price form / ${ticker}`, async () => {
-      requireCondition(ariaLabel === `${ticker} price`, `unexpected aria-label ${JSON.stringify(ariaLabel)}`);
-      const form = input.locator("xpath=ancestor::form[1]");
-      requireCondition(await form.count() === 1, "price input is not inside a form");
+      requireCondition(Boolean(ticker), "asset card ticker is missing");
+      const input = form.locator('input[name="currentPrice"]');
+      requireCondition(await input.count() === 1, "price input is missing or duplicated");
+      requireCondition(await input.getAttribute("aria-label") === `${ticker} price`, `expected aria-label ${JSON.stringify(`${ticker} price`)}`);
       const id = form.locator('input[type="hidden"][name="id"]');
       requireCondition(await id.count() === 1, "missing hidden id");
       requireCondition(Boolean(await id.inputValue()), "hidden id is empty");
@@ -89,22 +89,29 @@ try {
     requireCondition(await form.locator('a[href="/asset-list"]', { hasText: "Cancel" }).count() === 1, "Cancel link missing");
   });
 
-  const removeButtons = page.locator('button[aria-label^="Remove "]');
-  const removeCount = await removeButtons.count();
+  const registryRows = page.locator(".asset-registry-panel .asset-data-table tbody tr").filter({ has: page.locator(".ticker-badge") });
+  const registryRowCount = await registryRows.count();
   await check("asset-list exposes registry remove controls", async () => {
-    requireCondition(removeCount > 0, "no remove-asset buttons rendered");
-    return `${removeCount} remove forms`;
+    requireCondition(registryRowCount > 0, "no active asset registry rows rendered");
+    requireCondition(registryRowCount === priceFormCount, `registry has ${registryRowCount} assets but dashboard has ${priceFormCount} price forms`);
+    return `${registryRowCount} remove forms`;
   });
 
-  for (let index = 0; index < removeCount; index += 1) {
-    const button = removeButtons.nth(index);
-    const ariaLabel = await button.getAttribute("aria-label");
-    await check(`asset remove form / ${ariaLabel?.replace(/^Remove /, "") ?? index + 1}`, async () => {
-      requireCondition(/^Remove .+/.test(ariaLabel ?? ""), "remove aria-label is invalid");
+  for (let index = 0; index < registryRowCount; index += 1) {
+    const row = registryRows.nth(index);
+    const ticker = (await row.locator(".ticker-badge").first().textContent())?.trim() ?? "";
+    await check(`asset remove form / ${ticker}`, async () => {
+      requireCondition(Boolean(ticker), "registry ticker is missing");
+      const form = row.locator("td.asset-action-cell form");
+      requireCondition(await form.count() === 1, "remove form is missing or duplicated");
+      const button = form.locator("button");
+      requireCondition(await button.count() === 1, "remove button is missing or duplicated");
+      requireCondition(await button.getAttribute("aria-label") === `Remove ${ticker}`, `expected aria-label ${JSON.stringify(`Remove ${ticker}`)}`);
       requireCondition((await button.textContent())?.trim() === "x", "remove button text is not x");
       requireCondition(await button.getAttribute("type") === "submit", "remove control is not an explicit submit button");
-      const form = button.locator("xpath=ancestor::form[1]");
-      requireCondition(await form.locator('input[type="hidden"][name="id"]').count() === 1, "missing hidden id");
+      const id = form.locator('input[type="hidden"][name="id"]');
+      requireCondition(await id.count() === 1, "missing hidden id");
+      requireCondition(Boolean(await id.inputValue()), "hidden id is empty");
       requireCondition(await form.locator('input[type="hidden"][name="confirmRemove"][value="yes"]').count() === 1, "missing confirmRemove=yes");
     });
   }

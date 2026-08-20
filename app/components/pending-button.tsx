@@ -1,6 +1,6 @@
 "use client";
 
-import { Button } from "@blueprintjs/core";
+import { Button, Spinner } from "@blueprintjs/core";
 import { useFormStatus } from "react-dom";
 
 export function PendingButton({
@@ -18,5 +18,16 @@ export function PendingButton({
 }) {
   const { pending } = useFormStatus();
 
-  return <Button type="submit" aria-label={ariaLabel} title={title} disabled={pending} className={className} loading={pending} text={pending ? pendingLabel : children} />;
+  return (
+    <Button
+      type="submit"
+      aria-label={ariaLabel}
+      title={title}
+      aria-live="polite"
+      disabled={pending}
+      className={className}
+      icon={pending ? <Spinner size={12} /> : undefined}
+      text={pending ? pendingLabel : children}
+    />
+  );
 }
