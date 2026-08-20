@@ -1,5 +1,6 @@
 "use client";
 
+import { Button } from "@blueprintjs/core";
 import { buildHoldingsCsv, type CsvHolding } from "@/lib/portfolio-helpers";
 
 export function CsvExportButton({ holdings }: { holdings: CsvHolding[] }) {
@@ -12,5 +13,16 @@ export function CsvExportButton({ holdings }: { holdings: CsvHolding[] }) {
     anchor.click();
     URL.revokeObjectURL(url);
   }
-  return <button type="button" onClick={download} disabled={holdings.length === 0} className="rounded-md bg-slate-950 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50">Export CSV</button>;
+
+  return (
+    <Button
+      type="button"
+      icon="download"
+      text="Export CSV"
+      aria-label="Export holdings as CSV"
+      onClick={download}
+      disabled={holdings.length === 0}
+      className="pm-button holder-export-button"
+    />
+  );
 }
