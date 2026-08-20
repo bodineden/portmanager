@@ -45,6 +45,21 @@ for (const [name, route] of routes) {
     if (axisCount < 2) failures.push(`portfolio: expected two axes, found ${axisCount}`);
     if (dashedCount === 0) failures.push("portfolio: dashed monthly-average line missing");
 
+    const dots = page.locator(".portfolio-chart-host .scatter-plot path");
+    const dotCount = await dots.count();
+    if (dotCount === 0) {
+      failures.push("portfolio: daily-series interaction points missing");
+    } else {
+      await dots.nth(Math.floor(dotCount / 2)).hover();
+      const tooltip = page.locator(".portfolio-chart-tooltip.is-visible");
+      await tooltip.waitFor({ state: "visible", timeout: 5000 }).catch(() => {
+        failures.push("portfolio: formatted point tooltip did not appear");
+      });
+      if (await tooltip.count() > 0 && !/THB\s*[\d,.]+/.test((await tooltip.textContent()) ?? "")) {
+        failures.push("portfolio: point tooltip is not formatted as THB");
+      }
+    }
+
     for (const option of ["1M", "3M", "6M", "ALL"]) {
       await page.locator(`.range-selector button:has-text("${option}")`).click();
       const selected = await page.locator(`.range-selector button:has-text("${option}")`).getAttribute("aria-pressed");
