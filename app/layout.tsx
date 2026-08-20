@@ -1,6 +1,10 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
+import "@blueprintjs/core/lib/css/blueprint.css";
+import "@blueprintjs/icons/lib/css/blueprint-icons.css";
+import "plottable/plottable.css";
 import "./globals.css";
+import { BlueprintThemeProvider } from "./components/blueprint-theme-provider";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -28,9 +32,13 @@ export default function RootLayout({
   return (
     <html
       lang="en"
-      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+      className={`${geistSans.variable} ${geistMono.variable} bp6-dark`}
     >
-      <body className="min-h-full flex flex-col">{children}</body>
+      <body className="bp6-dark">
+        <BlueprintThemeProvider>
+          <div className="app-root">{children}</div>
+        </BlueprintThemeProvider>
+      </body>
     </html>
   );
 }

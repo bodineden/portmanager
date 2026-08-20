@@ -1,20 +1,22 @@
 "use client";
 
+import { Card, Icon, Spinner } from "@blueprintjs/core";
+import type { IconName } from "@blueprintjs/icons";
 import Link from "next/link";
 import { useState } from "react";
 
 export function WorkspaceLink({
   href,
   icon,
-  iconClassName,
   title,
   description,
+  meta,
 }: {
   href: string;
-  icon: string;
-  iconClassName: string;
+  icon: IconName;
   title: string;
   description: string;
+  meta: string;
 }) {
   const [pending, setPending] = useState(false);
 
@@ -22,16 +24,19 @@ export function WorkspaceLink({
     <Link
       href={href}
       onClick={() => setPending(true)}
-      className="group grid gap-4 rounded-lg border border-slate-200 bg-white p-5 transition hover:border-blue-300 hover:bg-blue-50/40 sm:grid-cols-[56px_1fr_auto] sm:items-center"
+      className="workspace-link"
     >
-      <div className={iconClassName}>{icon}</div>
-      <div>
-        <h3 className="text-xl font-bold text-slate-950">{title}</h3>
-        <p className="mt-1 text-sm leading-6 text-slate-600">{description}</p>
-      </div>
-      <span className="grid h-10 w-10 place-items-center rounded-md border border-slate-200 bg-white text-lg font-bold text-blue-600 transition group-hover:border-blue-300">
-        {pending ? <span className="h-4 w-4 animate-spin rounded-full border-2 border-blue-600 border-t-transparent" /> : ">"}
-      </span>
+      <Card className="workspace-card" compact interactive>
+        <span className="workspace-icon"><Icon icon={icon} size={22} /></span>
+        <span className="workspace-copy">
+          <span className="workspace-meta">{meta}</span>
+          <strong>{title}</strong>
+          <small>{description}</small>
+        </span>
+        <span className="workspace-arrow" aria-hidden="true">
+          {pending ? <Spinner size={15} /> : <Icon icon="arrow-right" size={16} />}
+        </span>
+      </Card>
     </Link>
   );
 }
