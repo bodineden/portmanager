@@ -150,6 +150,21 @@ async function createSchema(sql: Sql) {
       recorded_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `;
+  await sql`
+    CREATE TABLE IF NOT EXISTS transactions (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      occurred_at TIMESTAMPTZ NOT NULL,
+      investor_id UUID NOT NULL REFERENCES investor(id) ON DELETE CASCADE,
+      from_asset_id UUID REFERENCES asset(id) ON DELETE CASCADE,
+      to_asset_id UUID NOT NULL REFERENCES asset(id) ON DELETE CASCADE,
+      amount NUMERIC NOT NULL,
+      shares NUMERIC NOT NULL,
+      price NUMERIC NOT NULL,
+      cost_basis_delta NUMERIC NOT NULL,
+      note TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `;
   await sql`ALTER TABLE investor ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ`;
   await sql`ALTER TABLE asset ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ`;
   await sql`ALTER TABLE asset ADD COLUMN IF NOT EXISTS previous_price NUMERIC`;
