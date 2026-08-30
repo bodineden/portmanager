@@ -30,6 +30,12 @@ As of: 2026-08-30
 - NFT position now **£447.51 total** (was £224.51) → **THB 20,017.60** @ 44.731024
 - Verified live: holder-list A+B NFT 3.322 sh @ £67.36 = THB 10,008.79 each; cash 392.88; C untouched
 
+## 2026-08-30: transactions ledger table added (audit trail)
+- New `transactions` table in Neon; DDL added to `lib/assets-db.ts` createSchema (idempotent, commit a21ac6a → main, auto-deployed). No app behavior change — the app never reads it
+- Columns: occurred_at, investor_id, from_asset_id (NULL = external deposit), to_asset_id, amount (source currency), shares (dest delta), price, cost_basis_delta (THB), note
+- **Backfilled 9 rows**: initial capital A/B/C (2026-08-10, per STATUS record) + all NFT transfer legs (08-22 £67.36, 08-25 £44.895, 08-29 £111.50, × A/B) with exact cost deltas
+- Rule going forward: every transfer/contribution logs one transactions row in the SAME DB transaction as the holding updates — history is now auditable in-DB, not only in this file
+
 ## Palantir-grade UI pass (Sol gpt-5.6-sol @ ultra, 2026-08-20, branch improve/palantir-ui → merge 9ec5a70)
 - Full restyle to Palantir aesthetic: **Blueprint 6.18.0 + Plottable 3.13.0** (same stack as Organics dashboard), dark mission-control theme (#0B0E14 canvas, cyan accent #38BDF8, monospace numbers)
 - All 6 pages redesigned: Command Center home, asset-list ops dashboard, holder management, FX control, asset-master redirect, portfolio analytics
