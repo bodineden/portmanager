@@ -1,19 +1,21 @@
 # PortManager — Status
 
-As of: 2026-09-01
+As of: 2026-09-01 (evening)
 
 ## State
 - App: portmanager-psi.vercel.app (Next.js 16 + Neon serverless, no API routes)
 - Repo: github.com/bodineden/portmanager — deploy key `~/.ssh/id_portmanager` (WRITE allowed)
 - Local mirror: ~/projects/portmanager (auto-deploys to Vercel on push to main)
-- **Price cron RETIRED 2026-09-01 (Bodin decision)** — job 61421751b828 PAUSED; the scraping updater is no longer the product (skill portmanager-price-updater marked RETIRED)
-- **Live joined portfolio is the new home** (commit e5124fa):
-  - Stocks port: Trading 212 Public API `/equity/positions` (live, env T212_API_KEY/T212_API_SECRET)
-  - Crypto/NFT port: OpenSea wallet holdings + floors (env OPENSEA_API_KEY/NFT_WALLET, wallet 0xC1bd…c609, RH chain — currently 2× Stackers + 2× GOOFYZ)
-  - FX live from open.er-api.com (ECB) + ETH price from CoinGecko; THB base
-  - **Gmail login gate**: Google OAuth (PKCE) via `proxy.ts` (Next 16 middleware), allowlist env `ALLOWED_EMAILS` (defaults: putthiphan1608@gmail.com, physic.din@gmail.com), session = HMAC cookie `pm_session` (AUTH_SECRET). Gate arms only when GOOGLE_CLIENT_ID/SECRET are set — until then the site stays open (never bricks access mid-deploy)
-  - Verified live post-deploy: gate redirects anonymous → /login; joined view renders wallet floors + FX with valid session; login/logout + error states OK
-- Historical ledger pages (/asset-list, /holder-list, /exchange-rate, /portfolio) still work off Neon behind the login gate; their prices are now stale (no cron) — the home page is the live source of truth
+- **Price cron RETIRED 2026-09-01 (Bodin decision)** — job 61421751b828 PAUSED; no scraping anywhere
+- **UNIFIED LIVE PORTFOLIO (Sol ultra run, merge 9c37247, 334k tokens)** — the whole site is ONE live picture:
+  - **One data core `getJoinedPortfolio()`** (lib/live-data.ts): T212 account summary + positions (live API), OpenSea NFT port (live floors), ECB FX (open.er-api), ETH/USD (CoinGecko). ALL pages (home, holder-list, portfolio, asset-list, exchange-rate) render from it — no page fetches live providers independently
+  - **Ownership**: A = Bodin, B = PP, C = Sonya. Everything 50/50 A/B; C = 0% (`INVESTOR_C_SHARE` const in live-data.ts — one-line change to give C a share)
+  - T212 live today: **£487.00 cash GBP, 0 positions** → "No positions yet — stocks/ETFs you buy in T212 appear here live"
+  - NFT port live: 2× Stackers + 2× G00fyz @ live floors ≈ 0.1831 ETH
+  - Legacy scraped-era UI replaced: asset-list = read-only live registry, exchange-rate = read-only live rates, holder-list = live beneficial ownership only (demo investors Alice/Bob/Carol/David hidden), portfolio chart = live point + dashed legacy context with boundary marker
+  - Neon DB untouched (schema/data) — remains history/cost-basis ledger only
+  - Verified: build ✓, 14/14 unit tests ✓ (incl. 0.1831154 ETH arithmetic + £487×45=฿21,915), 70/70 UI contract checks ✓, live-render verified locally (฿35,672.63 total) + prod chunk match ✓
+- **Gmail login gate**: Google OAuth (PKCE) via `proxy.ts`, allowlist `ALLOWED_EMAILS` (putthiphan1608@gmail.com, physic.din@gmail.com), HMAC session cookie `pm_session` (AUTH_SECRET). Gate arms only when GOOGLE_CLIENT_ID/SECRET set. **ARMED + verified live 2026-09-01** (anon → /login 307)
 
 ## 2026-08-22: NFT portfolio asset added (direct DB write via stored Neon creds)
 - New asset **NFT / NFT portfolio**, GBP, current + previous price £67.36, NO source link (static valuation — cron's hardcoded 12-ticker list never touches it)
@@ -58,11 +60,7 @@ As of: 2026-09-01
 - Portfolio value time-series (/portfolio): daily total in THB, now Plottable 3
 
 ## Next actions
-- **Bodin: create Google Cloud OAuth client** (Web application) for portmanager-psi.vercel.app with redirect URI `https://portmanager-psi.vercel.app/api/auth/callback`, then set these Vercel env vars to arm the gate + live data:
-  - `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` (from the OAuth client)
-  - `AUTH_SECRET` (any strong random string; the HMAC key for pm_session)
-  - `T212_API_KEY`, `T212_API_SECRET` (from ~/.hermes/secrets/t212_api.json — same values as local)
-  - `OPENSEA_API_KEY` (from ~/.opensea_api_key)
-  - `ALLOWED_EMAILS` (defaults are correct: putthiphan1608@gmail.com,physic.din@gmail.com — set explicitly to be safe)
-  - `NFT_WALLET` (defaults to 0xC1bd…c609 — set explicitly to be safe)
-- Until GOOGLE_CLIENT_ID/SECRET are set, the site is open (gate dormant by design). After setting them, anonymous users get redirected to /login and only allowlisted Gmail accounts get in.
+- **Bodin: verify login with both accounts** (putthiphan1608@gmail.com + physic.din@gmail.com) at portmanager-psi.vercel.app — private window, sign in, check home + holder-list + asset-list + exchange-rate all show the LIVE joined portfolio
+- Vercel env (already set by Bodin): GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, AUTH_SECRET + T212_API_KEY, T212_API_SECRET, OPENSEA_API_KEY, ALLOWED_EMAILS, NFT_WALLET
+- When Bodin buys stocks/ETFs in T212 → they appear live automatically (positions endpoint). When C (Sonya) needs a share → change `INVESTOR_C_SHARE` in lib/live-data.ts
+- Housekeeping: BRIEF.md/REPORT.md in repo root are untracked (worker artifacts); backups/ has pre-live-join snapshot; tag pre-live-join-0901
