@@ -371,10 +371,17 @@ async function fetchNftSource(): Promise<LiveResult<NftFloorHolding[]>> {
   }
 
   const counts = new Map<string, number>();
+  let ignoredNfts = 0;
   for (const nft of response.nfts) {
-    if (!nft || typeof nft !== "object" || Array.isArray(nft)) continue;
+    if (!nft || typeof nft !== "object" || Array.isArray(nft)) {
+      ignoredNfts += 1;
+      continue;
+    }
     const slug = (nft as Record<string, unknown>).collection;
-    if (typeof slug !== "string" || !slug.trim()) continue;
+    if (typeof slug !== "string" || !slug.trim()) {
+      ignoredNfts += 1;
+      continue;
+    }
     counts.set(slug, (counts.get(slug) ?? 0) + 1);
   }
 
@@ -407,9 +414,10 @@ async function fetchNftSource(): Promise<LiveResult<NftFloorHolding[]>> {
 
   const missingFloors = holdings.filter((holding) => holding.floorEth === null).length;
   const paginationIncomplete = typeof response.next === "string" && response.next.length > 0;
-  const partial = missingFloors > 0 || paginationIncomplete;
+  const partial = missingFloors > 0 || paginationIncomplete || ignoredNfts > 0;
   const details = [
     missingFloors > 0 ? `${missingFloors} collection floor${missingFloors === 1 ? " is" : "s are"} unavailable.` : "",
+    ignoredNfts > 0 ? `${ignoredNfts} wallet item${ignoredNfts === 1 ? " was" : "s were"} missing collection metadata.` : "",
     paginationIncomplete ? "The wallet contains more than 200 NFTs; this snapshot is partial." : "",
   ].filter(Boolean).join(" ");
 
@@ -513,7 +521,9 @@ export function buildJoinedPortfolio(inputs: JoinedPortfolioInputs, asOf = nowIs
     return { ...holding, valueEth, valueUsd, valueThb };
   });
 
-  const nftsEth = inputs.nfts.data === null ? null : sumComplete(nfts.map((holding) => holding.valueEth));
+  const nftsEth = inputs.nfts.data === null || inputs.nfts.state.status === "partial"
+    ? null
+    : sumComplete(nfts.map((holding) => holding.valueEth));
   const nftsUsd = nftsEth === 0 ? 0 : convertAmount(nftsEth, ethToUsd);
   const nftsThb = nftsUsd === 0 ? 0 : convertAmount(nftsUsd, fiatFx?.usdToThb ?? null);
   const t212Thb = convertAmount(summary?.totalValue ?? null, rateToThb(accountCurrency, fiatFx));

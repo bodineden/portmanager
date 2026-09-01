@@ -66,10 +66,17 @@ describe("buildJoinedPortfolio", () => {
   });
 
   it("keeps the operator-verified 50/50/0 ownership in one derived config", () => {
-    const { ownership } = buildJoinedPortfolio(fixtureInputs(), AS_OF);
+    const portfolio = buildJoinedPortfolio(fixtureInputs(), AS_OF);
+    const { ownership } = portfolio;
 
     expect(ownership).toEqual({ aShare: 0.5, bShare: 0.5, cShare: 0 });
     expect(ownership.aShare + ownership.bShare + ownership.cShare).toBe(1);
+    expect(portfolio.t212.cashAvailable! * ownership.aShare).toBe(243.5);
+    expect(portfolio.t212.cashAvailable! * ownership.bShare).toBe(243.5);
+    expect(portfolio.t212.cashAvailable! * ownership.cShare).toBe(0);
+    expect(portfolio.totals.grandTotalThb! * ownership.aShare).toBeCloseTo(17_549.6544, 6);
+    expect(portfolio.totals.grandTotalThb! * ownership.bShare).toBeCloseTo(17_549.6544, 6);
+    expect(portfolio.totals.grandTotalThb! * ownership.cShare).toBe(0);
   });
 
   it("preserves live cash and a successful empty-positions response", () => {
@@ -144,6 +151,19 @@ describe("buildJoinedPortfolio", () => {
     const portfolio = buildJoinedPortfolio(inputs, AS_OF);
 
     expect(portfolio.totals.nftsEth).toBeCloseTo(0.1831154, 10);
+    expect(portfolio.totals.nftsUsd).toBeNull();
+    expect(portfolio.totals.nftsThb).toBeNull();
+    expect(portfolio.totals.grandTotalThb).toBeNull();
+  });
+
+  it("does not present a partial NFT inventory as a complete total", () => {
+    const inputs = fixtureInputs();
+    inputs.nfts.state = state("partial", "fixture wallet page is incomplete");
+    const portfolio = buildJoinedPortfolio(inputs, AS_OF);
+
+    expect(portfolio.nfts).toHaveLength(2);
+    expect(portfolio.nfts[0].valueEth).not.toBeNull();
+    expect(portfolio.totals.nftsEth).toBeNull();
     expect(portfolio.totals.nftsUsd).toBeNull();
     expect(portfolio.totals.nftsThb).toBeNull();
     expect(portfolio.totals.grandTotalThb).toBeNull();
@@ -229,6 +249,7 @@ describe("getJoinedPortfolio", () => {
       headers: { "Content-Type": "application/json" },
     });
     const fetchMock = vi.fn(async (input: string | URL | Request, _init?: RequestInit) => {
+      void _init;
       const url = String(input);
       if (url.endsWith("/equity/account/summary")) {
         return json({
