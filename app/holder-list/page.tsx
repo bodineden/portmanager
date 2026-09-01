@@ -1,141 +1,353 @@
 import Link from "next/link";
 import { AppSidebar } from "../components/app-sidebar";
-import { PendingButton } from "../components/pending-button";
 import {
-  formatDate,
-  formatMoney,
-  getHoldingMetrics,
-  isNeonConfigured,
-  listAssets,
-  listDeletedInvestors,
-  listInvestorHoldings,
-  listInvestors,
-  type InvestorHolding,
-} from "@/lib/assets-db";
-import { recoverInvestorAction, removeHoldingAction, removeInvestorAction, saveHoldingAction, saveInvestorAction } from "./actions";
-import { CsvExportButton } from "./csv-export-button";
+  formatCurrency,
+  formatEth,
+  formatThb,
+  formatUsd,
+  getJoinedPortfolio,
+  type JoinedNftHolding,
+  type JoinedPortfolio,
+  type JoinedT212Position,
+  type LiveSourceState,
+  type SourceStatus,
+} from "@/lib/live-data";
 import "./holder-list.css";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-function InvestorGroup({ name, holdings }: { name: string; holdings: InvestorHolding[] }) {
-  const currentValue = holdings.reduce((sum, holding) => sum + holding.currentValueBase, 0);
-  const acquiredCost = holdings.reduce((sum, holding) => sum + holding.acquiredCost, 0);
-  const gainLoss = currentValue - acquiredCost;
+type InvestorView = {
+  code: "A" | "B" | "C";
+  name: "Bodin" | "PP" | "Sonya";
+  share: number;
+};
 
+function beneficialValue(value: number | null | undefined, share: number): number | null {
+  if (share === 0) return 0;
+  if (value === null || value === undefined || !Number.isFinite(value)) return null;
+  return value * share;
+}
+
+function formatPercent(value: number): string {
+  return new Intl.NumberFormat("en-US", {
+    style: "percent",
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 2,
+  }).format(value);
+}
+
+function formatQuantity(value: number | null | undefined, maximumFractionDigits = 6): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return "—";
+  return value.toLocaleString("en-US", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits,
+  });
+}
+
+function formatTimestamp(value: string | null): string {
+  if (!value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "—";
+  return new Intl.DateTimeFormat("en-GB", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+    timeZone: "UTC",
+  }).format(date) + " UTC";
+}
+
+function SourceBadge({ state }: { state: LiveSourceState }) {
   return (
-    <section className="holder-investor-panel panel">
-      <header className="holder-investor-header">
-        <div className="holder-investor-identity">
-          <span className="holder-investor-status" aria-hidden="true" />
-          <div>
-            <div className="holder-investor-title-line">
-              <h2>{name}</h2>
-              <span className="data-tag">ACTIVE</span>
-            </div>
-            <p>{holdings.length} active holdings <span aria-hidden="true">/</span> base currency THB</p>
-          </div>
-        </div>
-        <dl className="holder-investor-totals">
-          <div>
-            <dt>Current value</dt>
-            <dd className="numeric">{formatMoney(currentValue, "THB")}</dd>
-          </div>
-          <div>
-            <dt>Gain / loss</dt>
-            <dd className={`numeric ${gainLoss >= 0 ? "positive" : "negative"}`}>
-              {gainLoss >= 0 ? "+" : ""}
-              {formatMoney(gainLoss, "THB")}
-            </dd>
-          </div>
-        </dl>
-      </header>
-
-      <div className="holder-table-wrap">
-        <table className="holder-table data-table">
-          <thead>
-            <tr>
-              {[
-                "Asset",
-                "Shares",
-                "Current Price",
-                "FX to THB",
-                "Acquired Cost (THB)",
-                "Acquired At",
-                "Current Value (THB)",
-                "Gain / Loss (THB)",
-                "Actions",
-              ].map((heading) => (
-                <th key={heading}>{heading}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {holdings.length === 0 ? (
-              <tr>
-                <td colSpan={9} className="holder-empty-cell">No active holdings assigned to this investor.</td>
-              </tr>
-            ) : (
-              holdings.map((holding) => (
-                <tr key={holding.id}>
-                  <td>
-                    <div className="holder-asset-cell">
-                      <span className="ticker-badge">{holding.ticker}</span>
-                      <span title={holding.assetName}>{holding.assetName}</span>
-                    </div>
-                  </td>
-                  <td className="numeric holder-number-strong">{holding.shares.toLocaleString("en-US")}</td>
-                  <td className="numeric">{formatMoney(holding.currentPrice, holding.currencyCode)}</td>
-                  <td className="numeric">{holding.exchangeRateToBase.toLocaleString("en-US", { maximumFractionDigits: 6 })}</td>
-                  <td className="numeric">{formatMoney(holding.acquiredCost, "THB")}</td>
-                  <td className="numeric holder-date">{formatDateOnly(holding.acquiredAt)}</td>
-                  <td className="numeric holder-number-strong">{formatMoney(holding.currentValueBase, "THB")}</td>
-                  <td className={`numeric holder-number-strong ${holding.gainLoss >= 0 ? "positive" : "negative"}`}>
-                    {holding.gainLoss >= 0 ? "+" : ""}
-                    {formatMoney(holding.gainLoss, "THB")}
-                  </td>
-                  <td className="holder-action-cell">
-                    <form action={removeHoldingAction}>
-                      <input type="hidden" name="id" value={holding.id} />
-                      <PendingButton
-                        aria-label={`Remove ${holding.ticker} from ${holding.investorName}`}
-                        title={`Remove ${holding.ticker} from ${holding.investorName}`}
-                        pendingLabel=""
-                        className="pm-button pm-button-danger pm-button-icon holder-remove-button"
-                      >
-                        x
-                      </PendingButton>
-                    </form>
-                  </td>
-                </tr>
-              ))
-            )}
-          </tbody>
-        </table>
-      </div>
-    </section>
+    <span className={`holder-source-badge is-${state.status}`}>
+      <span aria-hidden="true" />
+      {state.status.toUpperCase()}
+    </span>
   );
 }
 
-function formatDateOnly(value: string) {
-  return formatDate(value);
+function PositionTable({
+  positions,
+  portfolio,
+  share,
+}: {
+  positions: JoinedT212Position[];
+  portfolio: JoinedPortfolio;
+  share: number;
+}) {
+  const source = portfolio.sources.t212Positions;
+
+  if (source.status === "unavailable") {
+    return (
+      <div className="holder-unavailable-state" role="status">
+        <strong>Position data unavailable</strong>
+        <p>{source.message} No position count or value has been assumed.</p>
+      </div>
+    );
+  }
+
+  if (positions.length === 0) {
+    return (
+      <div className="holder-empty-state">
+        <strong>No T212 positions yet</strong>
+        <p>No positions are held right now. Stocks and ETFs bought in T212 will appear here live.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="holder-table-scroll">
+      <table className="holder-data-table holder-position-table">
+        <thead>
+          <tr>
+            <th>Ticker / asset</th>
+            <th className="numeric">Beneficial qty</th>
+            <th className="numeric">Average</th>
+            <th className="numeric">Current</th>
+            <th className="numeric">Beneficial value</th>
+            <th className="numeric">P/L allocation</th>
+          </tr>
+        </thead>
+        <tbody>
+          {positions.map((position) => {
+            const priceCurrency = position.currency;
+            const pnlCurrency = position.pplCurrency ?? portfolio.t212.currency;
+
+            return (
+              <tr key={position.ticker}>
+                <td>
+                  <span className="holder-ticker">{position.ticker}</span>
+                  <small>{position.name}</small>
+                </td>
+                <td className="numeric">{formatQuantity(position.quantity * share)}</td>
+                <td className="numeric muted">{formatCurrency(position.averagePrice, priceCurrency)}</td>
+                <td className="numeric">{formatCurrency(position.currentPrice, priceCurrency)}</td>
+                <td className="numeric holder-value-cell">
+                  {formatThb(beneficialValue(position.valueThb, share))}
+                </td>
+                <td className={`numeric ${position.ppl === null ? "muted" : position.ppl >= 0 ? "positive" : "negative"}`}>
+                  {formatCurrency(beneficialValue(position.ppl, share), pnlCurrency)}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function NftTable({
+  holdings,
+  source,
+  share,
+}: {
+  holdings: JoinedNftHolding[];
+  source: LiveSourceState;
+  share: number;
+}) {
+  if (source.status === "unavailable") {
+    return (
+      <div className="holder-unavailable-state" role="status">
+        <strong>NFT holdings unavailable</strong>
+        <p>{source.message} No collection count, floor, or wallet value has been assumed.</p>
+      </div>
+    );
+  }
+
+  if (holdings.length === 0) {
+    return (
+      <div className="holder-empty-state">
+        <strong>No NFT collections in the live wallet</strong>
+        <p>The current wallet response contains no holdings.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="holder-table-scroll">
+      <table className="holder-data-table holder-nft-table">
+        <thead>
+          <tr>
+            <th>Collection</th>
+            <th className="numeric">Wallet tokens</th>
+            <th className="numeric">Floor</th>
+            <th className="numeric">Beneficial ETH</th>
+            <th className="numeric">Beneficial USD</th>
+            <th className="numeric">Beneficial THB</th>
+          </tr>
+        </thead>
+        <tbody>
+          {holdings.map((holding) => (
+            <tr key={holding.collection}>
+              <td>
+                <span className="holder-collection">{holding.collectionName}</span>
+                <small>{holding.collection}</small>
+              </td>
+              <td className="numeric">{holding.tokenCount}</td>
+              <td className="numeric">
+                {holding.floorEth === null ? "—" : `${formatQuantity(holding.floorEth, 7)} ETH`}
+              </td>
+              <td className="numeric">{formatEth(beneficialValue(holding.valueEth, share))}</td>
+              <td className="numeric">{formatUsd(beneficialValue(holding.valueUsd, share))}</td>
+              <td className="numeric holder-value-cell">{formatThb(beneficialValue(holding.valueThb, share))}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function InvestorPanel({ investor, portfolio }: { investor: InvestorView; portfolio: JoinedPortfolio }) {
+  const isZeroShare = investor.share === 0;
+  const accountCurrency = portfolio.t212.currency;
+  const accountValueShare = beneficialValue(portfolio.t212.totalValue, investor.share);
+  const cashShare = beneficialValue(portfolio.t212.cashAvailable, investor.share);
+  const positionCount = portfolio.sources.t212Positions.status === "unavailable"
+    ? null
+    : portfolio.t212.investments.length;
+
+  return (
+    <article className={`holder-investor-panel panel ${isZeroShare ? "is-zero-share" : ""}`}>
+      <header className="holder-investor-header">
+        <div className="holder-investor-identity">
+          <span className="holder-investor-mark" aria-hidden="true">{investor.code}</span>
+          <div>
+            <p className="eyebrow">INVESTOR {investor.code} / BENEFICIAL OWNERSHIP</p>
+            <div className="holder-investor-title-line">
+              <h2>{investor.code} / {investor.name}</h2>
+              <span className="data-tag">{isZeroShare ? "NO ALLOCATION" : "ACTIVE SPLIT"}</span>
+            </div>
+          </div>
+        </div>
+        <div className="holder-share-readout">
+          <small>RETURNED SHARE</small>
+          <strong>{formatPercent(investor.share)}</strong>
+        </div>
+      </header>
+
+      <section className="holder-benefit-grid" aria-label={`${investor.name} beneficial value`}>
+        <div>
+          <span>Joined beneficial value</span>
+          <strong>{formatThb(beneficialValue(portfolio.totals.grandTotalThb, investor.share))}</strong>
+          <small>{formatUsd(beneficialValue(portfolio.totals.grandTotalUsd, investor.share))}</small>
+        </div>
+        <div>
+          <span>T212 account share</span>
+          <strong>{formatThb(beneficialValue(portfolio.totals.t212Thb, investor.share))}</strong>
+          <small>{formatCurrency(accountValueShare, accountCurrency)} account value</small>
+        </div>
+        <div>
+          <span>NFT wallet share</span>
+          <strong>{formatThb(beneficialValue(portfolio.totals.nftsThb, investor.share))}</strong>
+          <small>
+            {formatEth(beneficialValue(portfolio.totals.nftsEth, investor.share))}
+            <span aria-hidden="true"> · </span>
+            {formatUsd(beneficialValue(portfolio.totals.nftsUsd, investor.share))}
+          </small>
+        </div>
+      </section>
+
+      {isZeroShare ? (
+        <section className="holder-zero-allocation">
+          <span className="holder-zero-mark" aria-hidden="true">0%</span>
+          <div>
+            <h3>Explicit zero beneficial ownership</h3>
+            <p>
+              Sonya currently has 0% of T212 cash, T212 positions, and the NFT wallet under the returned ownership configuration.
+            </p>
+          </div>
+        </section>
+      ) : (
+        <div className="holder-asset-grid">
+          <section className="holder-live-panel" aria-labelledby={`t212-${investor.code}`}>
+            <header className="holder-live-panel-header">
+              <div>
+                <p className="eyebrow">TRADING 212 / CASH + POSITIONS</p>
+                <h3 id={`t212-${investor.code}`}>Beneficial account interest</h3>
+              </div>
+              <div className="holder-source-badges">
+                <SourceBadge state={portfolio.sources.t212Summary} />
+                <SourceBadge state={portfolio.sources.t212Positions} />
+              </div>
+            </header>
+
+            <dl className="holder-account-strip">
+              <div>
+                <dt>Beneficial cash available</dt>
+                <dd>{formatCurrency(cashShare, accountCurrency)}</dd>
+                <small>Account cash: {formatCurrency(portfolio.t212.cashAvailable, accountCurrency)}</small>
+              </div>
+              <div>
+                <dt>Beneficial account value</dt>
+                <dd>{formatCurrency(accountValueShare, accountCurrency)}</dd>
+                <small>{formatThb(beneficialValue(portfolio.totals.t212Thb, investor.share))} at live FX</small>
+              </div>
+              <div>
+                <dt>Open positions</dt>
+                <dd>{positionCount === null ? "—" : positionCount}</dd>
+                <small>{formatPercent(investor.share)} economic allocation</small>
+              </div>
+            </dl>
+
+            <PositionTable positions={portfolio.t212.investments} portfolio={portfolio} share={investor.share} />
+          </section>
+
+          <section className="holder-live-panel" aria-labelledby={`nft-${investor.code}`}>
+            <header className="holder-live-panel-header">
+              <div>
+                <p className="eyebrow">ROBINHOOD CHAIN / NFT WALLET</p>
+                <h3 id={`nft-${investor.code}`}>Beneficial wallet interest</h3>
+              </div>
+              <SourceBadge state={portfolio.sources.nfts} />
+            </header>
+            <div className="holder-economic-note">
+              Wallet token counts remain whole-wallet counts; values below apply the returned {formatPercent(investor.share)} economic share.
+            </div>
+            <NftTable holdings={portfolio.nfts} source={portfolio.sources.nfts} share={investor.share} />
+          </section>
+        </div>
+      )}
+    </article>
+  );
+}
+
+function overallSourceStatus(states: LiveSourceState[]): { status: SourceStatus; label: string } {
+  if (states.some((state) => state.status === "unavailable")) {
+    return { status: "unavailable", label: "DEGRADED SOURCES" };
+  }
+  if (states.some((state) => state.status === "partial")) {
+    return { status: "partial", label: "PARTIAL SOURCES" };
+  }
+  return { status: "live", label: "ALL SOURCES LIVE" };
 }
 
 export default async function HolderListPage() {
-  if (!isNeonConfigured()) {
-    return <NeonSetupPage title="Holder List" />;
-  }
-
-  const assets = await listAssets();
-  const investors = await listInvestors();
-  const deletedInvestors = await listDeletedInvestors();
-  const holdings = await listInvestorHoldings();
-  const metrics = getHoldingMetrics(investors, holdings);
-  const holdingsByInvestor = investors.map((investor) => ({
-    investor,
-    holdings: holdings.filter((holding) => holding.investorId === investor.id),
-  }));
+  const portfolio = await getJoinedPortfolio();
+  const investors: InvestorView[] = [
+    { code: "A", name: "Bodin", share: portfolio.ownership.aShare },
+    { code: "B", name: "PP", share: portfolio.ownership.bShare },
+    { code: "C", name: "Sonya", share: portfolio.ownership.cShare },
+  ];
+  const sourceCards: Array<{ label: string; provider: string; state: LiveSourceState }> = [
+    { label: "T212 account", provider: "Trading 212 summary", state: portfolio.sources.t212Summary },
+    { label: "T212 positions", provider: "Trading 212 positions", state: portfolio.sources.t212Positions },
+    { label: "NFT wallet", provider: "OpenSea", state: portfolio.sources.nfts },
+    { label: "Fiat FX", provider: "open.er-api.com", state: portfolio.sources.fiatFx },
+    { label: "ETH / USD", provider: "CoinGecko", state: portfolio.sources.ethPrice },
+  ];
+  const overall = overallSourceStatus(sourceCards.map((source) => source.state));
+  const t212PositionDetail = portfolio.sources.t212Positions.status === "unavailable"
+    ? "Position count unavailable"
+    : `${portfolio.t212.investments.length} open position${portfolio.t212.investments.length === 1 ? "" : "s"}`;
+  const nftCollectionDetail = portfolio.sources.nfts.status === "unavailable"
+    ? "Collection count unavailable"
+    : `${portfolio.nfts.length} live collection${portfolio.nfts.length === 1 ? "" : "s"}`;
 
   return (
     <main className="app-root holder-page">
@@ -145,214 +357,94 @@ export default async function HolderListPage() {
         <section className="workspace-main">
           <header className="page-header">
             <div className="page-title-group">
-              <p className="eyebrow">OWNERSHIP CONTROL</p>
+              <p className="eyebrow">LIVE JOINED PORT / BENEFICIAL OWNERSHIP</p>
               <h1 className="page-title">Holder List</h1>
-              <p className="page-subtitle">Investor positions, acquisition basis, and THB valuation</p>
+              <p className="page-subtitle">T212 cash and positions plus NFT wallet value, allocated from one live snapshot</p>
             </div>
             <div className="header-tools">
-              <span className="header-status"><span className="status-light" aria-hidden="true" /> LIVE REGISTRY</span>
-              <CsvExportButton holdings={holdings.map((holding) => ({ ticker: holding.ticker, name: holding.assetName, shares: holding.shares, currentPrice: holding.currentPrice, valueThb: holding.currentValueBase }))} />
+              <span className={`header-status holder-header-status is-${overall.status}`}>
+                <span className="status-light" aria-hidden="true" />
+                {overall.label}
+              </span>
               <Link href="/exchange-rate" className="toolbar-link">Exchange Rates</Link>
               <Link href="/" className="toolbar-link">Home</Link>
-              <Link href="/holder-list" aria-label="Refresh holders" title="Refresh holders" className="refresh-link">R</Link>
+              <Link href="/holder-list" aria-label="Refresh live holders" title="Refresh live holders" className="refresh-link">R</Link>
             </div>
           </header>
 
           <div className="page-content holder-content">
-            <section className="holder-kpi-grid" aria-label="Holder metrics">
-              {metrics.map((metric, index) => {
-                const tone = metric.tone.includes("rose") ? "negative" : metric.tone.includes("emerald") ? "positive" : "muted";
-
-                return (
-                  <article key={metric.label} className="holder-kpi panel">
-                    <div className="holder-kpi-heading">
-                      <p>{metric.label}</p>
-                      <span aria-hidden="true">0{index + 1}</span>
-                    </div>
-                    <p className="holder-kpi-value metric-value">{metric.value}</p>
-                    <p className={`holder-kpi-detail ${tone}`}>{metric.detail}</p>
-                  </article>
-                );
-              })}
+            <section className="holder-summary-grid" aria-label="Live ownership summary">
+              <article className="holder-summary-card panel is-primary">
+                <span className="holder-metric-index">01 / JOINED TOTAL</span>
+                <p>Live portfolio value</p>
+                <strong>{formatThb(portfolio.totals.grandTotalThb)}</strong>
+                <small>{formatUsd(portfolio.totals.grandTotalUsd)} secondary</small>
+              </article>
+              <article className="holder-summary-card panel">
+                <span className="holder-metric-index">02 / T212 ACCOUNT</span>
+                <p>Cash + positions</p>
+                <strong>{formatThb(portfolio.totals.t212Thb)}</strong>
+                <small>
+                  {formatCurrency(portfolio.t212.cashAvailable, portfolio.t212.currency)} cash
+                  <span aria-hidden="true"> · </span>
+                  {t212PositionDetail}
+                </small>
+              </article>
+              <article className="holder-summary-card panel">
+                <span className="holder-metric-index">03 / NFT WALLET</span>
+                <p>Collection floor value</p>
+                <strong>{formatThb(portfolio.totals.nftsThb)}</strong>
+                <small>{formatEth(portfolio.totals.nftsEth)} · {nftCollectionDetail}</small>
+              </article>
+              <article className="holder-summary-card panel">
+                <span className="holder-metric-index">04 / RETURNED SPLIT</span>
+                <p>Beneficial owners</p>
+                <strong className="holder-split-value">
+                  A {formatPercent(portfolio.ownership.aShare)} / B {formatPercent(portfolio.ownership.bShare)}
+                </strong>
+                <small>C / Sonya {formatPercent(portfolio.ownership.cShare)}</small>
+              </article>
             </section>
 
-            <div className="holder-layout">
-              <section className="holder-investor-stack" aria-label="Investor holdings">
-                <div className="holder-section-label">
-                  <div>
-                    <p className="eyebrow">POSITION REGISTER</p>
-                    <h2>Holdings by investor</h2>
-                  </div>
-                  <span className="panel-count">{holdings.length} POSITIONS</span>
+            <section className="holder-investor-stack" aria-labelledby="holder-register-title">
+              <div className="holder-section-heading">
+                <div>
+                  <p className="eyebrow">BENEFICIAL POSITION REGISTER</p>
+                  <h2 id="holder-register-title">A / Bodin · B / PP · C / Sonya</h2>
                 </div>
+                <span className="panel-count">3 HOLDERS / LIVE CONFIG</span>
+              </div>
+              {investors.map((investor) => (
+                <InvestorPanel key={investor.code} investor={investor} portfolio={portfolio} />
+              ))}
+            </section>
 
-                {holdingsByInvestor.length === 0 ? (
-                  <div className="holder-empty-panel panel">
-                    <span className="holder-empty-mark" aria-hidden="true">00</span>
+            <section className="holder-sources panel" aria-labelledby="holder-sources-title">
+              <header className="panel-header">
+                <div>
+                  <p className="eyebrow">SOURCE HEALTH / FAIL-SOFT READOUT</p>
+                  <h2 className="panel-title" id="holder-sources-title">Live source states</h2>
+                  <p className="panel-subtitle">Unavailable values stay as —; no missing value is treated as zero.</p>
+                </div>
+                <span className="panel-count">SNAPSHOT {formatTimestamp(portfolio.asOf)}</span>
+              </header>
+              <div className="holder-source-grid">
+                {sourceCards.map((source) => (
+                  <article className="holder-source-card" key={source.label}>
                     <div>
-                      <h3>No active investors</h3>
-                      <p>Add an investor from the control panel to begin assigning holdings.</p>
+                      <span>{source.label}</span>
+                      <SourceBadge state={source.state} />
                     </div>
-                  </div>
-                ) : (
-                  holdingsByInvestor.map(({ investor, holdings: investorHoldings }) => (
-                    <InvestorGroup key={investor.id} name={investor.name} holdings={investorHoldings} />
-                  ))
-                )}
-              </section>
-
-              <aside className="holder-control-stack">
-                <section className="holder-side-panel panel">
-                  <div className="panel-header">
-                    <div>
-                      <p className="eyebrow">REGISTRY</p>
-                      <h2 className="panel-title">Investors</h2>
-                    </div>
-                    <span className="panel-count">{investors.length} ACTIVE</span>
-                  </div>
-                  <div className="holder-roster panel-body">
-                    {investors.length === 0 ? (
-                      <p className="holder-empty-note">No active investors in the registry.</p>
-                    ) : (
-                      investors.map((investor) => (
-                        <div key={investor.id} className="holder-person-row">
-                          <span className="holder-person-mark" aria-hidden="true">{investor.name.slice(0, 1)}</span>
-                          <div className="holder-person-copy">
-                            <strong title={investor.name}>{investor.name}</strong>
-                            <small className="mono">ID {investor.id.slice(0, 8).toUpperCase()}</small>
-                          </div>
-                          <form action={removeInvestorAction}>
-                            <input type="hidden" name="id" value={investor.id} />
-                            <PendingButton
-                              aria-label={`Remove ${investor.name}`}
-                              title={`Remove ${investor.name}`}
-                              pendingLabel=""
-                              className="pm-button pm-button-danger pm-button-icon holder-remove-button"
-                            >
-                              x
-                            </PendingButton>
-                          </form>
-                        </div>
-                      ))
-                    )}
-                  </div>
-                </section>
-
-                <section className="holder-side-panel panel">
-                  <div className="panel-header">
-                    <div>
-                      <p className="eyebrow">IDENTITY</p>
-                      <h2 className="panel-title">Add / Edit Investor</h2>
-                    </div>
-                    <span className="data-tag">PERSON</span>
-                  </div>
-                  <form action={saveInvestorAction} className="holder-form panel-body">
-                    <label className="holder-field">
-                      <span className="holder-field-label">Investor Name</span>
-                      <input name="name" placeholder="Alice Johnson" required className="bp6-input holder-input" />
-                    </label>
-                    <PendingButton className="pm-button pm-button-primary holder-submit" pendingLabel="Saving Investor">
-                      Save Investor
-                    </PendingButton>
-                  </form>
-                </section>
-
-                <section className="holder-side-panel panel">
-                  <div className="panel-header">
-                    <div>
-                      <p className="eyebrow">ALLOCATION</p>
-                      <h2 className="panel-title">Add Asset to Holder</h2>
-                    </div>
-                    <span className="data-tag">POSITION</span>
-                  </div>
-                  <form action={saveHoldingAction} className="holder-form panel-body">
-                    <div className="holder-form-grid">
-                      <label className="holder-field holder-field-wide">
-                        <span className="holder-field-label">Investor</span>
-                        <select name="investorId" className="holder-input holder-select">
-                          {investors.map((investor) => (
-                            <option key={investor.id} value={investor.id}>{investor.name}</option>
-                          ))}
-                        </select>
-                      </label>
-                      <label className="holder-field holder-field-wide">
-                        <span className="holder-field-label">Asset</span>
-                        <select name="assetId" className="holder-input holder-select">
-                          {assets.map((asset) => (
-                            <option key={asset.id} value={asset.id}>{asset.ticker} - {asset.fullName}</option>
-                          ))}
-                        </select>
-                      </label>
-                      <label className="holder-field">
-                        <span className="holder-field-label">Shares</span>
-                        <input name="shares" placeholder="100" required inputMode="decimal" className="bp6-input holder-input numeric" />
-                      </label>
-                      <label className="holder-field">
-                        <span className="holder-field-label">Acquired Cost (THB)</span>
-                        <input name="acquiredCost" placeholder="25000" required inputMode="decimal" className="bp6-input holder-input numeric" />
-                      </label>
-                      <label className="holder-field holder-field-wide">
-                        <span className="holder-field-label">Acquired At</span>
-                        <input name="acquiredAt" type="date" required className="bp6-input holder-input numeric" />
-                      </label>
-                    </div>
-                    <PendingButton className="pm-button pm-button-primary holder-submit" pendingLabel="Saving Holding">
-                      Save Holding
-                    </PendingButton>
-                  </form>
-                </section>
-
-                <section className="holder-side-panel panel">
-                  <div className="panel-header">
-                    <div>
-                      <p className="eyebrow">RECOVERY QUEUE</p>
-                      <h2 className="panel-title">Deleted Investors</h2>
-                    </div>
-                    <span className="panel-count">{deletedInvestors.length} RECOVERABLE</span>
-                  </div>
-                  <div className="holder-roster panel-body">
-                    {deletedInvestors.length === 0 ? (
-                      <p className="holder-empty-note">No deleted investors to recover.</p>
-                    ) : (
-                      deletedInvestors.map((investor) => (
-                        <div key={investor.id} className="holder-person-row is-deleted">
-                          <span className="holder-person-mark" aria-hidden="true">{investor.name.slice(0, 1)}</span>
-                          <div className="holder-person-copy">
-                            <strong title={investor.name}>{investor.name}</strong>
-                            <small>DELETED INVESTOR</small>
-                          </div>
-                          <form action={recoverInvestorAction}>
-                            <input type="hidden" name="id" value={investor.id} />
-                            <PendingButton className="pm-button holder-recover-button" pendingLabel="Restoring">
-                              Recover
-                            </PendingButton>
-                          </form>
-                        </div>
-                      ))
-                    )}
-                  </div>
-                </section>
-              </aside>
-            </div>
+                    <strong>{source.provider}</strong>
+                    <p>{source.state.message}</p>
+                    <small>As of {formatTimestamp(source.state.asOf)}</small>
+                  </article>
+                ))}
+              </div>
+            </section>
           </div>
         </section>
       </div>
-    </main>
-  );
-}
-
-function NeonSetupPage({ title }: { title: string }) {
-  return (
-    <main className="setup-canvas holder-setup">
-      <section className="setup-panel">
-        <p className="eyebrow">DATA CONNECTION REQUIRED</p>
-        <h1>{title}</h1>
-        <p>
-          Neon is enabled in the code, but <code>DATABASE_URL</code> is not set yet. Add your Neon Postgres connection string to <code>.env.local</code>,
-          then restart the development server.
-        </p>
-        <Link href="/" className="toolbar-link holder-setup-link">Back to Home</Link>
-      </section>
     </main>
   );
 }
