@@ -1,67 +1,80 @@
 import Link from "next/link";
 import { AppSidebar } from "../components/app-sidebar";
-import { PendingButton } from "../components/pending-button";
 import {
-  formatDate,
-  formatDateTime,
-  formatMoney,
-  getAssetMetrics,
-  getDailyChangePercent,
-  isNeonConfigured,
-  listAssets,
-  listCurrencies,
-  listDeletedAssets,
-  listInvestorHoldings,
-  listPriceHistory,
-} from "@/lib/assets-db";
-import { recoverAssetAction, removeAssetAction, saveAssetAction, updatePriceAction } from "./actions";
-import { AssetDashboard } from "./asset-dashboard";
+  formatCurrency,
+  formatEth,
+  formatThb,
+  formatUsd,
+  getJoinedPortfolio,
+  type LiveSourceState,
+  type SourceStatus,
+} from "@/lib/live-data";
 import "./asset-list.css";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-function metricToneClass(tone: string) {
-  if (tone.includes("rose")) return "negative";
-  if (tone.includes("emerald")) return "positive";
-  if (tone.includes("blue")) return "accent";
-  return "muted";
+function formatTimestamp(value: string | null | undefined) {
+  if (!value) return "—";
+  const timestamp = new Date(value);
+  if (Number.isNaN(timestamp.getTime())) return "—";
+
+  return `${new Intl.DateTimeFormat("en-GB", {
+    dateStyle: "medium",
+    timeStyle: "medium",
+    timeZone: "UTC",
+  }).format(timestamp)} UTC`;
+}
+
+function formatNumber(value: number | null | undefined, maximumFractionDigits = 4) {
+  if (value === null || value === undefined || !Number.isFinite(value)) return "—";
+  return value.toLocaleString("en-US", { maximumFractionDigits });
+}
+
+function formatPercent(value: number) {
+  return `${(value * 100).toLocaleString("en-US", { maximumFractionDigits: 2 })}%`;
+}
+
+function formatCount(value: number | null | undefined) {
+  if (value === null || value === undefined || !Number.isFinite(value)) return "—";
+  return value.toLocaleString("en-US");
+}
+
+function sourceLabel(status: SourceStatus) {
+  if (status === "live") return "LIVE";
+  if (status === "partial") return "PARTIAL";
+  return "UNAVAILABLE";
+}
+
+function joinedStatus(states: LiveSourceState[]): SourceStatus {
+  if (states.every((state) => state.status === "live")) return "live";
+  if (states.every((state) => state.status === "unavailable")) return "unavailable";
+  return "partial";
+}
+
+function SourceBadge({ state }: { state: LiveSourceState }) {
+  return <span className={`asset-source-badge is-${state.status}`}>{sourceLabel(state.status)}</span>;
 }
 
 export default async function AssetListPage() {
-  if (!isNeonConfigured()) {
-    return <NeonSetupPage title="Asset List" />;
-  }
-
-  const assets = await listAssets();
-  const deletedAssets = await listDeletedAssets();
-  const currencies = await listCurrencies();
-  const priceHistory = await listPriceHistory();
-  const holdings = await listInvestorHoldings();
-  const metrics = getAssetMetrics(assets);
-  const dashboardAssets = assets.map((asset) => ({
-    id: asset.id,
-    ticker: asset.ticker,
-    fullName: asset.fullName,
-    currencyCode: asset.currencyCode,
-    currentPrice: asset.currentPrice,
-    previousPrice: asset.previousPrice,
-    valueThb: holdings.filter((holding) => holding.assetId === asset.id).reduce((sum, holding) => sum + holding.currentValueBase, 0),
-    updatedAt: formatDate(asset.priceUpdatedAt),
-  }));
-  const totalValue = holdings.reduce((sum, holding) => sum + holding.currentValueBase, 0);
-  const totalPreviousValue = holdings.reduce((sum, holding) => {
-    const asset = assets.find((candidate) => candidate.id === holding.assetId);
-    return sum + (asset && asset.currentPrice !== 0 ? holding.currentValueBase * asset.previousPrice / asset.currentPrice : holding.currentValueBase);
-  }, 0);
-  const totalChange = totalValue - totalPreviousValue;
-  const totalChangePct = totalPreviousValue === 0 ? 0 : totalChange / totalPreviousValue * 100;
-  const gainers = [...assets].filter((asset) => getDailyChangePercent(asset) >= 0).sort((a, b) => getDailyChangePercent(b) - getDailyChangePercent(a)).slice(0, 3);
-  const losers = [...assets].filter((asset) => getDailyChangePercent(asset) < 0).sort((a, b) => getDailyChangePercent(a) - getDailyChangePercent(b)).slice(0, 3);
-  const moverGroups = [
-    { label: "Gainers", items: gainers, tone: "positive" },
-    { label: "Losers", items: losers, tone: "negative" },
-  ] as const;
+  const portfolio = await getJoinedPortfolio();
+  const rawPositionCount = portfolio.t212.investments.length;
+  const rawNftTokenCount = portfolio.nfts.reduce((sum, holding) => sum + holding.tokenCount, 0);
+  const positionCount = portfolio.sources.t212Positions.status === "unavailable" ? null : rawPositionCount;
+  const nftCollectionCount = portfolio.sources.nfts.status === "unavailable" ? null : portfolio.nfts.length;
+  const nftTokenCount = portfolio.sources.nfts.status === "unavailable" ? null : rawNftTokenCount;
+  const liveEntryCount = positionCount === null || nftCollectionCount === null
+    ? null
+    : positionCount + nftCollectionCount;
+  const registryState = joinedStatus(Object.values(portfolio.sources));
+  const accountCurrency = portfolio.t212.currency;
+  const sourceFeeds: Array<{ label: string; state: LiveSourceState }> = [
+    { label: "T212 ACCOUNT", state: portfolio.sources.t212Summary },
+    { label: "T212 POSITIONS", state: portfolio.sources.t212Positions },
+    { label: "NFT HOLDINGS", state: portfolio.sources.nfts },
+    { label: "FIAT FX", state: portfolio.sources.fiatFx },
+    { label: "ETH PRICE", state: portfolio.sources.ethPrice },
+  ];
 
   return (
     <main className="workspace-shell asset-list-shell">
@@ -70,290 +83,270 @@ export default async function AssetListPage() {
       <section className="workspace-main">
         <header className="page-header">
           <div className="page-title-group">
-            <p className="eyebrow">Market operations / Asset intelligence</p>
+            <p className="eyebrow">LIVE PORTFOLIO / READ-ONLY REGISTRY</p>
             <h1 className="page-title">Asset List</h1>
-            <p className="page-subtitle">Price control, market movement, and registry oversight</p>
+            <p className="page-subtitle">Trading 212 account assets and Robinhood Chain NFT collections in one live registry</p>
           </div>
           <div className="header-tools">
-            <Link href="/" className="toolbar-link">Home</Link>
-            <span className="header-meta"><span className="status-light" aria-hidden="true" />Neon ledger online</span>
-            <Link href="/asset-list" aria-label="Refresh prices" title="Refresh prices" className="refresh-link">R</Link>
+            <span className="header-meta">
+              <span className={`asset-source-light is-${registryState}`} aria-hidden="true" />
+              {registryState === "live" ? "ALL FEEDS LIVE" : registryState === "partial" ? "PARTIAL LIVE DATA" : "FEEDS UNAVAILABLE"}
+            </span>
+            <Link href="/" className="toolbar-link">Command Center</Link>
+            <Link href="/asset-list" aria-label="Refresh live registry" title="Refresh live registry" className="refresh-link">R</Link>
           </div>
         </header>
 
         <div className="page-content asset-list-content">
-          <section className="asset-list-overview">
-            <div className="asset-overview-copy">
-              <p className="eyebrow">Consolidated portfolio value</p>
-              <p className="asset-overview-value numeric">{formatMoney(totalValue, "THB")}</p>
-              <p className="asset-overview-meta">
-                <span><strong className="numeric">{holdings.length}</strong> active holdings</span>
-                <span><strong className="numeric">{assets.length}</strong> tracked assets</span>
-                <span>Base currency <strong className="mono">THB</strong></span>
-              </p>
-            </div>
-            <div className={`asset-daily-change ${totalChange >= 0 ? "is-positive" : "is-negative"}`}>
-              <span>Daily change</span>
-              <strong className="numeric">{totalChange >= 0 ? "+" : ""}{formatMoney(totalChange, "THB")}</strong>
-              <small className="numeric">{totalChangePct >= 0 ? "+" : ""}{totalChangePct.toFixed(2)}%</small>
-            </div>
-          </section>
-
-          <section className="asset-kpi-strip" aria-label="Asset metrics">
-            {metrics.map((metric, index) => (
-              <div key={metric.label} className="panel asset-kpi-card">
-                <div className="asset-kpi-head">
-                  <span>{metric.label}</span>
-                  <span className="asset-kpi-index mono">0{index + 1}</span>
-                </div>
-                <strong className="asset-kpi-value numeric">{metric.value}</strong>
-                <small className={metricToneClass(metric.tone)}>{metric.detail}</small>
+          <section className="asset-registry-hero" aria-labelledby="asset-registry-total">
+            <div className="asset-registry-hero-copy">
+              <p className="eyebrow">JOINED LIVE VALUE / THB BASE</p>
+              <h2 id="asset-registry-total" className="asset-registry-value numeric">{formatThb(portfolio.totals.grandTotalThb)}</h2>
+              <div className="asset-registry-secondary">
+                <span><small>USD</small><strong className="numeric">{formatUsd(portfolio.totals.grandTotalUsd)}</strong></span>
+                <span><small>NFT VALUE</small><strong className="numeric">{formatEth(portfolio.totals.nftsEth)}</strong></span>
+                <span><small>SNAPSHOT</small><strong className="mono">{formatTimestamp(portfolio.asOf)}</strong></span>
               </div>
-            ))}
-          </section>
-
-          <div className="asset-list-primary-grid">
-            <AssetDashboard assets={dashboardAssets} updatePriceAction={updatePriceAction} />
-
-            <aside className="asset-list-side-stack">
-              <section className="panel asset-movers-panel">
-                <div className="panel-header">
-                  <div>
-                    <h2 className="panel-title">Biggest movers</h2>
-                    <p className="panel-subtitle">Ranked by one-day price delta</p>
-                  </div>
-                  <span className="panel-count">TOP 03</span>
-                </div>
-                <div className="asset-movers-body">
-                  {moverGroups.map((group) => (
-                    <div key={group.label} className="asset-mover-group">
-                      <div className="asset-mover-group-head">
-                        <span>{group.label}</span>
-                        <span className={group.tone}>{group.items.length}</span>
-                      </div>
-                      <div className="asset-mover-list">
-                        {group.items.length === 0 ? (
-                          <p className="asset-empty-inline">None today</p>
-                        ) : group.items.map((asset, index) => {
-                          const change = getDailyChangePercent(asset);
-                          return (
-                            <div key={asset.id} className="asset-mover-row">
-                              <span className="asset-mover-rank mono">0{index + 1}</span>
-                              <span className="asset-mover-name">
-                                <strong className="mono">{asset.ticker}</strong>
-                                <small>{asset.fullName}</small>
-                              </span>
-                              <span className={`change-badge numeric ${change >= 0 ? "positive" : "negative"}`}>
-                                {change >= 0 ? "+" : ""}{change.toFixed(2)}%
-                              </span>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </section>
-
-              <section id="asset-form" className="panel asset-editor-panel">
-                <div className="panel-header">
-                  <div>
-                    <h2 className="panel-title">Add / Edit Asset</h2>
-                    <p className="panel-subtitle">Ticker is the registry identity</p>
-                  </div>
-                  <span className="panel-count">UPSERT</span>
-                </div>
-                <form action={saveAssetAction} className="asset-editor-form">
-                  <div className="asset-form-grid">
-                    <label className="asset-field">
-                      <span>Ticker</span>
-                      <input name="ticker" placeholder="AAPL" required className="asset-field-control asset-ticker-input mono" />
-                    </label>
-                    <label className="asset-field asset-field-wide">
-                      <span>Asset name</span>
-                      <input name="fullName" placeholder="Apple Inc." required className="asset-field-control" />
-                    </label>
-                    <label className="asset-field asset-field-wide">
-                      <span>Source link</span>
-                      <input name="sourceLink" placeholder="https://finance.yahoo.com/quote/AAPL" className="asset-field-control mono" />
-                    </label>
-                    <label className="asset-field">
-                      <span>Currency code</span>
-                      <select name="currencyCode" defaultValue="USD" className="asset-field-control mono">
-                        {currencies.map((currency) => (
-                          <option key={currency.code} value={currency.code}>{currency.code} — {currency.name}</option>
-                        ))}
-                      </select>
-                    </label>
-                    <label className="asset-field">
-                      <span>Current price</span>
-                      <input name="currentPrice" placeholder="189.98" required inputMode="decimal" className="asset-field-control asset-number-input" />
-                    </label>
-                  </div>
-                  <div className="asset-form-actions">
-                    <PendingButton className="pm-button pm-button-primary asset-form-submit" pendingLabel="Saving Asset">
-                      Save Asset
-                    </PendingButton>
-                    <Link href="/asset-list" className="asset-cancel-button">Cancel</Link>
-                  </div>
-                </form>
-              </section>
-            </aside>
-          </div>
-
-          <section className="panel asset-registry-panel">
-            <div className="panel-header asset-registry-header">
+            </div>
+            <div className="asset-ownership-readout" aria-label="Portfolio ownership">
+              <span>BENEFICIAL OWNERSHIP</span>
               <div>
-                <h2 className="panel-title">Asset Registry</h2>
-                <p className="panel-subtitle">Canonical instruments and latest recorded market state</p>
+                <p><small>A</small><strong>Bodin</strong><b className="numeric">{formatPercent(portfolio.ownership.aShare)}</b></p>
+                <p><small>B</small><strong>PP</strong><b className="numeric">{formatPercent(portfolio.ownership.bShare)}</b></p>
+                <p><small>C</small><strong>Sonya</strong><b className="numeric">{formatPercent(portfolio.ownership.cShare)}</b></p>
               </div>
-              <div className="asset-registry-tools">
-                <label className="sr-only" htmlFor="asset-search">Search assets</label>
-                <input id="asset-search" placeholder="Search ticker or asset name" className="asset-field-control asset-registry-search" />
-                <select aria-label="Filter by currency" className="asset-field-control asset-registry-filter mono">
-                  <option>All currencies</option>
-                  {currencies.map((currency) => (
-                    <option key={currency.code}>{currency.code}</option>
-                  ))}
-                </select>
-                <span className="panel-count">{assets.length} ACTIVE</span>
-              </div>
-            </div>
-
-            <div className="asset-table-scroll">
-              <table className="asset-data-table">
-                <thead>
-                  <tr>
-                    <th>Ticker</th>
-                    <th>Full name</th>
-                    <th>Currency</th>
-                    <th className="asset-cell-right">Current price</th>
-                    <th className="asset-cell-right">Price change</th>
-                    <th>Price updated at</th>
-                    <th className="asset-action-cell">Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {assets.map((asset) => {
-                    const dailyChange = getDailyChangePercent(asset);
-
-                    return (
-                      <tr key={asset.id}>
-                        <td><span className="ticker-badge">{asset.ticker}</span></td>
-                        <td className="asset-name-cell">{asset.fullName}</td>
-                        <td><span className="currency-badge">{asset.currencyCode}</span></td>
-                        <td className="asset-cell-right numeric asset-price-cell">{formatMoney(asset.currentPrice, asset.currencyCode)}</td>
-                        <td className={`asset-cell-right numeric ${dailyChange < 0 ? "negative" : "positive"}`}>
-                          {dailyChange >= 0 ? "+" : ""}{dailyChange.toFixed(2)}%
-                        </td>
-                        <td className="mono asset-date-cell">{formatDateTime(asset.priceUpdatedAt)}</td>
-                        <td className="asset-action-cell">
-                          <form action={removeAssetAction}>
-                            <input type="hidden" name="id" value={asset.id} />
-                            <input type="hidden" name="confirmRemove" value="yes" />
-                            <PendingButton
-                              aria-label={`Remove ${asset.ticker}`}
-                              title={`Remove ${asset.ticker}`}
-                              pendingLabel=""
-                              className="pm-button pm-button-danger pm-button-icon asset-remove-button"
-                            >
-                              x
-                            </PendingButton>
-                          </form>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                  {assets.length === 0 ? (
-                    <tr><td colSpan={7} className="asset-table-empty">No active assets in the registry.</td></tr>
-                  ) : null}
-                </tbody>
-              </table>
             </div>
           </section>
 
-          <div className="asset-list-secondary-grid">
-            <section className="panel asset-history-panel">
-              <div className="panel-header">
-                <div>
-                  <h2 className="panel-title">Price History</h2>
-                  <p className="panel-subtitle">Most recent persisted market observations</p>
-                </div>
-                <span className="panel-count">{priceHistory.length} RECORDS</span>
+          <section className="asset-registry-kpis" aria-label="Live registry summary">
+            <article className="panel asset-registry-kpi is-primary">
+              <span className="asset-kpi-index">01 / T212 ACCOUNT</span>
+              <strong className="numeric">{formatThb(portfolio.totals.t212Thb)}</strong>
+              <small>{formatCurrency(portfolio.t212.totalValue, accountCurrency)} total value</small>
+            </article>
+            <article className="panel asset-registry-kpi">
+              <span className="asset-kpi-index">02 / CASH AVAILABLE</span>
+              <strong className="numeric">{formatCurrency(portfolio.t212.cashAvailable, accountCurrency)}</strong>
+              <small>{accountCurrency ?? "—"} · available to trade</small>
+            </article>
+            <article className="panel asset-registry-kpi">
+              <span className="asset-kpi-index">03 / NFT PORT</span>
+              <strong className="numeric">{formatThb(portfolio.totals.nftsThb)}</strong>
+              <small>{formatEth(portfolio.totals.nftsEth)} · {formatUsd(portfolio.totals.nftsUsd)}</small>
+            </article>
+            <article className="panel asset-registry-kpi">
+              <span className="asset-kpi-index">04 / LIVE REGISTRY</span>
+              <strong className="numeric">{formatCount(liveEntryCount)}</strong>
+              <small>{formatCount(positionCount)} T212 positions · {formatCount(nftCollectionCount)} NFT collections</small>
+            </article>
+          </section>
+
+          <section className="panel asset-live-panel">
+            <div className="panel-header asset-live-panel-header">
+              <div>
+                <p className="eyebrow">TRADING 212 / ACCOUNT + POSITIONS</p>
+                <h2 className="panel-title">Live Securities Registry</h2>
+                <p className="panel-subtitle">Account summary and every currently open stock or ETF position</p>
               </div>
+              <div className="asset-panel-status">
+                <SourceBadge state={portfolio.sources.t212Summary} />
+                <span className="panel-count">{formatCount(positionCount)} POSITIONS</span>
+              </div>
+            </div>
+
+            <div className="asset-account-strip">
+              <div>
+                <span>ACCOUNT CURRENCY</span>
+                <strong className="mono">{accountCurrency ?? "—"}</strong>
+              </div>
+              <div>
+                <span>CASH AVAILABLE</span>
+                <strong className="numeric">{formatCurrency(portfolio.t212.cashAvailable, accountCurrency)}</strong>
+              </div>
+              <div>
+                <span>INVESTMENTS</span>
+                <strong className="numeric">{formatCurrency(portfolio.t212.investmentsCurrentValue, accountCurrency)}</strong>
+              </div>
+              <div>
+                <span>TOTAL VALUE</span>
+                <strong className="numeric">{formatCurrency(portfolio.t212.totalValue, accountCurrency)}</strong>
+              </div>
+            </div>
+
+            {portfolio.sources.t212Summary.status === "unavailable" ? (
+              <div className="asset-source-notice is-unavailable">
+                <strong>Trading 212 account summary unavailable</strong>
+                <p>{portfolio.sources.t212Summary.message}</p>
+              </div>
+            ) : null}
+
+            {portfolio.sources.t212Positions.status === "unavailable" ? (
+              <div className="asset-empty-state is-unavailable">
+                <span className="asset-empty-code">T212 / —</span>
+                <div>
+                  <strong>Live positions are unavailable</strong>
+                  <p>{portfolio.sources.t212Positions.message}</p>
+                </div>
+              </div>
+            ) : rawPositionCount === 0 && portfolio.sources.t212Positions.status === "partial" ? (
+              <div className="asset-empty-state is-partial">
+                <span className="asset-empty-code">T212 / !</span>
+                <div>
+                  <strong>No complete positions available</strong>
+                  <p>{portfolio.sources.t212Positions.message}</p>
+                </div>
+              </div>
+            ) : rawPositionCount === 0 ? (
+              <div className="asset-empty-state">
+                <span className="asset-empty-code">T212 / 00</span>
+                <div>
+                  <strong>No positions yet</strong>
+                  <p>Stocks/ETFs you buy in T212 appear here live. Cash is already represented in the account summary above.</p>
+                </div>
+              </div>
+            ) : (
               <div className="asset-table-scroll">
-                <table className="asset-data-table asset-history-table">
+                <table className="asset-live-table">
+                  <caption className="sr-only">Live Trading 212 positions</caption>
                   <thead>
                     <tr>
-                      <th>Recorded at</th>
-                      <th>Ticker</th>
-                      <th className="asset-cell-right">Price</th>
+                      <th scope="col">Instrument</th>
+                      <th scope="col" className="asset-cell-right">Quantity</th>
+                      <th scope="col" className="asset-cell-right">Average cost</th>
+                      <th scope="col" className="asset-cell-right">Current price</th>
+                      <th scope="col" className="asset-cell-right">Native value</th>
+                      <th scope="col" className="asset-cell-right">Value (THB)</th>
+                      <th scope="col" className="asset-cell-right">P/L</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {priceHistory.map((history) => (
-                      <tr key={history.id}>
-                        <td className="mono asset-date-cell">{formatDate(history.recordedAt)}</td>
-                        <td><span className="ticker-badge">{history.ticker}</span></td>
-                        <td className="asset-cell-right numeric asset-price-cell">{formatMoney(history.price)}</td>
+                    {portfolio.t212.investments.map((position) => (
+                      <tr key={position.ticker}>
+                        <td>
+                          <span className="ticker-badge">{position.ticker}</span>
+                          <small className="asset-row-name">{position.name}</small>
+                        </td>
+                        <td className="asset-cell-right numeric">{formatNumber(position.quantity, 8)}</td>
+                        <td className="asset-cell-right numeric">{formatCurrency(position.averagePrice, position.currency)}</td>
+                        <td className="asset-cell-right numeric">{formatCurrency(position.currentPrice, position.currency)}</td>
+                        <td className="asset-cell-right numeric">{formatCurrency(position.valueNative, position.currency)}</td>
+                        <td className="asset-cell-right numeric asset-thb-value">{formatThb(position.valueThb)}</td>
+                        <td className={`asset-cell-right numeric ${position.ppl === null ? "muted" : position.ppl >= 0 ? "positive" : "negative"}`}>
+                          {formatCurrency(position.ppl, position.pplCurrency ?? accountCurrency)}
+                        </td>
                       </tr>
                     ))}
-                    {priceHistory.length === 0 ? (
-                      <tr><td colSpan={3} className="asset-table-empty">No price history has been recorded.</td></tr>
-                    ) : null}
                   </tbody>
                 </table>
               </div>
-            </section>
+            )}
 
-            <section className="panel asset-deleted-panel">
-              <div className="panel-header">
+            <div className="asset-panel-footer">
+              <span>SUMMARY</span>
+              <p>{portfolio.sources.t212Summary.message}</p>
+              <span>POSITIONS</span>
+              <p>{portfolio.sources.t212Positions.message}</p>
+              <time dateTime={portfolio.t212.asOf ?? undefined}>As of {formatTimestamp(portfolio.t212.asOf)}</time>
+            </div>
+          </section>
+
+          <section className="panel asset-live-panel">
+            <div className="panel-header asset-live-panel-header">
+              <div>
+                <p className="eyebrow">ROBINHOOD CHAIN / OPENSEA</p>
+                <h2 className="panel-title">Live NFT Collection Registry</h2>
+                <p className="panel-subtitle">Wallet token counts with collection floor values in ETH, USD, and THB</p>
+              </div>
+              <div className="asset-panel-status">
+                <SourceBadge state={portfolio.sources.nfts} />
+                <span className="panel-count">{formatCount(nftCollectionCount)} COLLECTIONS · {formatCount(nftTokenCount)} TOKENS</span>
+              </div>
+            </div>
+
+            {portfolio.sources.nfts.status === "unavailable" ? (
+              <div className="asset-empty-state is-unavailable">
+                <span className="asset-empty-code">NFT / —</span>
                 <div>
-                  <h2 className="panel-title">Deleted Assets</h2>
-                  <p className="panel-subtitle">Soft-deleted registry records</p>
+                  <strong>Live NFT collections are unavailable</strong>
+                  <p>{portfolio.sources.nfts.message}</p>
                 </div>
-                <span className="panel-count">{deletedAssets.length} RECOVERABLE</span>
               </div>
-              <div className="asset-deleted-list">
-                {deletedAssets.length === 0 ? (
-                  <p className="asset-empty-state">No deleted assets to recover.</p>
-                ) : (
-                  deletedAssets.map((asset) => (
-                    <div key={asset.id} className="asset-deleted-row">
-                      <span className="asset-deleted-mark mono">{asset.ticker}</span>
-                      <span className="asset-deleted-copy">
-                        <strong>{asset.fullName}</strong>
-                        <small className="mono">Deleted {asset.deletedAt ? formatDateTime(asset.deletedAt) : "recently"}</small>
-                      </span>
-                      <form action={recoverAssetAction}>
-                        <input type="hidden" name="id" value={asset.id} />
-                        <PendingButton className="pm-button asset-recover-button" pendingLabel="Restoring">
-                          Recover
-                        </PendingButton>
-                      </form>
-                    </div>
-                  ))
-                )}
+            ) : portfolio.nfts.length === 0 ? (
+              <div className="asset-empty-state">
+                <span className="asset-empty-code">NFT / 00</span>
+                <div>
+                  <strong>No NFT collections found</strong>
+                  <p>The connected Robinhood Chain wallet currently has no collection holdings to display.</p>
+                </div>
               </div>
-            </section>
-          </div>
-        </div>
-      </section>
-    </main>
-  );
-}
+            ) : (
+              <div className="asset-table-scroll">
+                <table className="asset-live-table asset-nft-table">
+                  <caption className="sr-only">Live NFT collections and floor values</caption>
+                  <thead>
+                    <tr>
+                      <th scope="col">Collection</th>
+                      <th scope="col" className="asset-cell-right">Tokens</th>
+                      <th scope="col" className="asset-cell-right">Floor (ETH)</th>
+                      <th scope="col" className="asset-cell-right">Value (ETH)</th>
+                      <th scope="col" className="asset-cell-right">Value (USD)</th>
+                      <th scope="col" className="asset-cell-right">Value (THB)</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {portfolio.nfts.map((holding) => (
+                      <tr key={holding.collection}>
+                        <td>
+                          <strong className="asset-collection-name">{holding.collectionName}</strong>
+                          <small className="asset-row-name mono">{holding.collection}</small>
+                        </td>
+                        <td className="asset-cell-right numeric">{holding.tokenCount.toLocaleString("en-US")}</td>
+                        <td className="asset-cell-right numeric">{holding.floorEth === null ? "—" : `${formatNumber(holding.floorEth, 8)} ETH`}</td>
+                        <td className="asset-cell-right numeric">{formatEth(holding.valueEth)}</td>
+                        <td className="asset-cell-right numeric">{formatUsd(holding.valueUsd)}</td>
+                        <td className="asset-cell-right numeric asset-thb-value">{formatThb(holding.valueThb)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                  <tfoot>
+                    <tr>
+                      <td><strong>Total NFT port</strong></td>
+                      <td className="asset-cell-right numeric"><strong>{formatCount(rawNftTokenCount)}</strong></td>
+                      <td className="asset-cell-right">—</td>
+                      <td className="asset-cell-right numeric"><strong>{formatEth(portfolio.totals.nftsEth)}</strong></td>
+                      <td className="asset-cell-right numeric"><strong>{formatUsd(portfolio.totals.nftsUsd)}</strong></td>
+                      <td className="asset-cell-right numeric asset-thb-value"><strong>{formatThb(portfolio.totals.nftsThb)}</strong></td>
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+            )}
 
-function NeonSetupPage({ title }: { title: string }) {
-  return (
-    <main className="setup-canvas asset-list-setup">
-      <section className="setup-panel">
-        <p className="eyebrow">Connection required / Neon Postgres</p>
-        <h1>{title}</h1>
-        <p>
-          Neon is enabled in the code, but `DATABASE_URL` is not set yet. Add your Neon Postgres connection string to `.env.local`,
-          then restart the development server.
-        </p>
-        <Link href="/" className="toolbar-link asset-setup-link">Return home</Link>
+            <div className="asset-panel-footer">
+              <span>SOURCE</span>
+              <p>{portfolio.sources.nfts.message}</p>
+              <time dateTime={portfolio.sources.nfts.asOf ?? undefined}>As of {formatTimestamp(portfolio.sources.nfts.asOf)}</time>
+            </div>
+          </section>
+
+          <section className="asset-source-grid" aria-label="Live data sources">
+            {sourceFeeds.map(({ label, state }) => (
+              <article className="panel asset-source-card" key={label}>
+                <div>
+                  <span>{label}</span>
+                  <SourceBadge state={state} />
+                </div>
+                <p>{state.message}</p>
+                <time dateTime={state.asOf ?? undefined}>{formatTimestamp(state.asOf)}</time>
+              </article>
+            ))}
+          </section>
+
+          <aside className="asset-legacy-note">
+            <span>LEGACY (retired scraped era)</span>
+            <p>Retired assets remain in Neon for historical continuity only. They are excluded from this live registry, and all add, update, delete, recover, and manual-price controls have been removed from the rendered page.</p>
+          </aside>
+        </div>
       </section>
     </main>
   );

@@ -1,20 +1,108 @@
 import Link from "next/link";
 import { AppSidebar } from "../components/app-sidebar";
-import { PendingButton } from "../components/pending-button";
-import { formatDateTime, isNeonConfigured, listCurrencies, listExchangeRates } from "@/lib/assets-db";
-import { saveExchangeRateAction } from "./actions";
+import {
+  getJoinedPortfolio,
+  type LiveSourceState,
+  type SourceStatus,
+} from "@/lib/live-data";
 import "./exchange-rate.css";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-export default async function ExchangeRatePage() {
-  if (!isNeonConfigured()) {
-    return <NeonSetupPage title="Exchange Rate" />;
-  }
+function formatTimestamp(value: string | null | undefined) {
+  if (!value) return "—";
+  const timestamp = new Date(value);
+  if (Number.isNaN(timestamp.getTime())) return "—";
 
-  const currencies = await listCurrencies();
-  const exchangeRates = await listExchangeRates();
+  return `${new Intl.DateTimeFormat("en-GB", {
+    dateStyle: "medium",
+    timeStyle: "medium",
+    timeZone: "UTC",
+  }).format(timestamp)} UTC`;
+}
+
+function formatRate(value: number | null | undefined) {
+  if (value === null || value === undefined || !Number.isFinite(value)) return "—";
+  return value.toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 8,
+  });
+}
+
+function sourceLabel(status: SourceStatus) {
+  if (status === "live") return "LIVE";
+  if (status === "partial") return "PARTIAL";
+  return "UNAVAILABLE";
+}
+
+function combinedStatus(states: LiveSourceState[]): SourceStatus {
+  if (states.every((state) => state.status === "live")) return "live";
+  if (states.every((state) => state.status === "unavailable")) return "unavailable";
+  return "partial";
+}
+
+function SourceBadge({ state }: { state: LiveSourceState }) {
+  return <span className={`fx-source-badge is-${state.status}`}>{sourceLabel(state.status)}</span>;
+}
+
+export default async function ExchangeRatePage() {
+  const portfolio = await getJoinedPortfolio();
+  const fiatState = portfolio.sources.fiatFx;
+  const ethState = portfolio.sources.ethPrice;
+  const fxState = combinedStatus([fiatState, ethState]);
+  const fiatAsOf = portfolio.fx.asOf ?? fiatState.asOf;
+  const rateRows: Array<{
+    pair: string;
+    from: string;
+    to: string;
+    value: number | null;
+    note: string;
+    provider: string;
+    state: LiveSourceState;
+    asOf: string | null;
+  }> = [
+    {
+      pair: "USD → THB",
+      from: "USD",
+      to: "THB",
+      value: portfolio.fx.usdToThb,
+      note: "One US dollar in Thai baht",
+      provider: "open.er-api.com / ECB",
+      state: fiatState,
+      asOf: fiatAsOf,
+    },
+    {
+      pair: "GBP → THB",
+      from: "GBP",
+      to: "THB",
+      value: portfolio.fx.gbpToThb,
+      note: "One British pound in Thai baht",
+      provider: "open.er-api.com / ECB",
+      state: fiatState,
+      asOf: fiatAsOf,
+    },
+    {
+      pair: "EUR → THB",
+      from: "EUR",
+      to: "THB",
+      value: portfolio.fx.eurToThb,
+      note: "One euro in Thai baht",
+      provider: "open.er-api.com / ECB",
+      state: fiatState,
+      asOf: fiatAsOf,
+    },
+    {
+      pair: "ETH → USD",
+      from: "ETH",
+      to: "USD",
+      value: portfolio.fx.ethToUsd,
+      note: "One ether in US dollars",
+      provider: "CoinGecko",
+      state: ethState,
+      asOf: ethState.asOf,
+    },
+  ];
 
   return (
     <main className="workspace-shell exchange-rate-page">
@@ -23,164 +111,139 @@ export default async function ExchangeRatePage() {
       <section className="workspace-main">
         <header className="page-header">
           <div className="page-title-group">
-            <p className="eyebrow">PORTFOLIO OPERATIONS / FOREIGN EXCHANGE</p>
+            <p className="eyebrow">LIVE PORTFOLIO / CONVERSION CORE</p>
             <h1 className="page-title">Exchange Rate</h1>
-            <p className="page-subtitle">Maintain the conversion pairs used for THB portfolio reporting</p>
+            <p className="page-subtitle">The exact fiat and ETH rates used by the joined live portfolio</p>
           </div>
           <div className="header-tools">
-            <span className="header-meta"><span className="exchange-rate-signal" aria-hidden="true" /> BASE CURRENCY · THB</span>
+            <span className="header-meta">
+              <span className={`fx-source-light is-${fxState}`} aria-hidden="true" />
+              {fxState === "live" ? "LIVE RATE SET" : fxState === "partial" ? "PARTIAL RATE SET" : "RATES UNAVAILABLE"}
+            </span>
             <Link href="/" className="toolbar-link">Command Center</Link>
-            <Link href="/exchange-rate" aria-label="Refresh exchange rates" title="Refresh exchange rates" className="refresh-link">R</Link>
+            <Link href="/exchange-rate" aria-label="Refresh live exchange rates" title="Refresh live exchange rates" className="refresh-link">R</Link>
           </div>
         </header>
 
         <div className="page-content exchange-rate-content">
-          <section className="exchange-rate-readout panel" aria-label="Exchange-rate coverage">
+          <section className="fx-hero" aria-labelledby="fx-hero-title">
             <div>
-              <span>SETTLEMENT BASE</span>
-              <strong>THB</strong>
-              <small>Portfolio reporting currency</small>
+              <p className="eyebrow">THB REPORTING BASE</p>
+              <h2 id="fx-hero-title">Live conversion matrix</h2>
+              <p>USD, GBP, and EUR resolve into the THB reporting base. ETH resolves into USD before the joined core applies USD/THB.</p>
             </div>
-            <div>
-              <span>SUPPORTED CURRENCIES</span>
-              <strong>{currencies.length.toLocaleString("en-US")}</strong>
-              <small>Available in the currency registry</small>
-            </div>
-            <div>
-              <span>ACTIVE PAIRS</span>
-              <strong>{exchangeRates.length.toLocaleString("en-US")}</strong>
-              <small>Latest recorded pair values</small>
+            <div className="fx-hero-readout">
+              <span>BASE CURRENCY</span>
+              <strong className="mono">THB</strong>
+              <small>Fiat as of <time dateTime={fiatAsOf ?? undefined}>{formatTimestamp(fiatAsOf)}</time></small>
             </div>
           </section>
 
-          <div className="exchange-rate-grid">
-            <section className="panel exchange-rate-form-panel">
-              <div className="panel-header">
-                <div>
-                  <p className="eyebrow">RATE CONTROL</p>
-                  <h2 className="panel-title">Add / Update Rate</h2>
-                  <p className="panel-subtitle">Write the latest value for a currency pair</p>
+          <section className="fx-rate-grid" aria-label="Current live rates">
+            {rateRows.map((rate, index) => (
+              <article className={`panel fx-rate-card${index === 0 ? " is-primary" : ""}`} key={rate.pair}>
+                <div className="fx-rate-card-header">
+                  <span className="fx-rate-index">0{index + 1}</span>
+                  <SourceBadge state={rate.state} />
                 </div>
-                <span className="data-tag">SERVER ACTION</span>
-              </div>
-              <div className="panel-body">
-                <form action={saveExchangeRateAction} className="exchange-rate-form">
-                  <label className="exchange-rate-field" htmlFor="exchange-rate-from">
-                    <span>From Currency</span>
-                    <select id="exchange-rate-from" name="fromCurrency" defaultValue="USD" className="exchange-rate-control">
-                      {currencies.map((currency) => (
-                        <option key={currency.code} value={currency.code}>{currency.code} — {currency.name}</option>
-                      ))}
-                    </select>
-                  </label>
-
-                  <div className="exchange-rate-direction" aria-hidden="true">
-                    <span />
-                    <b>TO</b>
-                    <span />
-                  </div>
-
-                  <label className="exchange-rate-field" htmlFor="exchange-rate-to">
-                    <span>To Currency</span>
-                    <select id="exchange-rate-to" name="toCurrency" defaultValue="THB" className="exchange-rate-control">
-                      {currencies.map((currency) => (
-                        <option key={currency.code} value={currency.code}>{currency.code} — {currency.name}</option>
-                      ))}
-                    </select>
-                  </label>
-
-                  <label className="exchange-rate-field" htmlFor="exchange-rate-value">
-                    <span>Exchange Rate</span>
-                    <input
-                      id="exchange-rate-value"
-                      name="rate"
-                      placeholder="36.50"
-                      required
-                      inputMode="decimal"
-                      className="exchange-rate-control exchange-rate-value"
-                    />
-                    <small>Value of one FROM unit measured in the TO currency.</small>
-                  </label>
-
-                  <div className="exchange-rate-form-note">
-                    <span className="exchange-rate-signal" aria-hidden="true" />
-                    <p>Saving appends a timestamped rate and immediately refreshes portfolio conversions.</p>
-                  </div>
-
-                  <PendingButton className="pm-button pm-button-primary exchange-rate-submit" pendingLabel="Saving Rate">
-                    Save Rate
-                  </PendingButton>
-                </form>
-              </div>
-            </section>
-
-            <section className="panel exchange-rate-table-panel">
-              <div className="panel-header">
-                <div>
-                  <p className="eyebrow">CURRENT MARKET INPUTS</p>
-                  <h2 className="panel-title">Latest Rates</h2>
-                  <p className="panel-subtitle">Most recent value retained for each recorded pair</p>
+                <div className="fx-rate-pair">
+                  <span>{rate.from}</span>
+                  <i aria-hidden="true">→</i>
+                  <span>{rate.to}</span>
                 </div>
-                <span className="panel-count">{exchangeRates.length.toLocaleString("en-US")} PAIRS</span>
+                <strong className="numeric">{formatRate(rate.value)}</strong>
+                <small>{rate.value === null ? "Live value unavailable" : `${rate.to} per 1 ${rate.from}`}</small>
+              </article>
+            ))}
+          </section>
+
+          <section className="panel fx-matrix-panel">
+            <div className="panel-header fx-panel-header">
+              <div>
+                <p className="eyebrow">CURRENT MARKET INPUTS</p>
+                <h2 className="panel-title">Core Rate Matrix</h2>
+                <p className="panel-subtitle">Read-only values from the same getJoinedPortfolio snapshot used across the site</p>
               </div>
-              <div className="exchange-rate-table-wrap">
-                <table className="exchange-rate-table data-table">
-                  <caption className="sr-only">Latest recorded exchange rates</caption>
-                  <thead>
-                    <tr>
-                      <th scope="col">Pair</th>
-                      <th scope="col">From</th>
-                      <th scope="col">To</th>
-                      <th scope="col">Rate</th>
-                      <th scope="col">Recorded At</th>
+              <span className="panel-count">04 CORE RATES</span>
+            </div>
+            <div className="fx-table-scroll">
+              <table className="fx-rate-table">
+                <caption className="sr-only">Live exchange rates used by the joined portfolio core</caption>
+                <thead>
+                  <tr>
+                    <th scope="col">Market input</th>
+                    <th scope="col">From</th>
+                    <th scope="col">To</th>
+                    <th scope="col" className="fx-cell-right">Live rate</th>
+                    <th scope="col">Provider</th>
+                    <th scope="col">State</th>
+                    <th scope="col">As of (UTC)</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rateRows.map((rate) => (
+                    <tr key={rate.pair}>
+                      <td>
+                        <strong className="fx-table-pair mono">{rate.pair}</strong>
+                        <small>{rate.note}</small>
+                      </td>
+                      <td><span className="currency-badge">{rate.from}</span></td>
+                      <td><span className="currency-badge fx-base-badge">{rate.to}</span></td>
+                      <td className="fx-cell-right numeric fx-table-rate">{formatRate(rate.value)}</td>
+                      <td className="fx-provider">{rate.provider}</td>
+                      <td><SourceBadge state={rate.state} /></td>
+                      <td><time className="fx-timestamp" dateTime={rate.asOf ?? undefined}>{formatTimestamp(rate.asOf)}</time></td>
                     </tr>
-                  </thead>
-                  <tbody>
-                    {exchangeRates.length === 0 ? (
-                      <tr>
-                        <td colSpan={5} className="exchange-rate-empty">No exchange rates recorded.</td>
-                      </tr>
-                    ) : exchangeRates.map((exchangeRate) => (
-                      <tr key={exchangeRate.id}>
-                        <td>
-                          <span className="exchange-rate-pair">
-                            <b>{exchangeRate.fromCurrency}</b>
-                            <span aria-hidden="true">→</span>
-                            <b>{exchangeRate.toCurrency}</b>
-                          </span>
-                        </td>
-                        <td><span className="currency-badge">{exchangeRate.fromCurrency}</span></td>
-                        <td><span className="currency-badge exchange-rate-base-badge">{exchangeRate.toCurrency}</span></td>
-                        <td className="numeric exchange-rate-number">{exchangeRate.rate.toLocaleString("en-US", { maximumFractionDigits: 6 })}</td>
-                        <td className="exchange-rate-timestamp">{formatDateTime(exchangeRate.recordedAt)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-              <div className="exchange-rate-table-footer">
-                <span><i className="exchange-rate-signal" aria-hidden="true" /> LIVE INPUT SET</span>
-                <small>Rates are stored as time-stamped observations in Neon.</small>
-              </div>
-            </section>
-          </div>
-        </div>
-      </section>
-    </main>
-  );
-}
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="fx-matrix-footer">
+              <span>READ-ONLY LIVE CORE</span>
+              <p>No Neon gate, manual override, or page-level market fetch is used here.</p>
+              <time dateTime={portfolio.asOf}>Snapshot assembled {formatTimestamp(portfolio.asOf)}</time>
+            </div>
+          </section>
 
-function NeonSetupPage({ title }: { title: string }) {
-  return (
-    <main className="setup-canvas exchange-rate-page">
-      <section className="setup-panel exchange-rate-setup-panel">
-        <p className="eyebrow">DATA CONNECTION / ACTION REQUIRED</p>
-        <div className="exchange-rate-setup-mark" aria-hidden="true">FX</div>
-        <h1>{title}</h1>
-        <p className="exchange-rate-setup-copy">
-          Neon is enabled in the code, but <code>DATABASE_URL</code> is not set yet. Add your Neon Postgres connection string to <code>.env.local</code>, then restart the development server.
-        </p>
-        <Link href="/" className="toolbar-link exchange-rate-setup-link">Return to Command Center</Link>
+          <section className="fx-source-grid" aria-label="Rate provider status">
+            <article className="panel fx-source-panel">
+              <div className="fx-source-panel-head">
+                <div>
+                  <p className="eyebrow">FIAT CONVERSION SOURCE</p>
+                  <h2 className="panel-title">open.er-api.com / ECB</h2>
+                </div>
+                <SourceBadge state={fiatState} />
+              </div>
+              <p>{fiatState.message}</p>
+              <dl>
+                <div><dt>Endpoint base</dt><dd className="mono">USD</dd></div>
+                <div><dt>Portfolio base</dt><dd className="mono">THB</dd></div>
+                <div><dt>Provider as of</dt><dd><time dateTime={fiatAsOf ?? undefined}>{formatTimestamp(fiatAsOf)}</time></dd></div>
+              </dl>
+            </article>
+
+            <article className="panel fx-source-panel">
+              <div className="fx-source-panel-head">
+                <div>
+                  <p className="eyebrow">DIGITAL ASSET SOURCE</p>
+                  <h2 className="panel-title">CoinGecko ETH / USD</h2>
+                </div>
+                <SourceBadge state={ethState} />
+              </div>
+              <p>{ethState.message}</p>
+              <dl>
+                <div><dt>Asset</dt><dd className="mono">ETH</dd></div>
+                <div><dt>Quote</dt><dd className="mono">USD</dd></div>
+                <div><dt>Observed at</dt><dd><time dateTime={ethState.asOf ?? undefined}>{formatTimestamp(ethState.asOf)}</time></dd></div>
+              </dl>
+            </article>
+          </section>
+
+          <aside className="fx-method-note">
+            <span>CONVERSION PATH</span>
+            <p>Trading 212 account values convert from their account currency directly to THB. NFT floor values convert from ETH to USD, then USD to THB. If a required source is unavailable, the dependent value remains <strong>—</strong>.</p>
+          </aside>
+        </div>
       </section>
     </main>
   );
