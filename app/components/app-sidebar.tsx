@@ -11,7 +11,11 @@ const navItems = [
   { label: "Exchange Rate", icon: "exchange", href: "/exchange-rate" },
 ] as const;
 
-export function AppSidebar({ active }: { active: "home" | "portfolio" | "asset-list" | "holder-list" | "exchange-rate" }) {
+type ActivePage = "home" | "portfolio" | "asset-list" | "holder-list" | "exchange-rate";
+
+export function AppSidebar({ active, email }: { active: ActivePage; email?: string }) {
+  const initials = email ? email.slice(0, 2).toUpperCase() : "A";
+
   return (
     <aside className="app-sidebar">
       <Link href="/" className="brand-block" aria-label="Portfolio Manager home">
@@ -46,12 +50,14 @@ export function AppSidebar({ active }: { active: "home" | "portfolio" | "asset-l
       </div>
 
       <div className="sidebar-operator">
-        <span className="operator-avatar">A</span>
+        <span className="operator-avatar">{initials}</span>
         <span>
-          <strong>Admin User</strong>
+          <strong>{email ?? "Admin User"}</strong>
           <small>PORTFOLIO OPERATOR</small>
         </span>
-        <Icon icon="shield" size={14} />
+        <Link href="/api/auth/logout" className="sidebar-logout" title="Sign out" aria-label="Sign out">
+          <Icon icon="log-out" size={14} />
+        </Link>
       </div>
     </aside>
   );

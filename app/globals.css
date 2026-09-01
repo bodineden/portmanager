@@ -266,6 +266,21 @@ a {
   color: #536176;
 }
 
+.sidebar-logout {
+  display: grid;
+  width: 26px;
+  height: 26px;
+  place-items: center;
+  color: var(--muted);
+  border-radius: 3px;
+  transition: color 0.15s, background 0.15s;
+}
+
+.sidebar-logout:hover {
+  color: var(--red);
+  background: rgba(248, 113, 113, 0.1);
+}
+
 .page-header {
   position: sticky;
   top: 0;
