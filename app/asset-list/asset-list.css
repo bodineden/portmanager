@@ -63,7 +63,6 @@
 }
 
 .asset-registry-secondary small,
-.asset-ownership-readout > span,
 .asset-account-strip span,
 .asset-kpi-index,
 .asset-panel-footer > span,
@@ -79,50 +78,6 @@
   color: #b8c5d6;
   font-size: 11px;
   font-weight: 650;
-}
-
-.asset-ownership-readout {
-  display: grid;
-  gap: 10px;
-  padding: 16px;
-  background: rgba(8, 13, 20, 0.76);
-  border: 1px solid var(--border-strong);
-  border-left: 2px solid rgba(56, 189, 248, 0.65);
-}
-
-.asset-ownership-readout > div {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 1px;
-  background: var(--border);
-}
-
-.asset-ownership-readout p {
-  display: grid;
-  min-width: 0;
-  gap: 5px;
-  margin: 0;
-  padding: 11px 12px;
-  background: #0e141e;
-}
-
-.asset-ownership-readout p small {
-  color: var(--cyan);
-  font: 800 8px/1 var(--font-geist-mono), ui-monospace, monospace;
-}
-
-.asset-ownership-readout p strong {
-  overflow: hidden;
-  color: #aebacc;
-  font-size: 11px;
-  font-weight: 600;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.asset-ownership-readout p b {
-  color: var(--text-strong);
-  font-size: 15px;
 }
 
 .asset-registry-kpis {
@@ -608,14 +563,6 @@
 
   .asset-registry-secondary > span:last-child {
     grid-column: 1 / -1;
-  }
-
-  .asset-ownership-readout {
-    padding: 12px;
-  }
-
-  .asset-ownership-readout p {
-    padding: 9px;
   }
 
   .asset-registry-kpis,

@@ -7,11 +7,10 @@ const navItems = [
   { label: "Home", icon: "home", href: "/" },
   { label: "Portfolio", icon: "timeline-line-chart", href: "/portfolio" },
   { label: "Asset List", icon: "database", href: "/asset-list" },
-  { label: "Holder List", icon: "people", href: "/holder-list" },
   { label: "Exchange Rate", icon: "exchange", href: "/exchange-rate" },
 ] as const;
 
-type ActivePage = "home" | "portfolio" | "asset-list" | "holder-list" | "exchange-rate";
+type ActivePage = "home" | "portfolio" | "asset-list" | "exchange-rate";
 
 export function AppSidebar({ active, email }: { active: ActivePage; email?: string }) {
   const initials = email ? email.slice(0, 2).toUpperCase() : "A";

@@ -34,10 +34,6 @@ function formatNumber(value: number | null, maximumFractionDigits = 4) {
   return value.toLocaleString("en-US", { maximumFractionDigits });
 }
 
-function shareLabel(value: number) {
-  return `${(value * 100).toLocaleString("en-US", { maximumFractionDigits: 2 })}%`;
-}
-
 function SourceBadge({ state }: { state: LiveSourceState }) {
   return (
     <span className={`live-source-badge is-${state.status}`} title={state.message}>
@@ -48,7 +44,7 @@ function SourceBadge({ state }: { state: LiveSourceState }) {
 
 export default async function Home() {
   const [email, portfolio] = await Promise.all([requireSession(), getJoinedPortfolio()]);
-  const { t212, nfts, wallet, fx, totals, sources, ownership } = portfolio;
+  const { t212, nfts, wallet, fx, totals, sources } = portfolio;
   const positionCount = t212.investments.length;
   const tokenCount = nfts.reduce((sum, holding) => sum + holding.tokenCount, 0);
   const walletTokens = [...wallet.tokens].sort((left, right) => Number(right.priced) - Number(left.priced));
@@ -99,16 +95,6 @@ export default async function Home() {
               <strong className="metric-value">{formatThb(totals.walletThb)}</strong>
               <small>{formatUsd(totals.walletUsd)} USD secondary · {walletRowCount} wallet asset{walletRowCount === 1 ? "" : "s"}</small>
             </article>
-          </section>
-
-          <section className="home-ownership-bar panel" aria-label="Beneficial ownership">
-            <div>
-              <span className="eyebrow">OWNERSHIP / EVERYTHING</span>
-              <strong>Bodin (A) {shareLabel(ownership.aShare)}</strong>
-              <strong>PP (B) {shareLabel(ownership.bShare)}</strong>
-              <strong>Sonya (C) {shareLabel(ownership.cShare)}</strong>
-            </div>
-            <p>The same beneficial split applies to the complete Trading 212 account, every NFT collection, and all native and token wallet holdings.</p>
           </section>
 
           <section className="panel home-panel home-wallet-panel" aria-label="Wallet balances">

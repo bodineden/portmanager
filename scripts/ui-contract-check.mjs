@@ -17,7 +17,6 @@ const routes = [
   { name: "home", path: "/", finalPaths: ["/"] },
   { name: "asset-list", path: "/asset-list", finalPaths: ["/asset-list"] },
   { name: "portfolio", path: "/portfolio", finalPaths: ["/portfolio"] },
-  { name: "holder-list", path: "/holder-list", finalPaths: ["/holder-list"] },
   { name: "exchange-rate", path: "/exchange-rate", finalPaths: ["/exchange-rate"] },
   // This compatibility route intentionally redirects to the live registry.
   { name: "asset-master", path: "/asset-master", finalPaths: ["/asset-master", "/asset-list"] },
@@ -29,6 +28,12 @@ const viewports = [
 ];
 
 const retiredInvestorNames = ["Alice Johnson", "Bob Smith", "Carol Williams", "David Brown"];
+const removedOwnerNames = [
+  ["Bo", "din"].join(""),
+  ["P", "P"].join(""),
+  ["Son", "ya"].join(""),
+];
+const removedOwnershipLabel = ["BENE", "FICIAL OWNER", "SHIP"].join("");
 
 function record(label, passed, detail = "") {
   results.push({ label, passed, detail });
@@ -62,26 +67,31 @@ async function renderedText(page) {
 async function checkOwnershipLanguage(page, routeName) {
   const text = await renderedText(page);
 
-  await check(`${routeName} names only the live owners`, async () => {
-    for (const owner of ["Bodin", "PP", "Sonya"]) {
-      requireCondition(new RegExp(`\\b${owner}\\b`).test(text), `${owner} is missing`);
+  await check(`${routeName} renders no investor names`, async () => {
+    for (const owner of removedOwnerNames) {
+      requireCondition(!new RegExp(`\\b${owner}\\b`).test(text), `${owner} is rendered`);
     }
     for (const retiredName of retiredInvestorNames) {
       requireCondition(!text.includes(retiredName), `retired demo investor ${retiredName} is rendered`);
     }
+    requireCondition(!text.toUpperCase().includes(removedOwnershipLabel), `${removedOwnershipLabel} is rendered`);
     requireCondition(!/\b(?:pending\s+migration|migration|demo(?:nstration)?)\b/i.test(text), "migration/demo wording is rendered");
   });
 }
 
 async function checkHomeContract(page) {
   await checkOwnershipLanguage(page, "home");
-  await check("home renders the Bodin / PP / Sonya split", async () => {
-    const ownership = page.locator('[aria-label="Beneficial ownership"]');
-    requireCondition(await ownership.count() === 1, "beneficial ownership region is missing or duplicated");
-    const text = compactText((await ownership.textContent()) ?? "");
-    requireCondition(/Bodin\s*\(A\)\s*50%/i.test(text), "Bodin (A) 50% is missing");
-    requireCondition(/PP\s*\(B\)\s*50%/i.test(text), "PP (B) 50% is missing");
-    requireCondition(/Sonya\s*\(C\)\s*0%/i.test(text), "Sonya (C) 0% is missing");
+  await check("home renders no allocation language", async () => {
+    const text = await renderedText(page);
+    const forbiddenCopy = [
+      removedOwnershipLabel,
+      ["INVEST", "OR"].join(""),
+      ["OWNER", "SHIP / EVERYTHING"].join(""),
+      removedOwnerNames[2],
+    ];
+    for (const phrase of forbiddenCopy) {
+      requireCondition(!text.toUpperCase().includes(phrase.toUpperCase()), `${phrase} is rendered`);
+    }
   });
 
   await check("home preserves three KPIs and adds the non-NFT wallet KPI", async () => {
@@ -143,44 +153,6 @@ async function checkHomeContract(page) {
       }
     }
     return `${rowContracts.length} wallet row${rowContracts.length === 1 ? "" : "s"}`;
-  });
-}
-
-async function checkHolderContract(page) {
-  await checkOwnershipLanguage(page, "holder-list");
-  await check("holder-list renders exactly the configured live owners", async () => {
-    const panels = page.locator(".holder-investor-panel");
-    requireCondition(await panels.count() === 3, `expected 3 owner panels, found ${await panels.count()}`);
-    const expected = [
-      { code: "A", name: "Bodin", share: "50%" },
-      { code: "B", name: "PP", share: "50%" },
-      { code: "C", name: "Sonya", share: "0%" },
-    ];
-
-    for (let index = 0; index < expected.length; index += 1) {
-      const owner = expected[index];
-      const text = compactText((await panels.nth(index).textContent()) ?? "");
-      requireCondition(text.includes(`${owner.code} / ${owner.name}`), `${owner.code} / ${owner.name} panel is missing`);
-      requireCondition(new RegExp(`RETURNED SHARE\\s*${owner.share}`, "i").test(text), `${owner.name} ${owner.share} share is missing`);
-    }
-  });
-
-  await check("holder-list allocates the non-NFT wallet to the live owners", async () => {
-    const panels = page.locator(".holder-investor-panel");
-    for (let index = 0; index < 3; index += 1) {
-      const text = compactText((await panels.nth(index).locator(".holder-benefit-grid").textContent()) ?? "");
-      requireCondition(/Non-NFT wallet share/i.test(text), `owner panel ${index + 1} has no wallet allocation readout`);
-    }
-    requireCondition(await panels.nth(0).locator(".holder-wallet-panel").count() === 1, "Bodin wallet detail is missing");
-    requireCondition(await panels.nth(1).locator(".holder-wallet-panel").count() === 1, "PP wallet detail is missing");
-    const sonyaText = compactText((await panels.nth(2).textContent()) ?? "");
-    requireCondition(/native coin/i.test(sonyaText) && /ERC-20/i.test(sonyaText), "Sonya zero-allocation copy omits wallet assets");
-  });
-
-  await check("holder-list reports both wallet source states", async () => {
-    const text = compactText((await page.locator(".holder-source-grid").textContent()) ?? "");
-    requireCondition(/Wallet native/i.test(text), "wallet native source card is missing");
-    requireCondition(/Wallet tokens/i.test(text), "wallet token source card is missing");
   });
 }
 
@@ -402,11 +374,13 @@ async function auditRoute(browser, route, viewport) {
 
     if (viewport.name === "desktop") {
       if (route.name === "home") await checkHomeContract(page);
-      if (route.name === "holder-list") await checkHolderContract(page);
       if (route.name === "asset-list" || route.name === "exchange-rate") {
         await checkReadonlyLivePage(page, route.name);
       }
-      if (route.name === "asset-list") await checkAssetWalletContract(page);
+      if (route.name === "asset-list") {
+        await checkOwnershipLanguage(page, "asset-list");
+        await checkAssetWalletContract(page);
+      }
       if (route.name === "portfolio") await checkPortfolioContract(page);
     }
 

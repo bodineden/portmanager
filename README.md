@@ -5,7 +5,6 @@ PortManager is a personal portfolio tracker built with Next.js 16, React 19, Tai
 ## Pages
 
 - `/asset-list` — portfolio dashboard, asset price updates, daily movement, movers, asset registry, and price history.
-- `/holder-list` — investors and holdings, valuation and gain/loss, plus CSV export.
 - `/portfolio` — daily THB portfolio value with range filters and a monthly-average trend.
 - `/exchange-rate` — native server-action form for recording currency pairs and rates.
 - `/asset-master` — compact asset reference view.
@@ -14,7 +13,7 @@ All database writes use React server actions. There are no API routes.
 
 ## Data model
 
-Neon stores `currency`, `investor`, `asset`, `holding`, `price_history`, and `exchange_rate` records. Assets are soft-deleted. A price update atomically shifts `current_price` into `previous_price` before saving the new value, which powers daily change reporting. Portfolio history is reconstructed as-of each price/FX date from the recorded histories.
+Neon stores `currency`, `asset`, `holding`, `price_history`, and `exchange_rate` records. Assets are soft-deleted. A price update atomically shifts `current_price` into `previous_price` before saving the new value, which powers daily change reporting. Portfolio history is reconstructed as-of each price/FX date from the recorded histories.
 
 ## Automated price updates
 

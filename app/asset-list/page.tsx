@@ -31,10 +31,6 @@ function formatNumber(value: number | null | undefined, maximumFractionDigits = 
   return value.toLocaleString("en-US", { maximumFractionDigits });
 }
 
-function formatPercent(value: number) {
-  return `${(value * 100).toLocaleString("en-US", { maximumFractionDigits: 2 })}%`;
-}
-
 function formatCount(value: number | null | undefined) {
   if (value === null || value === undefined || !Number.isFinite(value)) return "—";
   return value.toLocaleString("en-US");
@@ -122,14 +118,6 @@ export default async function AssetListPage() {
                 <span><small>USD</small><strong className="numeric">{formatUsd(portfolio.totals.grandTotalUsd)}</strong></span>
                 <span><small>NFT VALUE</small><strong className="numeric">{formatEth(portfolio.totals.nftsEth)}</strong></span>
                 <span><small>SNAPSHOT</small><strong className="mono">{formatTimestamp(portfolio.asOf)}</strong></span>
-              </div>
-            </div>
-            <div className="asset-ownership-readout" aria-label="Portfolio ownership">
-              <span>BENEFICIAL OWNERSHIP</span>
-              <div>
-                <p><small>A</small><strong>Bodin</strong><b className="numeric">{formatPercent(portfolio.ownership.aShare)}</b></p>
-                <p><small>B</small><strong>PP</strong><b className="numeric">{formatPercent(portfolio.ownership.bShare)}</b></p>
-                <p><small>C</small><strong>Sonya</strong><b className="numeric">{formatPercent(portfolio.ownership.cShare)}</b></p>
               </div>
             </div>
           </section>

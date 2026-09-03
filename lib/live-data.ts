@@ -92,12 +92,6 @@ export type FxRates = FiatRates & {
   ethToUsd: number | null;
 };
 
-export type PortfolioOwnership = {
-  aShare: number;
-  bShare: number;
-  cShare: number;
-};
-
 export type JoinedPortfolio = {
   t212: {
     currency: string | null;
@@ -113,7 +107,6 @@ export type JoinedPortfolio = {
     tokens: WalletTokenHolding[];
   };
   fx: FxRates;
-  ownership: PortfolioOwnership;
   totals: {
     t212Thb: number | null;
     nftsEth: number | null;
@@ -156,17 +149,6 @@ export type JoinedPortfolioInputs = {
   /** Optional only so existing pure-builder callers retain their pre-wallet result. */
   walletTokens?: LiveResult<NormalizedWalletTokenBalance[]>;
 };
-
-// Change this one value if Sonya later receives a beneficial share. The
-// remaining ownership stays evenly split between Bodin and PP.
-const INVESTOR_C_SHARE = 0;
-const INVESTOR_A_B_SHARE = (1 - INVESTOR_C_SHARE) / 2;
-
-export const PORTFOLIO_OWNERSHIP: PortfolioOwnership = Object.freeze({
-  aShare: INVESTOR_A_B_SHARE,
-  bShare: INVESTOR_A_B_SHARE,
-  cShare: INVESTOR_C_SHARE,
-});
 
 const DEFAULT_NFT_WALLET = "0xC1bd8020d08B2A1F98da54f1573A54412d99c609";
 const USER_AGENT =
@@ -1223,7 +1205,6 @@ export function buildJoinedPortfolio(inputs: JoinedPortfolioInputs, asOf: string
       ethToUsd,
       asOf: fiatFx?.asOf ?? inputs.fiatFx.state.asOf,
     },
-    ownership: PORTFOLIO_OWNERSHIP,
     totals: {
       t212Thb,
       nftsEth,

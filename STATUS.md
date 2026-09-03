@@ -6,13 +6,13 @@ As of: 2026-09-03 (UTC)
 - App: portmanager-psi.vercel.app (Next.js 16 + Neon serverless, no API routes)
 - Repo: github.com/bodineden/portmanager — deploy key `~/.ssh/id_portmanager` (WRITE allowed)
 - Local mirror: ~/projects/portmanager (auto-deploys to Vercel on push to main)
-- **Price cron RETIRED 2026-09-01 (Bodin decision)** — job 61421751b828 PAUSED; no scraping anywhere
+- **Price cron RETIRED 2026-09-01** — job 61421751b828 PAUSED; no scraping anywhere
 - **UNIFIED LIVE PORTFOLIO (Sol ultra run, merge 9c37247, 334k tokens)** — the whole site is ONE live picture:
-  - **One data core `getJoinedPortfolio()`** (lib/live-data.ts): T212 account summary + positions (live API), OpenSea NFT port (live floors), ECB FX (open.er-api), ETH/USD (CoinGecko). ALL pages (home, holder-list, portfolio, asset-list, exchange-rate) render from it — no page fetches live providers independently
-  - **Ownership**: A = Bodin, B = PP, C = Sonya. Everything 50/50 A/B; C = 0% (`INVESTOR_C_SHARE` const in live-data.ts — one-line change to give C a share)
+  - **One data core `getJoinedPortfolio()`** (lib/live-data.ts): T212 account summary + positions (live API), OpenSea NFT port (live floors), ECB FX (open.er-api), ETH/USD (CoinGecko). Home, portfolio, asset-list, and exchange-rate render from it — no page fetches live providers independently
+  - **Portfolio model**: one portfolio; named allocation fields are no longer returned from lib/live-data.ts
   - T212 live today: **£487.00 cash GBP, 0 positions** → "No positions yet — stocks/ETFs you buy in T212 appear here live"
   - NFT port live: 2× Stackers + 2× G00fyz @ live floors ≈ 0.1831 ETH
-  - Legacy scraped-era UI replaced: asset-list = read-only live registry, exchange-rate = read-only live rates, holder-list = live beneficial ownership only (demo investors Alice/Bob/Carol/David hidden), portfolio chart = live point + dashed legacy context with boundary marker
+  - Legacy scraped-era UI replaced: asset-list = read-only live registry, exchange-rate = read-only live rates, portfolio chart = live point + dashed legacy context with boundary marker
   - Neon DB untouched (schema/data) — remains history/cost-basis ledger only
   - Verified: build ✓, 14/14 unit tests ✓ (incl. 0.1831154 ETH arithmetic + £487×45=฿21,915), 70/70 UI contract checks ✓, live-render verified locally (฿35,672.63 total) + prod chunk match ✓
 - **Gmail login gate**: Google OAuth (PKCE) via `proxy.ts`, allowlist `ALLOWED_EMAILS` (putthiphan1608@gmail.com, physic.din@gmail.com), HMAC session cookie `pm_session` (AUTH_SECRET). Gate arms only when GOOGLE_CLIENT_ID/SECRET set. **ARMED + verified live 2026-09-01** (anon → /login 307)
@@ -64,11 +64,18 @@ As of: 2026-09-03 (UTC)
 - 15 assets now tracked (12 with price sources + CASH, CASH GBP, NFT) — contract check lists: CASH, CASH GBP, CNX1, EUNN, IKOR, IWDA, JEDI, NFT, NUCG, RBOT, SXRT, URNU, USPY, VUAG, XAU
 - VUAG −84.67% change bug FIXED 2026-08-17: previous_price stored as column shifted atomically on save (commit ae8efcc)
 - FX regex hardened 2026-08-17: spread trap + sanity bounds in fetch_rates
-- DATABASE_URL not present locally (Bodin shared 2026-08-18, keep out of git) — local dev shows NeonSetupPage; test against live prod
+- DATABASE_URL not present locally (shared 2026-08-18, keep out of git) — local dev shows NeonSetupPage; test against live prod
 - Portfolio value time-series (/portfolio): daily total in THB, now Plottable 3
 
 ## Next actions
-- **Bodin: verify login with both accounts** (putthiphan1608@gmail.com + physic.din@gmail.com) at portmanager-psi.vercel.app — private window, sign in, check home + holder-list + asset-list + exchange-rate all show the LIVE joined portfolio
-- Vercel env (already set by Bodin): GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, AUTH_SECRET + T212_API_KEY, T212_API_SECRET, OPENSEA_API_KEY, ALLOWED_EMAILS, NFT_WALLET
-- When Bodin buys stocks/ETFs in T212 → they appear live automatically (positions endpoint). When C (Sonya) needs a share → change `INVESTOR_C_SHARE` in lib/live-data.ts
+- Verify login with both accounts (putthiphan1608@gmail.com + physic.din@gmail.com) at portmanager-psi.vercel.app — private window, sign in, check home + asset-list + exchange-rate all show the LIVE joined portfolio
+- Vercel env (already set): GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, AUTH_SECRET + T212_API_KEY, T212_API_SECRET, OPENSEA_API_KEY, ALLOWED_EMAILS, NFT_WALLET
+- The live app uses a single portfolio; the named allocation model has been removed
 - Housekeeping: BRIEF.md/REPORT.md in repo root are untracked (worker artifacts); backups/ has pre-live-join snapshot; tag pre-live-join-0901
+
+## 2026-09-03: Single portfolio — investor model removed (Bodin decision)
+- Removed named investors and allocation splits from the rendered UI; the live app now presents one portfolio.
+- Removed the ownership constants and field from `lib/live-data.ts`; deleted `/holder-list` and its sidebar, UI-contract, and capture entries.
+- The Neon investor, holding, and transaction tables remain a frozen archive and were untouched.
+- Verification: `npm run build` ✓; `npm run lint` ✓ (one pre-existing `proxy.ts` warning); `npm test` ✓ (26/26); rendered UI contracts ✓ (74/74); removed-token counts are zero across active/rendered targets and all new-state anchors pass. Three inert `/holder-list` cache invalidations remain in unimported legacy action modules, as directed.
+- Revert pointers: git tag `pre-investor-removal-2026-09-03`; `backups/site-pre-investor-removal-2026-09-03/`.

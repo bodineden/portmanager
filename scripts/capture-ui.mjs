@@ -12,7 +12,6 @@ const routes = [
   ["home", "/"],
   ["asset-list", "/asset-list"],
   ["portfolio", "/portfolio"],
-  ["holder-list", "/holder-list"],
   ["exchange-rate", "/exchange-rate"],
   ["asset-master", "/asset-master"],
 ];

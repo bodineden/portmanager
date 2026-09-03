@@ -239,18 +239,10 @@ describe("buildJoinedPortfolio", () => {
     expect(portfolio.totals.grandTotalThb).toBeNull();
   });
 
-  it("keeps the operator-verified 50/50/0 ownership in one derived config", () => {
+  it("omits ownership from the joined portfolio", () => {
     const portfolio = buildJoinedPortfolio(fixtureInputs(), AS_OF);
-    const { ownership } = portfolio;
 
-    expect(ownership).toEqual({ aShare: 0.5, bShare: 0.5, cShare: 0 });
-    expect(ownership.aShare + ownership.bShare + ownership.cShare).toBe(1);
-    expect(portfolio.t212.cashAvailable! * ownership.aShare).toBe(243.5);
-    expect(portfolio.t212.cashAvailable! * ownership.bShare).toBe(243.5);
-    expect(portfolio.t212.cashAvailable! * ownership.cShare).toBe(0);
-    expect(portfolio.totals.grandTotalThb! * ownership.aShare).toBeCloseTo(17_549.6544, 6);
-    expect(portfolio.totals.grandTotalThb! * ownership.bShare).toBeCloseTo(17_549.6544, 6);
-    expect(portfolio.totals.grandTotalThb! * ownership.cShare).toBe(0);
+    expect("ownership" in portfolio).toBe(false);
   });
 
   it("preserves live cash and a successful empty-positions response", () => {
