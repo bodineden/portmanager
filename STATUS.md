@@ -1,6 +1,6 @@
 # PortManager — Status
 
-As of: 2026-09-01 (evening)
+As of: 2026-09-03 (UTC)
 
 ## State
 - App: portmanager-psi.vercel.app (Next.js 16 + Neon serverless, no API routes)
@@ -16,6 +16,14 @@ As of: 2026-09-01 (evening)
   - Neon DB untouched (schema/data) — remains history/cost-basis ledger only
   - Verified: build ✓, 14/14 unit tests ✓ (incl. 0.1831154 ETH arithmetic + £487×45=฿21,915), 70/70 UI contract checks ✓, live-render verified locally (฿35,672.63 total) + prod chunk match ✓
 - **Gmail login gate**: Google OAuth (PKCE) via `proxy.ts`, allowlist `ALLOWED_EMAILS` (putthiphan1608@gmail.com, physic.din@gmail.com), HMAC session cookie `pm_session` (AUTH_SECRET). Gate arms only when GOOGLE_CLIENT_ID/SECRET set. **ARMED + verified live 2026-09-01** (anon → /login 307)
+
+## 2026-09-03: Full wallet holdings + logout/auth fix + snapshot sync (Sol gpt-5.6-sol @ ultra, merge b73d90f)
+- **Wallet non-NFT holdings now in the joined portfolio** (verified live 2026-09-03 by operator probes): native ETH on Ethereum (0.000781), Base (0.000099), **Arbitrum One (0.248396 — the material one, ≈$596)**, Robinhood Chain (0.000526); RH-chain ERC-20s via checked-in 13-contract registry (USDG 1.475 ≈$1.48 + sub-cent GME/SPY/CRCL/PLTR/AMZN/STACK + unpriced meme dust) — balances via RPC live; ERC-20 inventory on Ethereum/Base/Arbitrum via Blockscout v2 API (keyless). Unpriced rows show raw amount + "—" and never fake a zero.
+- **Token pricing**: Blockscout exchange_rate hints → DefiLlama bulk → CoinGecko single-contract (1.2s spacing, cap 5, stop on 429). ETH/USD + FX unchanged.
+- **Logout prefetch bug FIXED**: sidebar sign-out was `<Link href="/api/auth/logout">`; Next prefetched it → GET deleted pm_session → next tab = re-login. Now POST-only (405 on GET) + native form button; /login redirects already-signed-in users to /.
+- **Snapshot sync**: single-flight 30s TTL cache around the whole fetch phase — pages/tabs within the window share one asOf + totals; cuts provider burst (T212 ~1 req/50s). Injectable clock + reset for tests.
+- Verified: build ✓, tsc ✓, lint ✓ (1 pre-existing proxy warning), **26/26 unit tests ✓** (incl. exact BigInt arithmetic: grand ฿53,138.22713086259 with wallet fixtures), **89/89 UI contract checks ✓** (desktop+mobile, POST-only logout everywhere). Deployed 2026-09-03 (auto).
+- Risk notes: RH registry is static (new RH tokens need a registry line); 30s cache is per-instance; OpenSea still omits 2 explorer-only RH NFTs (Clay Cooker, RH BTC) — flagged, not invented.
 
 ## 2026-08-22: NFT portfolio asset added (direct DB write via stored Neon creds)
 - New asset **NFT / NFT portfolio**, GBP, current + previous price £67.36, NO source link (static valuation — cron's hardcoded 12-ticker list never touches it)
