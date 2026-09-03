@@ -203,6 +203,84 @@ function NftTable({
   );
 }
 
+function WalletTable({ portfolio, share }: { portfolio: JoinedPortfolio; share: number }) {
+  const walletTokens = [...portfolio.wallet.tokens].sort(
+    (left, right) => Number(right.priced) - Number(left.priced),
+  );
+  const walletRowCount = portfolio.wallet.native.length + walletTokens.length;
+  const walletSourcesComplete = portfolio.sources.walletNative.status === "live"
+    && portfolio.sources.walletTokens.status === "live";
+
+  if (walletRowCount === 0) {
+    return !walletSourcesComplete ? (
+      <div className="holder-unavailable-state" role="status">
+        <strong>Wallet balance snapshot incomplete</strong>
+        <p>One or more wallet sources did not return a complete inventory; no empty-wallet conclusion has been assumed.</p>
+      </div>
+    ) : (
+      <div className="holder-empty-state">
+        <strong>No non-NFT wallet holdings</strong>
+        <p>The current EVM wallet snapshot contains no positive native coin or ERC-20 balances.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="holder-table-scroll">
+      <table className="holder-data-table holder-wallet-table">
+        <caption className="sr-only">Beneficial native coin and ERC-20 wallet holdings</caption>
+        <thead>
+          <tr>
+            <th>Asset / chain</th>
+            <th>Type</th>
+            <th className="numeric">Beneficial amount</th>
+            <th className="numeric">Price (USD)</th>
+            <th className="numeric">Beneficial USD</th>
+            <th className="numeric">Beneficial THB</th>
+          </tr>
+        </thead>
+        <tbody>
+          {portfolio.wallet.native.map((holding) => (
+            <tr key={`${holding.chainId}:native`} data-wallet-kind="native">
+              <td>
+                <span className="holder-ticker">{holding.symbol}</span>
+                <small>{holding.chainName} · chain {holding.chainId}</small>
+              </td>
+              <td><span className="data-tag">NATIVE</span></td>
+              <td className="numeric">{formatQuantity(beneficialValue(holding.amount, share), 18)}</td>
+              <td className="numeric">{formatUsd(portfolio.fx.ethToUsd)}</td>
+              <td className="numeric">{formatUsd(beneficialValue(holding.valueUsd, share))}</td>
+              <td className="numeric holder-value-cell">{formatThb(beneficialValue(holding.valueThb, share))}</td>
+            </tr>
+          ))}
+          {walletTokens.map((holding) => (
+            <tr
+              key={`${holding.chainId}:${holding.contract?.toLowerCase() ?? holding.symbol}`}
+              data-wallet-kind="token"
+              data-wallet-priced={holding.priced ? "true" : "false"}
+            >
+              <td>
+                <span className="holder-ticker">{holding.symbol}</span>
+                <small title={holding.contract}>{holding.name} · {holding.chainName}</small>
+              </td>
+              <td>
+                <span className="holder-wallet-type">
+                  <span className="data-tag">ERC-20</span>
+                  {holding.priced ? null : <span className="data-tag holder-wallet-unpriced">UNPRICED</span>}
+                </span>
+              </td>
+              <td className="numeric">{formatQuantity(beneficialValue(holding.amount, share), 18)}</td>
+              <td className="numeric">{formatUsd(holding.priceUsd)}</td>
+              <td className="numeric">{formatUsd(beneficialValue(holding.valueUsd, share))}</td>
+              <td className="numeric holder-value-cell">{formatThb(beneficialValue(holding.valueThb, share))}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 function InvestorPanel({ investor, portfolio }: { investor: InvestorView; portfolio: JoinedPortfolio }) {
   const isZeroShare = investor.share === 0;
   const accountCurrency = portfolio.t212.currency;
@@ -231,7 +309,7 @@ function InvestorPanel({ investor, portfolio }: { investor: InvestorView; portfo
         </div>
       </header>
 
-      <section className="holder-benefit-grid" aria-label={`${investor.name} beneficial value`}>
+      <section className="holder-benefit-grid has-wallet" aria-label={`${investor.name} beneficial value`}>
         <div>
           <span>Joined beneficial value</span>
           <strong>{formatThb(beneficialValue(portfolio.totals.grandTotalThb, investor.share))}</strong>
@@ -251,6 +329,11 @@ function InvestorPanel({ investor, portfolio }: { investor: InvestorView; portfo
             {formatUsd(beneficialValue(portfolio.totals.nftsUsd, investor.share))}
           </small>
         </div>
+        <div>
+          <span>Non-NFT wallet share</span>
+          <strong>{formatThb(beneficialValue(portfolio.totals.walletThb, investor.share))}</strong>
+          <small>{formatUsd(beneficialValue(portfolio.totals.walletUsd, investor.share))}</small>
+        </div>
       </section>
 
       {isZeroShare ? (
@@ -259,7 +342,7 @@ function InvestorPanel({ investor, portfolio }: { investor: InvestorView; portfo
           <div>
             <h3>Explicit zero beneficial ownership</h3>
             <p>
-              Sonya currently has 0% of T212 cash, T212 positions, and the NFT wallet under the returned ownership configuration.
+              Sonya currently has 0% of T212 cash, T212 positions, NFTs, native coin, and ERC-20 wallet holdings under the returned ownership configuration.
             </p>
           </div>
         </section>
@@ -311,6 +394,23 @@ function InvestorPanel({ investor, portfolio }: { investor: InvestorView; portfo
             </div>
             <NftTable holdings={portfolio.nfts} source={portfolio.sources.nfts} share={investor.share} />
           </section>
+
+          <section className="holder-live-panel holder-wallet-panel" aria-labelledby={`wallet-${investor.code}`}>
+            <header className="holder-live-panel-header">
+              <div>
+                <p className="eyebrow">EVM WALLET / NATIVE + TOKENS</p>
+                <h3 id={`wallet-${investor.code}`}>Beneficial non-NFT wallet interest</h3>
+              </div>
+              <div className="holder-source-badges">
+                <SourceBadge state={portfolio.sources.walletNative} />
+                <SourceBadge state={portfolio.sources.walletTokens} />
+              </div>
+            </header>
+            <div className="holder-economic-note">
+              Amounts and values below apply the returned {formatPercent(investor.share)} economic share; unpriced tokens remain visible without contributing to totals.
+            </div>
+            <WalletTable portfolio={portfolio} share={investor.share} />
+          </section>
         </div>
       )}
     </article>
@@ -338,6 +438,8 @@ export default async function HolderListPage() {
     { label: "T212 account", provider: "Trading 212 summary", state: portfolio.sources.t212Summary },
     { label: "T212 positions", provider: "Trading 212 positions", state: portfolio.sources.t212Positions },
     { label: "NFT wallet", provider: "OpenSea", state: portfolio.sources.nfts },
+    { label: "Wallet native", provider: "Public chain RPCs", state: portfolio.sources.walletNative },
+    { label: "Wallet tokens", provider: "RPC + Blockscout + token feeds", state: portfolio.sources.walletTokens },
     { label: "Fiat FX", provider: "open.er-api.com", state: portfolio.sources.fiatFx },
     { label: "ETH / USD", provider: "CoinGecko", state: portfolio.sources.ethPrice },
   ];
@@ -359,7 +461,7 @@ export default async function HolderListPage() {
             <div className="page-title-group">
               <p className="eyebrow">LIVE JOINED PORT / BENEFICIAL OWNERSHIP</p>
               <h1 className="page-title">Holder List</h1>
-              <p className="page-subtitle">T212 cash and positions plus NFT wallet value, allocated from one live snapshot</p>
+              <p className="page-subtitle">T212, NFTs, native coin, and ERC-20 wallet holdings allocated from one live snapshot</p>
             </div>
             <div className="header-tools">
               <span className={`header-status holder-header-status is-${overall.status}`}>
@@ -402,7 +504,7 @@ export default async function HolderListPage() {
                 <strong className="holder-split-value">
                   A {formatPercent(portfolio.ownership.aShare)} / B {formatPercent(portfolio.ownership.bShare)}
                 </strong>
-                <small>C / Sonya {formatPercent(portfolio.ownership.cShare)}</small>
+                <small>C / Sonya {formatPercent(portfolio.ownership.cShare)} · applies to all wallet assets</small>
               </article>
             </section>
 

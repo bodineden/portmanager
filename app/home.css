@@ -307,3 +307,48 @@
   .home-shell .home-footnote { grid-template-columns: 1fr; }
   .home-shell .home-footnote .toolbar-link { width: fit-content; }
 }
+
+/* Wallet additions intentionally use modifier classes so the established home
+   selectors and the first three KPI cards retain their existing contract. */
+.home-shell .home-kpi-grid.has-wallet {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.home-shell .home-wallet-table {
+  min-width: 900px;
+}
+
+.home-shell .home-labeled-source,
+.home-shell .home-wallet-type-stack {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.home-shell .home-labeled-source > span:first-child {
+  color: #647389;
+  font: 700 8px/1 var(--font-geist-mono), ui-monospace, monospace;
+  letter-spacing: 0.08em;
+}
+
+.home-shell .home-unpriced-tag {
+  color: var(--amber);
+  background: rgba(251, 191, 36, 0.05);
+  border-color: rgba(251, 191, 36, 0.22);
+}
+
+@media (max-width: 980px) {
+  .home-shell .home-kpi-grid.has-wallet {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .home-shell .home-kpi-grid.has-wallet .kpi-total {
+    grid-column: auto;
+  }
+}
+
+@media (max-width: 640px) {
+  .home-shell .home-kpi-grid.has-wallet {
+    grid-template-columns: 1fr;
+  }
+}

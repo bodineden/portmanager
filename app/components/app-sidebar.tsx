@@ -55,9 +55,11 @@ export function AppSidebar({ active, email }: { active: ActivePage; email?: stri
           <strong>{email ?? "Admin User"}</strong>
           <small>PORTFOLIO OPERATOR</small>
         </span>
-        <Link href="/api/auth/logout" className="sidebar-logout" title="Sign out" aria-label="Sign out">
-          <Icon icon="log-out" size={14} />
-        </Link>
+        <form action="/api/auth/logout" method="post" className="sidebar-logout-form">
+          <button type="submit" className="sidebar-logout" title="Sign out" aria-label="Sign out">
+            <Icon icon="log-out" size={14} />
+          </button>
+        </form>
       </div>
     </aside>
   );

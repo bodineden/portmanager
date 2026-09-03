@@ -666,3 +666,30 @@
     grid-column: auto;
   }
 }
+
+/* Wallet registry modifiers leave the established securities/NFT table
+   selectors intact while accommodating the wider combined asset schema. */
+.asset-wallet-table {
+  min-width: 980px;
+}
+
+.asset-wallet-panel .asset-panel-status,
+.asset-wallet-source-label,
+.asset-wallet-type {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+
+.asset-wallet-source-label > small {
+  color: #647389;
+  font: 700 8px/1 var(--font-geist-mono), ui-monospace, monospace;
+  letter-spacing: 0.08em;
+}
+
+.asset-wallet-unpriced {
+  color: var(--amber);
+  background: rgba(251, 191, 36, 0.05);
+  border-color: rgba(251, 191, 36, 0.22);
+}

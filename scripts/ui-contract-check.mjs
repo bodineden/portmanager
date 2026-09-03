@@ -83,6 +83,67 @@ async function checkHomeContract(page) {
     requireCondition(/PP\s*\(B\)\s*50%/i.test(text), "PP (B) 50% is missing");
     requireCondition(/Sonya\s*\(C\)\s*0%/i.test(text), "Sonya (C) 0% is missing");
   });
+
+  await check("home preserves three KPIs and adds the non-NFT wallet KPI", async () => {
+    const cards = page.locator('[aria-label="Joined live portfolio summary"] > .kpi-card');
+    requireCondition(await cards.count() === 4, `expected 4 KPI cards, found ${await cards.count()}`);
+    const walletCardText = compactText((await cards.nth(3).textContent()) ?? "");
+    requireCondition(/04\s*\/\s*WALLET\s*\(NON-NFT\)/i.test(walletCardText), "wallet KPI label is missing");
+    requireCondition(/USD/i.test(walletCardText), "wallet KPI has no USD secondary value");
+  });
+
+  await check("home wallet panel exposes both sources and the wallet table contract", async () => {
+    const panel = page.locator(".home-wallet-panel");
+    requireCondition(await panel.count() === 1, "wallet panel is missing or duplicated");
+    const text = compactText((await panel.textContent()) ?? "");
+    requireCondition(/EVM WALLET\s*\/\s*NATIVE \+ TOKENS/i.test(text), "wallet eyebrow is missing");
+    requireCondition(/Wallet Balances/i.test(text), "wallet panel title is missing");
+    requireCondition(await panel.locator(".live-source-badge").count() === 2, "expected native and token source badges");
+
+    const table = panel.locator(".home-wallet-table");
+    if (await table.count() === 0) {
+      requireCondition(await panel.locator(".home-empty").count() === 1, "wallet table has no explicit empty/unavailable state");
+      return "wallet sources returned no display rows";
+    }
+
+    const headings = await table.locator("thead th").allTextContents();
+    const expected = ["Asset / Chain", "Type", "Amount", "Price (USD)", "Value (USD)", "Value (THB)"];
+    requireCondition(
+      headings.map(compactText).join("|") === expected.join("|"),
+      `unexpected wallet columns: ${headings.map(compactText).join(" | ")}`,
+    );
+    requireCondition(
+      /Total wallet \(priced\)/i.test(compactText((await table.locator(".table-total-row").textContent()) ?? "")),
+      "priced wallet total row is missing",
+    );
+  });
+
+  await check("home wallet rows keep native/token order and unpriced nulls", async () => {
+    const rows = page.locator(".home-wallet-panel tr[data-wallet-kind]");
+    const rowContracts = await rows.evaluateAll((elements) => elements.map((element) => ({
+      kind: element.getAttribute("data-wallet-kind"),
+      priced: element.getAttribute("data-wallet-priced"),
+      cells: Array.from(element.querySelectorAll("td"), (cell) => (cell.textContent ?? "").replace(/\s+/g, " ").trim()),
+    })));
+
+    let tokenSeen = false;
+    let unpricedSeen = false;
+    for (const row of rowContracts) {
+      if (row.kind === "token") tokenSeen = true;
+      if (row.kind === "native") requireCondition(!tokenSeen, "native row appears after a token row");
+      if (row.kind === "token" && row.priced === "false") {
+        unpricedSeen = true;
+        requireCondition(/UNPRICED/i.test(row.cells[1] ?? ""), "unpriced token tag is missing");
+        for (const index of [3, 4, 5]) {
+          requireCondition(row.cells[index] === "—", `unpriced token cell ${index + 1} is not —`);
+        }
+      }
+      if (row.kind === "token" && row.priced === "true") {
+        requireCondition(!unpricedSeen, "priced token appears after an unpriced token");
+      }
+    }
+    return `${rowContracts.length} wallet row${rowContracts.length === 1 ? "" : "s"}`;
+  });
 }
 
 async function checkHolderContract(page) {
@@ -103,6 +164,89 @@ async function checkHolderContract(page) {
       requireCondition(new RegExp(`RETURNED SHARE\\s*${owner.share}`, "i").test(text), `${owner.name} ${owner.share} share is missing`);
     }
   });
+
+  await check("holder-list allocates the non-NFT wallet to the live owners", async () => {
+    const panels = page.locator(".holder-investor-panel");
+    for (let index = 0; index < 3; index += 1) {
+      const text = compactText((await panels.nth(index).locator(".holder-benefit-grid").textContent()) ?? "");
+      requireCondition(/Non-NFT wallet share/i.test(text), `owner panel ${index + 1} has no wallet allocation readout`);
+    }
+    requireCondition(await panels.nth(0).locator(".holder-wallet-panel").count() === 1, "Bodin wallet detail is missing");
+    requireCondition(await panels.nth(1).locator(".holder-wallet-panel").count() === 1, "PP wallet detail is missing");
+    const sonyaText = compactText((await panels.nth(2).textContent()) ?? "");
+    requireCondition(/native coin/i.test(sonyaText) && /ERC-20/i.test(sonyaText), "Sonya zero-allocation copy omits wallet assets");
+  });
+
+  await check("holder-list reports both wallet source states", async () => {
+    const text = compactText((await page.locator(".holder-source-grid").textContent()) ?? "");
+    requireCondition(/Wallet native/i.test(text), "wallet native source card is missing");
+    requireCondition(/Wallet tokens/i.test(text), "wallet token source card is missing");
+  });
+}
+
+async function checkAssetWalletContract(page) {
+  await check("asset-list renders the read-only wallet registry", async () => {
+    const panel = page.locator(".asset-wallet-panel");
+    requireCondition(await panel.count() === 1, "wallet registry panel is missing or duplicated");
+    requireCondition(await panel.locator(".asset-source-badge").count() === 2, "expected native and token source badges");
+    const text = compactText((await panel.textContent()) ?? "");
+    requireCondition(/Live Wallet Asset Registry/i.test(text), "wallet registry title is missing");
+
+    const table = panel.locator(".asset-wallet-table");
+    if (await table.count() === 0) {
+      requireCondition(await panel.locator(".asset-empty-state").count() === 1, "wallet registry has no explicit empty/unavailable state");
+      return "wallet sources returned no registry rows";
+    }
+
+    const headings = await table.locator("thead th").allTextContents();
+    const expected = ["Asset", "Chain", "Type", "Amount", "Price (USD)", "Value (USD)", "Value (THB)"];
+    requireCondition(
+      headings.map(compactText).join("|") === expected.join("|"),
+      `unexpected wallet registry columns: ${headings.map(compactText).join(" | ")}`,
+    );
+    requireCondition(/Total wallet \(priced\)/i.test(compactText((await table.locator("tfoot").textContent()) ?? "")), "wallet registry total is missing");
+  });
+
+  await check("asset-list wallet rows keep native/token order and unpriced nulls", async () => {
+    const rows = page.locator(".asset-wallet-panel tr[data-wallet-kind]");
+    const rowContracts = await rows.evaluateAll((elements) => elements.map((element) => ({
+      kind: element.getAttribute("data-wallet-kind"),
+      priced: element.getAttribute("data-wallet-priced"),
+      cells: Array.from(element.querySelectorAll("td"), (cell) => (cell.textContent ?? "").replace(/\s+/g, " ").trim()),
+    })));
+
+    let tokenSeen = false;
+    let unpricedSeen = false;
+    for (const row of rowContracts) {
+      if (row.kind === "token") tokenSeen = true;
+      if (row.kind === "native") requireCondition(!tokenSeen, "native registry row appears after a token row");
+      if (row.kind === "token" && row.priced === "false") {
+        unpricedSeen = true;
+        requireCondition(/UNPRICED/i.test(row.cells[2] ?? ""), "unpriced registry tag is missing");
+        for (const index of [4, 5, 6]) {
+          requireCondition(row.cells[index] === "—", `unpriced registry cell ${index + 1} is not —`);
+        }
+      }
+      if (row.kind === "token" && row.priced === "true") {
+        requireCondition(!unpricedSeen, "priced registry token appears after an unpriced token");
+      }
+    }
+    return `${rowContracts.length} wallet registry row${rowContracts.length === 1 ? "" : "s"}`;
+  });
+}
+
+async function checkSidebarLogoutContract(page, routePath, viewportName) {
+  await check(`${viewportName} ${routePath} uses a POST-only sidebar logout control`, async () => {
+    const form = page.locator('form.sidebar-logout-form[action="/api/auth/logout"]');
+    requireCondition(await form.count() === 1, "expected exactly one sidebar logout form");
+    const method = await form.getAttribute("method");
+    requireCondition(method?.toLowerCase() === "post", `logout form method is ${method ?? "missing"}`);
+    requireCondition(await page.locator('a[href="/api/auth/logout"]').count() === 0, "prefetchable logout link is still rendered");
+    const button = form.locator('button.sidebar-logout[type="submit"][aria-label="Sign out"]');
+    requireCondition(await button.count() === 1, "accessible logout submit button is missing or duplicated");
+    requireCondition(await button.getAttribute("title") === "Sign out", "logout tooltip is missing");
+    return "POST form · no logout link";
+  });
 }
 
 async function checkReadonlyLivePage(page, routeName) {
@@ -114,8 +258,18 @@ async function checkReadonlyLivePage(page, routeName) {
   });
 
   await check(`${routeName} exposes no mutation forms or controls`, async () => {
-    const forms = await page.locator("form").count();
-    requireCondition(forms === 0, `${forms} form${forms === 1 ? "" : "s"} rendered`);
+    const unexpectedForms = await page.locator("form").evaluateAll((forms) => forms
+      .map((form) => ({
+        action: new URL(form.action).pathname,
+        className: form.className,
+        method: form.method.toLowerCase(),
+      }))
+      .filter((form) => !(
+        form.action === "/api/auth/logout"
+        && form.method === "post"
+        && form.className.split(/\s+/).includes("sidebar-logout-form")
+      )));
+    requireCondition(unexpectedForms.length === 0, `unexpected form contracts: ${JSON.stringify(unexpectedForms)}`);
 
     const legacyMutationFields = page.locator([
       'button[type="submit"]',
@@ -129,7 +283,16 @@ async function checkReadonlyLivePage(page, routeName) {
       'select[name="toCurrency"]',
       '[contenteditable="true"]',
     ].join(", "));
-    requireCondition(await legacyMutationFields.count() === 0, "a retired mutation field/control is rendered");
+    const forbiddenMutationFields = await legacyMutationFields.evaluateAll((elements) => elements.filter((element) => {
+      const form = element.closest("form");
+      const allowedLogoutButton = element.matches('button.sidebar-logout[type="submit"][aria-label="Sign out"]')
+        && form instanceof HTMLFormElement
+        && new URL(form.action).pathname === "/api/auth/logout"
+        && form.method.toLowerCase() === "post"
+        && form.classList.contains("sidebar-logout-form");
+      return !allowedLogoutButton;
+    }).length);
+    requireCondition(forbiddenMutationFields === 0, "a retired mutation field/control is rendered");
 
     const controlLabels = await page.locator("button, [role='button']").evaluateAll((elements) =>
       elements.map((element) => `${element.textContent ?? ""} ${element.getAttribute("aria-label") ?? ""}`.trim()),
@@ -235,12 +398,15 @@ async function auditRoute(browser, route, viewport) {
       requireCondition(!forbidden, `rendered ${forbidden}`);
     });
 
+    await checkSidebarLogoutContract(page, route.path, viewport.name);
+
     if (viewport.name === "desktop") {
       if (route.name === "home") await checkHomeContract(page);
       if (route.name === "holder-list") await checkHolderContract(page);
       if (route.name === "asset-list" || route.name === "exchange-rate") {
         await checkReadonlyLivePage(page, route.name);
       }
+      if (route.name === "asset-list") await checkAssetWalletContract(page);
       if (route.name === "portfolio") await checkPortfolioContract(page);
     }
 

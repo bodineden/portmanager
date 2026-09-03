@@ -1,4 +1,6 @@
 import Link from "next/link";
+import { redirect } from "next/navigation";
+import { requireSession } from "@/lib/auth";
 import "./login.css";
 
 export const dynamic = "force-dynamic";
@@ -37,6 +39,9 @@ export default async function LoginPage({
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
+  const email = await requireSession();
+  if (email) redirect("/");
+
   const params = await searchParams;
   const error = errorMessage(params);
 

@@ -679,3 +679,35 @@
     flex-direction: column;
   }
 }
+
+/* Full-wallet additions are scoped modifiers so the existing ownership and
+   table selectors remain stable for the browser contract. */
+.holder-benefit-grid.has-wallet {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.holder-wallet-panel {
+  grid-column: 1 / -1;
+}
+
+.holder-wallet-table {
+  min-width: 860px;
+}
+
+.holder-wallet-type {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.holder-wallet-unpriced {
+  color: var(--amber);
+  background: rgba(251, 191, 36, 0.05);
+  border-color: rgba(251, 191, 36, 0.22);
+}
+
+@media (max-width: 920px) {
+  .holder-benefit-grid.has-wallet {
+    grid-template-columns: 1fr;
+  }
+}

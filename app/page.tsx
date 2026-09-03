@@ -48,9 +48,14 @@ function SourceBadge({ state }: { state: LiveSourceState }) {
 
 export default async function Home() {
   const [email, portfolio] = await Promise.all([requireSession(), getJoinedPortfolio()]);
-  const { t212, nfts, fx, totals, sources, ownership } = portfolio;
+  const { t212, nfts, wallet, fx, totals, sources, ownership } = portfolio;
   const positionCount = t212.investments.length;
   const tokenCount = nfts.reduce((sum, holding) => sum + holding.tokenCount, 0);
+  const walletTokens = [...wallet.tokens].sort((left, right) => Number(right.priced) - Number(left.priced));
+  const walletRowCount = wallet.native.length + walletTokens.length;
+  const walletSourcesComplete = sources.walletNative.status === "live" && sources.walletTokens.status === "live";
+  const walletSourcesUnavailable = sources.walletNative.status === "unavailable"
+    && sources.walletTokens.status === "unavailable";
 
   return (
     <main className="workspace-shell home-shell">
@@ -59,9 +64,9 @@ export default async function Home() {
       <section className="workspace-main">
         <header className="page-header">
           <div className="page-title-group">
-            <p className="eyebrow">PORTFOLIO OPERATIONS / LIVE JOINED PORT</p>
+            <p className="eyebrow">PORTFOLIO OPERATIONS / FULL LIVE JOINED PORT</p>
             <h1 className="page-title">Command Center</h1>
-            <p className="page-subtitle">Trading 212 + Robinhood Chain wallet — one live portfolio, valued in THB</p>
+            <p className="page-subtitle">Trading 212 + full EVM wallet balances — one live portfolio, valued in THB</p>
           </div>
           <div className="header-status">
             <span className="status-light" aria-hidden="true" /> SNAPSHOT · {formatAsOf(portfolio.asOf)}
@@ -69,7 +74,7 @@ export default async function Home() {
         </header>
 
         <div className="page-content home-content">
-          <section className="home-kpi-grid" aria-label="Joined live portfolio summary">
+          <section className="home-kpi-grid has-wallet" aria-label="Joined live portfolio summary">
             <article className="kpi-card kpi-total">
               <span className="metric-index">01 / JOINED TOTAL</span>
               <span className="metric-label">Trading 212 + NFT wallet</span>
@@ -88,6 +93,12 @@ export default async function Home() {
               <strong className="metric-value">{formatThb(totals.nftsThb)}</strong>
               <small>{formatEth(totals.nftsEth)} · {formatUsd(totals.nftsUsd)} · {tokenCount} tokens</small>
             </article>
+            <article className="kpi-card">
+              <span className="metric-index">04 / WALLET (NON-NFT)</span>
+              <span className="metric-label">Native coin + ERC-20 tokens</span>
+              <strong className="metric-value">{formatThb(totals.walletThb)}</strong>
+              <small>{formatUsd(totals.walletUsd)} USD secondary · {walletRowCount} wallet asset{walletRowCount === 1 ? "" : "s"}</small>
+            </article>
           </section>
 
           <section className="home-ownership-bar panel" aria-label="Beneficial ownership">
@@ -97,7 +108,114 @@ export default async function Home() {
               <strong>PP (B) {shareLabel(ownership.bShare)}</strong>
               <strong>Sonya (C) {shareLabel(ownership.cShare)}</strong>
             </div>
-            <p>The same beneficial split applies to the complete Trading 212 account and every NFT collection.</p>
+            <p>The same beneficial split applies to the complete Trading 212 account, every NFT collection, and all native and token wallet holdings.</p>
+          </section>
+
+          <section className="panel home-panel home-wallet-panel" aria-label="Wallet balances">
+            <div className="panel-header">
+              <div>
+                <p className="eyebrow">EVM WALLET / NATIVE + TOKENS</p>
+                <h2 className="panel-title">Wallet Balances</h2>
+              </div>
+              <div className="home-source-stack">
+                <span className="home-labeled-source">
+                  <span>NATIVE</span>
+                  <SourceBadge state={sources.walletNative} />
+                </span>
+                <span className="home-labeled-source">
+                  <span>TOKENS</span>
+                  <SourceBadge state={sources.walletTokens} />
+                </span>
+                <span className="panel-count">{wallet.native.length} NATIVE · {walletTokens.length} TOKENS</span>
+              </div>
+            </div>
+
+            {walletRowCount === 0 ? (
+              <div className={`home-empty ${walletSourcesComplete ? "" : "is-unavailable"}`}>
+                <strong>{walletSourcesComplete
+                  ? "No non-NFT wallet holdings found"
+                  : walletSourcesUnavailable
+                    ? "Wallet balances unavailable"
+                    : "Wallet balance snapshot incomplete"}</strong>
+                <p>
+                  {walletSourcesComplete
+                    ? "The connected EVM wallet returned no positive native coin or ERC-20 balances in this snapshot."
+                    : "One or more wallet sources did not return a complete inventory; no empty-wallet conclusion is inferred."}
+                </p>
+              </div>
+            ) : (
+              <div className="table-scroll">
+                <table className="data-table live-table home-wallet-table">
+                  <caption className="sr-only">Live native coin and ERC-20 wallet balances</caption>
+                  <thead>
+                    <tr>
+                      <th>Asset / Chain</th>
+                      <th>Type</th>
+                      <th className="numeric">Amount</th>
+                      <th className="numeric">Price (USD)</th>
+                      <th className="numeric">Value (USD)</th>
+                      <th className="numeric">Value (THB)</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {wallet.native.map((holding) => (
+                      <tr key={`${holding.chainId}:native`} data-wallet-kind="native">
+                        <td>
+                          <span className="ticker-cell">{holding.symbol}</span>
+                          <small className="sub-cell">{holding.chainName} · CHAIN {holding.chainId}</small>
+                        </td>
+                        <td><span className="data-tag">NATIVE</span></td>
+                        <td className="numeric">{formatNumber(holding.amount, 18)}</td>
+                        <td className="numeric">{formatUsd(fx.ethToUsd)}</td>
+                        <td className="numeric">{formatUsd(holding.valueUsd)}</td>
+                        <td className="numeric value-cell">{formatThb(holding.valueThb)}</td>
+                      </tr>
+                    ))}
+                    {walletTokens.map((holding) => (
+                      <tr
+                        key={`${holding.chainId}:${holding.contract?.toLowerCase() ?? holding.symbol}`}
+                        data-wallet-kind="token"
+                        data-wallet-priced={holding.priced ? "true" : "false"}
+                      >
+                        <td>
+                          <span className="ticker-cell">{holding.symbol}</span>
+                          <small className="sub-cell" title={holding.contract}>{holding.name} · {holding.chainName}</small>
+                        </td>
+                        <td>
+                          <span className="home-wallet-type-stack">
+                            <span className="data-tag">ERC-20</span>
+                            {holding.priced ? null : <span className="data-tag home-unpriced-tag">UNPRICED</span>}
+                          </span>
+                        </td>
+                        <td className="numeric">{formatNumber(holding.amount, 18)}</td>
+                        <td className="numeric">{formatUsd(holding.priceUsd)}</td>
+                        <td className="numeric">{formatUsd(holding.valueUsd)}</td>
+                        <td className="numeric value-cell">{formatThb(holding.valueThb)}</td>
+                      </tr>
+                    ))}
+                    <tr className="table-total-row">
+                      <td><strong>Total wallet (priced)</strong></td>
+                      <td><span className="data-tag">PRICED</span></td>
+                      <td className="numeric">—</td>
+                      <td className="numeric">—</td>
+                      <td className="numeric"><strong>{formatUsd(totals.walletUsd)}</strong></td>
+                      <td className="numeric"><strong>{formatThb(totals.walletThb)}</strong></td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {sources.walletNative.status !== "live" ? (
+              <div className={`home-availability-note ${sources.walletNative.status === "partial" ? "warning" : "negative"}`}>
+                Native balances: {sources.walletNative.message}
+              </div>
+            ) : null}
+            {sources.walletTokens.status !== "live" ? (
+              <div className={`home-availability-note ${sources.walletTokens.status === "partial" ? "warning" : "negative"}`}>
+                Token balances: {sources.walletTokens.message}
+              </div>
+            ) : null}
           </section>
 
           <section className="panel home-panel">
@@ -275,7 +393,7 @@ export default async function Home() {
 
           <section className="home-footnote">
             <span>TRANSPARENT SOURCES</span>
-            <p>Trading 212 Public API · OpenSea API · open.er-api.com · CoinGecko. Neon remains the historical ledger and is not a live price source.</p>
+            <p>Trading 212 Public API · OpenSea API · public EVM RPCs · Blockscout · DefiLlama · CoinGecko · open.er-api.com. Neon remains the historical ledger and is not a live price source.</p>
             <Link href="/portfolio" className="toolbar-link">Open analytics →</Link>
           </section>
         </div>
