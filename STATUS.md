@@ -1,6 +1,12 @@
 # PortManager — Status
 
-As of: 2026-09-03 (UTC)
+As of: 2026-09-04 (UTC)
+
+## 2026-09-04: "Hide under $1" toggle on Asset List wallet registry (Bodin ask; Sol gpt-5.6-sol ultra, merge ea573cf)
+- Bodin: "can we hide in the asset list first page anything under $1". Clarify answers: toggle **default ON** with show-all option; hide unpriced rows too; threshold = row USD value **strictly < 1.00** (exactly 1.00 stays). Scope question timed out → proceeded with **Asset List page Live Wallet Asset Registry only** (the first asset table, where the dust lives: Base native ≈ $0.24, sub-cent GME/SPY/CRCL/PLTR/AMZN/STACK, unpriced meme dust; USDG ≈ $1.48 stays). Home page wallet table untouched — offer to mirror if wanted.
+- Implementation (Sol 51a13d9, worker on feat/under1-filter; parent QA'd, merged ea573cf): narrow client component `app/asset-list/wallet-asset-registry.tsx` (useState true, SSR default-on, no flash/hydration mismatch); server passes preformatted row views (byte-identical formatting, no live-data import into client bundle). Pure filter `lib/dust-filter.ts` + 7 unit tests: token hidden when `priced === false || (valueUsd !== null && valueUsd < 1)`; native hidden when `valueUsd !== null && valueUsd < 1`; **native valueUsd null stays visible** (ETH price feed down ≠ dust — never infer unknown = under $1). Toggle OFF restores all 18 rows.
+- Display-only: tfoot "Total wallet (priced)" + all totals remain FULL-set truth; row count shows visible + muted "(N hidden under $1)". `.panel-count`, thead order, data-wallet-kind/priced attrs, native-before-token + priced-before-unpriced order, source badges, footer, empty states all preserved (74/74 UI contracts pass against local production build; toggle behavior verified in-browser: 3 visible default → 18 when OFF, totals unchanged, 0 console errors).
+- Parent QA (2026-09-04): npm test 33/33 (was 26), lint 0 errors (1 pre-existing proxy.ts warning), build clean. Revert: tag `pre-under1-filter-2026-09-04` + snapshot `backups/site-pre-under1-filter-2026-09-04/`.
 
 ## State
 - App: portmanager-psi.vercel.app (Next.js 16 + Neon serverless, no API routes)
