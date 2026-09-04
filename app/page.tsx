@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { AppSidebar } from "./components/app-sidebar";
+import { WalletBalancesPanel } from "./home-wallet-panel";
 import {
   formatCurrency,
   formatEth,
@@ -48,6 +49,31 @@ export default async function Home() {
   const positionCount = t212.investments.length;
   const tokenCount = nfts.reduce((sum, holding) => sum + holding.tokenCount, 0);
   const walletTokens = [...wallet.tokens].sort((left, right) => Number(right.priced) - Number(left.priced));
+  const walletNativeRows = wallet.native.map((holding) => ({
+    id: `${holding.chainId}:native`,
+    symbol: holding.symbol,
+    chainName: holding.chainName,
+    chainId: holding.chainId,
+    amount: formatNumber(holding.amount, 18),
+    priceUsd: formatUsd(fx.ethToUsd),
+    valueUsd: holding.valueUsd,
+    valueUsdText: formatUsd(holding.valueUsd),
+    valueThb: formatThb(holding.valueThb),
+  }));
+  const walletTokenRows = walletTokens.map((holding) => ({
+    id: `${holding.chainId}:${holding.contract?.toLowerCase() ?? holding.symbol}`,
+    symbol: holding.symbol,
+    name: holding.name,
+    contract: holding.contract,
+    chainName: holding.chainName,
+    chainId: holding.chainId,
+    amount: formatNumber(holding.amount, 18),
+    priceUsd: formatUsd(holding.priceUsd),
+    valueUsd: holding.valueUsd,
+    valueUsdText: formatUsd(holding.valueUsd),
+    valueThb: formatThb(holding.valueThb),
+    priced: holding.priced,
+  }));
   const walletRowCount = wallet.native.length + walletTokens.length;
   const walletSourcesComplete = sources.walletNative.status === "live" && sources.walletTokens.status === "live";
   const walletSourcesUnavailable = sources.walletNative.status === "unavailable"
@@ -97,112 +123,22 @@ export default async function Home() {
             </article>
           </section>
 
-          <section className="panel home-panel home-wallet-panel" aria-label="Wallet balances">
-            <div className="panel-header">
-              <div>
-                <p className="eyebrow">EVM WALLET / NATIVE + TOKENS</p>
-                <h2 className="panel-title">Wallet Balances</h2>
-              </div>
-              <div className="home-source-stack">
-                <span className="home-labeled-source">
-                  <span>NATIVE</span>
-                  <SourceBadge state={sources.walletNative} />
-                </span>
-                <span className="home-labeled-source">
-                  <span>TOKENS</span>
-                  <SourceBadge state={sources.walletTokens} />
-                </span>
-                <span className="panel-count">{wallet.native.length} NATIVE · {walletTokens.length} TOKENS</span>
-              </div>
-            </div>
-
-            {walletRowCount === 0 ? (
-              <div className={`home-empty ${walletSourcesComplete ? "" : "is-unavailable"}`}>
-                <strong>{walletSourcesComplete
-                  ? "No non-NFT wallet holdings found"
-                  : walletSourcesUnavailable
-                    ? "Wallet balances unavailable"
-                    : "Wallet balance snapshot incomplete"}</strong>
-                <p>
-                  {walletSourcesComplete
-                    ? "The connected EVM wallet returned no positive native coin or ERC-20 balances in this snapshot."
-                    : "One or more wallet sources did not return a complete inventory; no empty-wallet conclusion is inferred."}
-                </p>
-              </div>
-            ) : (
-              <div className="table-scroll">
-                <table className="data-table live-table home-wallet-table">
-                  <caption className="sr-only">Live native coin and ERC-20 wallet balances</caption>
-                  <thead>
-                    <tr>
-                      <th>Asset / Chain</th>
-                      <th>Type</th>
-                      <th className="numeric">Amount</th>
-                      <th className="numeric">Price (USD)</th>
-                      <th className="numeric">Value (USD)</th>
-                      <th className="numeric">Value (THB)</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {wallet.native.map((holding) => (
-                      <tr key={`${holding.chainId}:native`} data-wallet-kind="native">
-                        <td>
-                          <span className="ticker-cell">{holding.symbol}</span>
-                          <small className="sub-cell">{holding.chainName} · CHAIN {holding.chainId}</small>
-                        </td>
-                        <td><span className="data-tag">NATIVE</span></td>
-                        <td className="numeric">{formatNumber(holding.amount, 18)}</td>
-                        <td className="numeric">{formatUsd(fx.ethToUsd)}</td>
-                        <td className="numeric">{formatUsd(holding.valueUsd)}</td>
-                        <td className="numeric value-cell">{formatThb(holding.valueThb)}</td>
-                      </tr>
-                    ))}
-                    {walletTokens.map((holding) => (
-                      <tr
-                        key={`${holding.chainId}:${holding.contract?.toLowerCase() ?? holding.symbol}`}
-                        data-wallet-kind="token"
-                        data-wallet-priced={holding.priced ? "true" : "false"}
-                      >
-                        <td>
-                          <span className="ticker-cell">{holding.symbol}</span>
-                          <small className="sub-cell" title={holding.contract}>{holding.name} · {holding.chainName}</small>
-                        </td>
-                        <td>
-                          <span className="home-wallet-type-stack">
-                            <span className="data-tag">ERC-20</span>
-                            {holding.priced ? null : <span className="data-tag home-unpriced-tag">UNPRICED</span>}
-                          </span>
-                        </td>
-                        <td className="numeric">{formatNumber(holding.amount, 18)}</td>
-                        <td className="numeric">{formatUsd(holding.priceUsd)}</td>
-                        <td className="numeric">{formatUsd(holding.valueUsd)}</td>
-                        <td className="numeric value-cell">{formatThb(holding.valueThb)}</td>
-                      </tr>
-                    ))}
-                    <tr className="table-total-row">
-                      <td><strong>Total wallet (priced)</strong></td>
-                      <td><span className="data-tag">PRICED</span></td>
-                      <td className="numeric">—</td>
-                      <td className="numeric">—</td>
-                      <td className="numeric"><strong>{formatUsd(totals.walletUsd)}</strong></td>
-                      <td className="numeric"><strong>{formatThb(totals.walletThb)}</strong></td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-            )}
-
-            {sources.walletNative.status !== "live" ? (
-              <div className={`home-availability-note ${sources.walletNative.status === "partial" ? "warning" : "negative"}`}>
-                Native balances: {sources.walletNative.message}
-              </div>
-            ) : null}
-            {sources.walletTokens.status !== "live" ? (
-              <div className={`home-availability-note ${sources.walletTokens.status === "partial" ? "warning" : "negative"}`}>
-                Token balances: {sources.walletTokens.message}
-              </div>
-            ) : null}
-          </section>
+          <WalletBalancesPanel
+            nativeRows={walletNativeRows}
+            tokenRows={walletTokenRows}
+            nativeSource={{
+              status: sources.walletNative.status,
+              message: sources.walletNative.message,
+            }}
+            tokenSource={{
+              status: sources.walletTokens.status,
+              message: sources.walletTokens.message,
+            }}
+            walletSourcesComplete={walletSourcesComplete}
+            walletSourcesUnavailable={walletSourcesUnavailable}
+            totalWalletUsd={formatUsd(totals.walletUsd)}
+            totalWalletThb={formatThb(totals.walletThb)}
+          />
 
           <section className="panel home-panel">
             <div className="panel-header">
