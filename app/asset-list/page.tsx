@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { AppSidebar } from "../components/app-sidebar";
+import { WalletAssetRegistry } from "./wallet-asset-registry";
 import {
   formatCurrency,
   formatEth,
@@ -59,6 +60,31 @@ export default async function AssetListPage() {
   const walletTokens = [...portfolio.wallet.tokens].sort(
     (left, right) => Number(right.priced) - Number(left.priced),
   );
+  const walletNativeRows = portfolio.wallet.native.map((holding) => ({
+    id: `${holding.chainId}:native`,
+    symbol: holding.symbol,
+    chainName: holding.chainName,
+    chainId: holding.chainId,
+    amount: formatNumber(holding.amount, 18),
+    priceUsd: formatUsd(portfolio.fx.ethToUsd),
+    valueUsd: holding.valueUsd,
+    valueUsdText: formatUsd(holding.valueUsd),
+    valueThb: formatThb(holding.valueThb),
+  }));
+  const walletTokenRows = walletTokens.map((holding) => ({
+    id: `${holding.chainId}:${holding.contract?.toLowerCase() ?? holding.symbol}`,
+    symbol: holding.symbol,
+    name: holding.name,
+    contract: holding.contract,
+    chainName: holding.chainName,
+    chainId: holding.chainId,
+    amount: formatNumber(holding.amount, 18),
+    priceUsd: formatUsd(holding.priceUsd),
+    valueUsd: holding.valueUsd,
+    valueUsdText: formatUsd(holding.valueUsd),
+    valueThb: formatThb(holding.valueThb),
+    priced: holding.priced,
+  }));
   const rawWalletNativeCount = portfolio.wallet.native.length;
   const rawWalletTokenCount = walletTokens.length;
   const positionCount = portfolio.sources.t212Positions.status === "unavailable" ? null : rawPositionCount;
@@ -146,112 +172,22 @@ export default async function AssetListPage() {
           </section>
 
           <section className="panel asset-live-panel asset-wallet-panel" aria-label="Wallet asset registry">
-            <div className="panel-header asset-live-panel-header">
-              <div>
-                <p className="eyebrow">EVM WALLET / NATIVE + ERC-20</p>
-                <h2 className="panel-title">Live Wallet Asset Registry</h2>
-                <p className="panel-subtitle">Positive native coin and token balances across the managed EVM chains</p>
-              </div>
-              <div className="asset-panel-status">
-                <span className="asset-wallet-source-label">
-                  <small>NATIVE</small>
-                  <SourceBadge state={portfolio.sources.walletNative} />
-                </span>
-                <span className="asset-wallet-source-label">
-                  <small>TOKENS</small>
-                  <SourceBadge state={portfolio.sources.walletTokens} />
-                </span>
-                <span className="panel-count">{formatCount(rawWalletNativeCount + rawWalletTokenCount)} ASSETS</span>
-              </div>
-            </div>
-
-            {rawWalletNativeCount + rawWalletTokenCount === 0 ? (
-              <div className={`asset-empty-state ${walletSourcesComplete ? "" : "is-unavailable"}`}>
-                <span className="asset-empty-code">WALLET / —</span>
-                <div>
-                  <strong>{walletSourcesComplete
-                    ? "No wallet assets found"
-                    : walletSourcesUnavailable
-                      ? "Wallet assets are unavailable"
-                      : "Wallet asset snapshot incomplete"}</strong>
-                  <p>
-                    {walletSourcesComplete
-                      ? "The connected EVM wallet returned no positive native coin or ERC-20 balances in this snapshot."
-                      : "One or more wallet sources did not return a complete inventory; no empty-wallet conclusion is inferred."}
-                  </p>
-                </div>
-              </div>
-            ) : (
-              <div className="asset-table-scroll">
-                <table className="asset-live-table asset-wallet-table">
-                  <caption className="sr-only">Live native coin and ERC-20 wallet registry</caption>
-                  <thead>
-                    <tr>
-                      <th scope="col">Asset</th>
-                      <th scope="col">Chain</th>
-                      <th scope="col">Type</th>
-                      <th scope="col" className="asset-cell-right">Amount</th>
-                      <th scope="col" className="asset-cell-right">Price (USD)</th>
-                      <th scope="col" className="asset-cell-right">Value (USD)</th>
-                      <th scope="col" className="asset-cell-right">Value (THB)</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {portfolio.wallet.native.map((holding) => (
-                      <tr key={`${holding.chainId}:native`} data-wallet-kind="native">
-                        <td><span className="ticker-badge">{holding.symbol}</span></td>
-                        <td>
-                          <strong className="asset-collection-name">{holding.chainName}</strong>
-                          <small className="asset-row-name mono">CHAIN {holding.chainId}</small>
-                        </td>
-                        <td><span className="data-tag">NATIVE</span></td>
-                        <td className="asset-cell-right numeric">{formatNumber(holding.amount, 18)}</td>
-                        <td className="asset-cell-right numeric">{formatUsd(portfolio.fx.ethToUsd)}</td>
-                        <td className="asset-cell-right numeric">{formatUsd(holding.valueUsd)}</td>
-                        <td className="asset-cell-right numeric asset-thb-value">{formatThb(holding.valueThb)}</td>
-                      </tr>
-                    ))}
-                    {walletTokens.map((holding) => (
-                      <tr
-                        key={`${holding.chainId}:${holding.contract?.toLowerCase() ?? holding.symbol}`}
-                        data-wallet-kind="token"
-                        data-wallet-priced={holding.priced ? "true" : "false"}
-                      >
-                        <td>
-                          <span className="ticker-badge">{holding.symbol}</span>
-                          <small className="asset-row-name" title={holding.contract}>{holding.name}</small>
-                        </td>
-                        <td>
-                          <strong className="asset-collection-name">{holding.chainName}</strong>
-                          <small className="asset-row-name mono">CHAIN {holding.chainId}</small>
-                        </td>
-                        <td>
-                          <span className="asset-wallet-type">
-                            <span className="data-tag">ERC-20</span>
-                            {holding.priced ? null : <span className="data-tag asset-wallet-unpriced">UNPRICED</span>}
-                          </span>
-                        </td>
-                        <td className="asset-cell-right numeric">{formatNumber(holding.amount, 18)}</td>
-                        <td className="asset-cell-right numeric">{formatUsd(holding.priceUsd)}</td>
-                        <td className="asset-cell-right numeric">{formatUsd(holding.valueUsd)}</td>
-                        <td className="asset-cell-right numeric asset-thb-value">{formatThb(holding.valueThb)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                  <tfoot>
-                    <tr>
-                      <td><strong>Total wallet (priced)</strong></td>
-                      <td>—</td>
-                      <td><span className="data-tag">PRICED</span></td>
-                      <td className="asset-cell-right">—</td>
-                      <td className="asset-cell-right">—</td>
-                      <td className="asset-cell-right numeric"><strong>{formatUsd(portfolio.totals.walletUsd)}</strong></td>
-                      <td className="asset-cell-right numeric asset-thb-value"><strong>{formatThb(portfolio.totals.walletThb)}</strong></td>
-                    </tr>
-                  </tfoot>
-                </table>
-              </div>
-            )}
+            <WalletAssetRegistry
+              nativeRows={walletNativeRows}
+              tokenRows={walletTokenRows}
+              nativeSource={{
+                status: portfolio.sources.walletNative.status,
+                label: sourceLabel(portfolio.sources.walletNative.status),
+              }}
+              tokenSource={{
+                status: portfolio.sources.walletTokens.status,
+                label: sourceLabel(portfolio.sources.walletTokens.status),
+              }}
+              walletSourcesComplete={walletSourcesComplete}
+              walletSourcesUnavailable={walletSourcesUnavailable}
+              totalWalletUsd={formatUsd(portfolio.totals.walletUsd)}
+              totalWalletThb={formatThb(portfolio.totals.walletThb)}
+            />
 
             <div className="asset-panel-footer">
               <span>NATIVE</span>
