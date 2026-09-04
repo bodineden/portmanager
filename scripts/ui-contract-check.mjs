@@ -64,6 +64,57 @@ async function renderedText(page) {
   return compactText(await page.locator("body").innerText());
 }
 
+function parseGroupedCount(value, context) {
+  const parsed = Number(value.replace(/,/g, ""));
+  requireCondition(
+    Number.isSafeInteger(parsed) && parsed >= 0,
+    `invalid ${context}: ${JSON.stringify(value)}`,
+  );
+  return parsed;
+}
+
+function parseDisplayedUsd(value) {
+  const text = compactText(value);
+  if (text === "—") return null;
+
+  const numericText = text.replace(/,/g, "").replace(/[^\d.+-]/g, "");
+  requireCondition(numericText.length > 0, `USD value is not numeric: ${text}`);
+  const parsed = Number(numericText);
+  requireCondition(Number.isFinite(parsed), `USD value is not finite: ${text}`);
+  return parsed;
+}
+
+async function readHomeWalletKpiCount(page) {
+  const text = compactText((await page
+    .locator('[aria-label="Joined live portfolio summary"] > .kpi-card')
+    .nth(3)
+    .textContent()) ?? "");
+  const match = text.match(/([\d,]+)\s+wallet assets?\b/i);
+  requireCondition(match, `wallet KPI count is missing: ${text}`);
+  return parseGroupedCount(match[1], "wallet KPI count");
+}
+
+async function readHomeWalletPanelCounts(panel) {
+  const nativeAttribute = await panel.getAttribute("data-wallet-native-count");
+  const tokenAttribute = await panel.getAttribute("data-wallet-token-count");
+  requireCondition(nativeAttribute !== null, "wallet panel native total is missing");
+  requireCondition(tokenAttribute !== null, "wallet panel token total is missing");
+  return {
+    native: parseGroupedCount(nativeAttribute, "wallet panel native total"),
+    token: parseGroupedCount(tokenAttribute, "wallet panel token total"),
+  };
+}
+
+async function readHomeWalletHeaderCounts(panel) {
+  const text = compactText((await panel.locator(".panel-count").textContent()) ?? "");
+  const match = text.match(/([\d,]+)\s+NATIVE\s*·\s*([\d,]+)\s+TOKENS/i);
+  requireCondition(match, `wallet header counts are malformed: ${text}`);
+  return {
+    native: parseGroupedCount(match[1], "visible native count"),
+    token: parseGroupedCount(match[2], "visible token count"),
+  };
+}
+
 async function checkOwnershipLanguage(page, routeName) {
   const text = await renderedText(page);
 
@@ -126,6 +177,166 @@ async function checkHomeContract(page) {
       /Total wallet \(priced\)/i.test(compactText((await table.locator(".table-total-row").textContent()) ?? "")),
       "priced wallet total row is missing",
     );
+  });
+
+  await check("H1 home wallet hide-under-$1 toggle is present and checked by default", async () => {
+    const panel = page.locator(".home-wallet-panel");
+    const filter = panel.locator(".home-wallet-filter");
+    requireCondition(await filter.count() === 1, "expected exactly one home wallet filter");
+    requireCondition(await filter.isVisible(), "home wallet filter is not visible");
+    requireCondition(compactText((await filter.textContent()) ?? "") === "Hide under $1", "home wallet filter label changed");
+
+    const toggle = filter.locator('input[type="checkbox"][aria-label="Hide assets under $1"]');
+    requireCondition(await toggle.count() === 1, "accessible home wallet filter checkbox is missing or duplicated");
+    requireCondition(await toggle.isChecked(), "home wallet filter is not checked by default");
+  });
+
+  await check("H2 home wallet default view hides unpriced and under-$1 rows", async () => {
+    const panel = page.locator(".home-wallet-panel");
+    const table = panel.locator(".home-wallet-table");
+    const fullCounts = await readHomeWalletPanelCounts(panel);
+    const fullCount = fullCounts.native + fullCounts.token;
+    const kpiCount = await readHomeWalletKpiCount(page);
+    requireCondition(fullCount === kpiCount, `panel has ${fullCount} total rows but wallet KPI reports ${kpiCount}`);
+
+    if (await table.count() === 0) {
+      requireCondition(fullCount === 0, `wallet table is absent despite ${fullCount} total rows`);
+      requireCondition(await panel.locator(".home-empty").count() === 1, "wallet table has no explicit empty/unavailable state");
+      return "wallet sources returned no display rows";
+    }
+
+    const rows = panel.locator("tr[data-wallet-kind]");
+    const rowContracts = await rows.evaluateAll((elements) => elements.map((element) => ({
+      kind: element.getAttribute("data-wallet-kind"),
+      priced: element.getAttribute("data-wallet-priced"),
+      valueUsd: (element.querySelectorAll("td")[4]?.textContent ?? "").replace(/\s+/g, " ").trim(),
+    })));
+    const visibleNativeCount = rowContracts.filter((row) => row.kind === "native").length;
+    const visibleTokenCount = rowContracts.filter((row) => row.kind === "token").length;
+    const headerCounts = await readHomeWalletHeaderCounts(panel);
+    requireCondition(headerCounts.native === visibleNativeCount, `header shows ${headerCounts.native} native, found ${visibleNativeCount}`);
+    requireCondition(headerCounts.token === visibleTokenCount, `header shows ${headerCounts.token} tokens, found ${visibleTokenCount}`);
+    requireCondition(
+      await panel.locator('tr[data-wallet-kind][data-wallet-priced="false"]').count() === 0,
+      "an unpriced token is visible while the filter is on",
+    );
+
+    for (const row of rowContracts) {
+      requireCondition(row.kind === "native" || row.kind === "token", `unexpected wallet row kind ${row.kind ?? "missing"}`);
+      if (row.kind === "token") requireCondition(row.priced === "true", "visible token is not marked priced");
+      const valueUsd = parseDisplayedUsd(row.valueUsd);
+      if (valueUsd !== null) requireCondition(valueUsd >= 1, `visible ${row.kind} row is worth ${row.valueUsd}`);
+    }
+
+    const hiddenCount = fullCount - rowContracts.length;
+    requireCondition(hiddenCount >= 0, `visible row count ${rowContracts.length} exceeds full count ${fullCount}`);
+    const hiddenNote = panel.locator(".home-wallet-hidden-count");
+    if (hiddenCount > 0) {
+      requireCondition(await hiddenNote.count() === 1, "hidden-under-$1 note is missing");
+      requireCondition(
+        compactText((await hiddenNote.textContent()) ?? "") === `(${hiddenCount} hidden under $1)`,
+        "hidden-under-$1 note count is incorrect",
+      );
+    } else {
+      requireCondition(await hiddenNote.count() === 0, "hidden-under-$1 note is rendered with no hidden rows");
+    }
+
+    const filteredEmptyCell = table.locator('tbody td[colspan="6"]');
+    if (rowContracts.length === 0 && fullCount > 0) {
+      requireCondition(await filteredEmptyCell.count() === 1, "all-hidden wallet explanation is missing or duplicated");
+      requireCondition(
+        compactText((await filteredEmptyCell.textContent()) ?? "")
+          === `All ${fullCount} wallet assets are hidden under $1 — uncheck "Hide under $1" to show them`,
+        "all-hidden wallet explanation changed",
+      );
+    } else {
+      requireCondition(await filteredEmptyCell.count() === 0, "all-hidden wallet explanation is rendered with visible rows");
+    }
+
+    return `${rowContracts.length}/${fullCount} wallet rows visible by default`;
+  });
+
+  await check("H3 home wallet toggle restores the full ordered row set and preserves totals", async () => {
+    const panel = page.locator(".home-wallet-panel");
+    const toggle = panel.locator('input[type="checkbox"][aria-label="Hide assets under $1"]');
+    const table = panel.locator(".home-wallet-table");
+    const fullCounts = await readHomeWalletPanelCounts(panel);
+    const fullCount = fullCounts.native + fullCounts.token;
+    const kpiCount = await readHomeWalletKpiCount(page);
+    requireCondition(fullCount === kpiCount, `panel has ${fullCount} total rows but wallet KPI reports ${kpiCount}`);
+
+    if (await table.count() === 0) {
+      requireCondition(fullCount === 0, `wallet table is absent despite ${fullCount} total rows`);
+      await toggle.uncheck();
+      requireCondition(!(await toggle.isChecked()), "home wallet filter stayed checked");
+      requireCondition(await panel.locator(".home-empty").count() === 1, "empty wallet state disappeared after toggling");
+      requireCondition(
+        await panel.locator(".home-wallet-hidden-count").count() === 0,
+        "hidden-under-$1 note appeared for an empty wallet after toggling off",
+      );
+      return "wallet sources returned no display rows; empty state remained stable";
+    }
+
+    const defaultVisibleCount = await panel.locator("tr[data-wallet-kind]").count();
+    const hiddenBefore = fullCount - defaultVisibleCount;
+    const totalBefore = compactText((await table.locator(".table-total-row").textContent()) ?? "");
+    requireCondition(/Total wallet \(priced\)/i.test(totalBefore), "priced wallet total is missing before toggling");
+
+    await toggle.uncheck();
+    await page.waitForFunction(
+      (expected) => document.querySelectorAll(".home-wallet-panel tr[data-wallet-kind]").length === expected,
+      fullCount,
+      { timeout: 5_000 },
+    );
+    requireCondition(!(await toggle.isChecked()), "home wallet filter stayed checked");
+
+    const rowContracts = await panel.locator("tr[data-wallet-kind]").evaluateAll((elements) => elements.map((element) => ({
+      kind: element.getAttribute("data-wallet-kind"),
+      priced: element.getAttribute("data-wallet-priced"),
+      cells: Array.from(element.querySelectorAll("td"), (cell) => (cell.textContent ?? "").replace(/\s+/g, " ").trim()),
+    })));
+    requireCondition(rowContracts.length === fullCount, `toggle restored ${rowContracts.length}/${fullCount} wallet rows`);
+    requireCondition(
+      hiddenBefore > 0 ? rowContracts.length > defaultVisibleCount : rowContracts.length === defaultVisibleCount,
+      hiddenBefore > 0 ? "toggle did not add the hidden rows" : "toggle changed a full default row set",
+    );
+
+    const restoredNativeCount = rowContracts.filter((row) => row.kind === "native").length;
+    const restoredTokenCount = rowContracts.filter((row) => row.kind === "token").length;
+    requireCondition(restoredNativeCount === fullCounts.native, `restored ${restoredNativeCount}/${fullCounts.native} native rows`);
+    requireCondition(restoredTokenCount === fullCounts.token, `restored ${restoredTokenCount}/${fullCounts.token} token rows`);
+    const headerCounts = await readHomeWalletHeaderCounts(panel);
+    requireCondition(headerCounts.native === restoredNativeCount, "restored native header count is incorrect");
+    requireCondition(headerCounts.token === restoredTokenCount, "restored token header count is incorrect");
+
+    let tokenSeen = false;
+    let unpricedSeen = false;
+    for (const row of rowContracts) {
+      if (row.kind === "token") tokenSeen = true;
+      if (row.kind === "native") requireCondition(!tokenSeen, "native row appears after a token row");
+      if (row.kind === "token") {
+        requireCondition(
+          row.priced === "true" || row.priced === "false",
+          "restored token has invalid data-wallet-priced",
+        );
+      }
+      if (row.kind === "token" && row.priced === "false") {
+        unpricedSeen = true;
+        requireCondition(/UNPRICED/i.test(row.cells[1] ?? ""), "unpriced token tag is missing");
+        for (const index of [3, 4, 5]) {
+          requireCondition(row.cells[index] === "—", `unpriced token cell ${index + 1} is not —`);
+        }
+      }
+      if (row.kind === "token" && row.priced === "true") {
+        requireCondition(!unpricedSeen, "priced token appears after an unpriced token");
+      }
+    }
+
+    requireCondition(await panel.locator(".home-wallet-hidden-count").count() === 0, "hidden-under-$1 note remained after toggling off");
+    requireCondition(await table.locator(".home-wallet-filtered-empty").count() === 0, "all-hidden explanation remained after toggling off");
+    const totalAfter = compactText((await table.locator(".table-total-row").textContent()) ?? "");
+    requireCondition(totalAfter === totalBefore, "priced wallet total changed after toggling");
+    return `${defaultVisibleCount} default · ${rowContracts.length} restored · totals unchanged`;
   });
 
   await check("home wallet rows keep native/token order and unpriced nulls", async () => {
@@ -385,7 +596,10 @@ async function auditRoute(browser, route, viewport) {
     }
 
     await page.waitForTimeout(200);
-    await check(`${viewport.name} ${route.path} keeps the browser console clean`, async () => {
+    const consoleLabel = viewport.name === "desktop" && route.name === "home"
+      ? "H4 home wallet toggle path keeps the browser console clean"
+      : `${viewport.name} ${route.path} keeps the browser console clean`;
+    await check(consoleLabel, async () => {
       requireCondition(browserErrors.length === 0, browserErrors.join(" | "));
     });
   } finally {
