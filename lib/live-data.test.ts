@@ -347,7 +347,15 @@ describe("buildJoinedPortfolio", () => {
     expect(portfolio.t212.cashAvailable).toBeNull();
     expect(portfolio.t212.investments).toEqual([]);
     expect(portfolio.nfts).toEqual([]);
+    // Additive expected fields only; every original unavailable-value assertion remains unchanged.
+    const unavailablePnl = {
+      costBasisUsd: null, costBasisThb: null, pnlUsd: null, pnlThb: null, pnlPct: null,
+      pnlCoverage: { totalHoldings: 0, eligible: 0, notRecorded: 0, dust: 0, unpriced: 0,
+        unreconciled: 0, status: "partial", sourcesComplete: false },
+    };
     expect(portfolio.totals).toEqual({
+      ...unavailablePnl,
+      pnlByClass: { t212: unavailablePnl, nfts: unavailablePnl, walletNative: unavailablePnl, walletTokens: unavailablePnl },
       t212Thb: null,
       nftsEth: null,
       nftsUsd: null,

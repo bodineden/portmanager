@@ -6,6 +6,11 @@
  * provider outage never prevents the rest of the portfolio from rendering.
  */
 
+import { aggregatePnl, deriveOnchainPnl, deriveT212Pnl, type AcquisitionEvidence, type HoldingPnl, type PortfolioPnlTotals } from "./pnl";
+
+import { isNeonConfigured } from "./assets-db";
+import { recordPortfolioSnapshot } from "./pnl-history";
+
 export type SourceStatus = "live" | "partial" | "unavailable";
 
 export type LiveSourceState = {
@@ -34,7 +39,8 @@ export type NormalizedT212Position = {
   valueAccount: number | null;
 };
 
-export type JoinedT212Position = NormalizedT212Position & {
+export type JoinedT212Position = NormalizedT212Position & HoldingPnl & {
+  valueUsd: number | null;
   valueThb: number | null;
 };
 
@@ -45,20 +51,22 @@ export type NftFloorHolding = {
   floorEth: number | null;
 };
 
-export type JoinedNftHolding = NftFloorHolding & {
+export type JoinedNftHolding = NftFloorHolding & HoldingPnl & {
   valueEth: number | null;
   valueUsd: number | null;
   valueThb: number | null;
 };
 
 export type NormalizedWalletNativeBalance = {
+  /** Exact RPC base units, optional for backwards-compatible pure fixtures. */
+  amountRaw?: string;
   chainId: number;
   chainName: string;
   symbol: string;
   amount: number;
 };
 
-export type WalletNativeHolding = NormalizedWalletNativeBalance & {
+export type WalletNativeHolding = NormalizedWalletNativeBalance & HoldingPnl & {
   valueUsd: number | null;
   valueThb: number | null;
 };
@@ -75,7 +83,7 @@ export type NormalizedWalletTokenBalance = {
   priceUsd: number | null;
 };
 
-export type WalletTokenHolding = NormalizedWalletTokenBalance & {
+export type WalletTokenHolding = NormalizedWalletTokenBalance & HoldingPnl & {
   valueUsd: number | null;
   valueThb: number | null;
   priced: boolean;
@@ -107,7 +115,7 @@ export type JoinedPortfolio = {
     tokens: WalletTokenHolding[];
   };
   fx: FxRates;
-  totals: {
+  totals: PortfolioPnlTotals & {
     t212Thb: number | null;
     nftsEth: number | null;
     nftsUsd: number | null;
@@ -139,6 +147,10 @@ export type LiveResult<T> = {
 };
 
 export type JoinedPortfolioInputs = {
+  /** Optional audited histories; balance-only fetchers do not manufacture this evidence.
+   * Keys: nft:4663:<collection>, native:<chainId>:native, token:<chainId>:<lowercase contract>.
+   */
+  basisEvidence?: Readonly<Record<string, AcquisitionEvidence>>;
   t212Summary: LiveResult<T212AccountSummary>;
   t212Positions: LiveResult<NormalizedT212Position[]>;
   nfts: LiveResult<NftFloorHolding[]>;
@@ -708,6 +720,7 @@ async function fetchWalletNativeSource(wallet: string): Promise<LiveResult<Norma
         chainName: chain.chainName,
         symbol: chain.symbol,
         amount: parsed.amount,
+        amountRaw: parsed.amountRaw,
       } satisfies NormalizedWalletNativeBalance,
       asOf: response.asOf,
     };
@@ -1136,27 +1149,37 @@ export function buildJoinedPortfolio(inputs: JoinedPortfolioInputs, asOf: string
     const valueThb = accountValue !== null
       ? convertAmount(accountValue, rateToThb(position.pplCurrency ?? accountCurrency, fiatFx))
       : convertAmount(position.valueNative, rateToThb(position.currency, fiatFx));
-    return { ...position, valueThb };
+    return { ...position, valueThb, ...deriveT212Pnl(position, fiatFx, accountCurrency) };
   });
 
   const nfts = (inputs.nfts.data ?? []).map((holding): JoinedNftHolding => {
     const valueEth = holding.floorEth === null ? null : holding.floorEth * holding.tokenCount;
     const valueUsd = valueEth === 0 ? 0 : convertAmount(valueEth, ethToUsd);
     const valueThb = valueUsd === 0 ? 0 : convertAmount(valueUsd, fiatFx?.usdToThb ?? null);
-    return { ...holding, valueEth, valueUsd, valueThb };
+    return { ...holding, valueEth, valueUsd, valueThb, ...deriveOnchainPnl({
+      asOf, kind: "nft", chainId: 4663, assetId: holding.collection,
+      quantityRaw: String(holding.tokenCount), decimals: 0, valueUsd,
+    }, fiatFx?.usdToThb ?? null, inputs.basisEvidence?.[`nft:4663:${holding.collection}`]) };
   });
 
   const walletNative = (inputs.walletNative?.data ?? []).map((balance): WalletNativeHolding => {
     const valueUsd = convertAmount(balance.amount, ethToUsd);
     const valueThb = convertAmount(valueUsd, fiatFx?.usdToThb ?? null);
-    return { ...balance, valueUsd, valueThb };
+    return { ...balance, valueUsd, valueThb, ...deriveOnchainPnl({
+      asOf, kind: "native", chainId: balance.chainId, assetId: "native",
+      // Never reconstruct exact units from a floating-point balance.
+      quantityRaw: balance.amountRaw ?? "", decimals: 18, valueUsd,
+    }, fiatFx?.usdToThb ?? null, inputs.basisEvidence?.[`native:${balance.chainId}:native`]) };
   });
 
   const walletTokens = (inputs.walletTokens?.data ?? []).map((token): WalletTokenHolding => {
     const priced = token.priceUsd !== null;
     const valueUsd = priced ? token.amount * (token.priceUsd as number) : null;
     const valueThb = convertAmount(valueUsd, fiatFx?.usdToThb ?? null);
-    return { ...token, valueUsd, valueThb, priced };
+    return { ...token, valueUsd, valueThb, priced, ...deriveOnchainPnl({
+      asOf, kind: "token", chainId: token.chainId, assetId: token.contract ?? "",
+      quantityRaw: token.amountRaw, decimals: token.decimals, valueUsd,
+    }, fiatFx?.usdToThb ?? null, token.contract ? inputs.basisEvidence?.[`token:${token.chainId}:${token.contract.toLowerCase()}`] : undefined) };
   });
 
   const nftsEth = inputs.nfts.data === null || inputs.nfts.state.status === "partial"
@@ -1206,6 +1229,13 @@ export function buildJoinedPortfolio(inputs: JoinedPortfolioInputs, asOf: string
       asOf: fiatFx?.asOf ?? inputs.fiatFx.state.asOf,
     },
     totals: {
+      ...aggregatePnl({
+        t212: { holdings: investments, sourceComplete: inputs.t212Positions.data !== null && inputs.t212Positions.state.status === "live" },
+        nfts: { holdings: nfts, sourceComplete: inputs.nfts.data !== null && inputs.nfts.state.status === "live" },
+        walletNative: { holdings: walletNative, sourceComplete: inputs.walletNative?.data != null && walletNativeState.status === "live" },
+        walletTokens: { holdings: walletTokens, sourceComplete: inputs.walletTokens?.data != null && walletTokenState.status === "live" },
+      }, fiatFx?.usdToThb ?? null, grandTotalUsd !== null && grandTotalThb !== null
+        && inputs.t212Summary.state.status === "live" && inputs.fiatFx.state.status === "live" && inputs.ethPrice.state.status === "live"),
       t212Thb,
       nftsEth,
       nftsUsd,
@@ -1307,7 +1337,10 @@ export function __resetSnapshotCacheForTests(): void {
 /** Fetch and assemble the complete live joined portfolio in one call. */
 export async function getJoinedPortfolio(options: SnapshotOptions = {}): Promise<JoinedPortfolio> {
   const snapshot = await getSnapshot(options);
-  return buildJoinedPortfolio(snapshot.inputs, snapshot.asOf);
+  const portfolio = buildJoinedPortfolio(snapshot.inputs, snapshot.asOf);
+  // Await a bounded, fail-soft write: fire-and-forget can be dropped by serverless runtimes.
+  if (isNeonConfigured()) await recordPortfolioSnapshot(portfolio, { now: options.now });
+  return portfolio;
 }
 
 export function formatCurrency(value: number | null | undefined, currency: string | null | undefined): string {

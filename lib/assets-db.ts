@@ -94,7 +94,25 @@ async function ensureSchema(sql = getSql()) {
   await schemaReady;
 }
 
+/** Snapshot-only DDL, also used by the recorder WITHOUT running archive schema/seed code. */
+export const PORTFOLIO_SNAPSHOT_DDL = `
+  CREATE TABLE IF NOT EXISTS portfolio_snapshot (
+    snapshot_date DATE PRIMARY KEY,
+    total_value_usd NUMERIC NOT NULL,
+    total_value_thb NUMERIC NOT NULL,
+    cost_basis_usd NUMERIC NULL,
+    cost_basis_thb NUMERIC NULL,
+    pnl_usd NUMERIC NULL,
+    pnl_thb NUMERIC NULL,
+    pnl_pct NUMERIC NULL,
+    coverage JSONB NOT NULL,
+    as_of TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  )
+`;
+
 async function createSchema(sql: Sql) {
+  await sql.query(PORTFOLIO_SNAPSHOT_DDL);
   await sql`CREATE EXTENSION IF NOT EXISTS pgcrypto`;
   await sql`
     CREATE TABLE IF NOT EXISTS currency (
