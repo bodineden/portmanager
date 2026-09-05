@@ -2,6 +2,18 @@
 
 As of: 2026-09-05 (UTC)
 
+## 2026-09-05: Run 3 — mascot guide (Sol gpt-6-astra ultra; commits 04a1784 assets + d21b7db feat + 23ecdce fix, merge 23ecdce)
+- Bodin approved Run 3 after topping up the ChatGPT usage cap (first dispatch was cut at 42.9k tokens by the cap; re-dispatch completed at ~117k + 159k tokens).
+- Guide: one anime character, 9 emotion sprites (calm/happy/excited/thinking/worried/sad/sleepy/proud/alert). Art = GPT-rendered sprites staged by parent from ~/projects/portmanager-mascot-assets (1024×1536 PNG) → committed webp 320×480 (100KB total) under public/mascot/. NO voice, no real-time 3D.
+- Emotion derivation is PURE `lib/mascot.ts` `deriveMascotState(portfolio, now?)` with parent-authored copy (never states USD/THB numbers, never claims P&L on unrecorded basis, no advice/hype). Priority: sad (total outage) → alert (partial/unavailable, unreconciled, history-unavailable) → thinking (not-recorded) → worried (recorded negative) → happy (recorded positive) → excited (complete or ≥5% eligible) → proud (full coverage) → sleepy (UTC 0–6) → calm (healthy/empty). Empty healthy book stays calm even at night.
+- Companion = floating client component mounted on the 4 logged-in pages (NOT /login), compact resting chip (62×93) + transient opaque bubble on state change + click-to-expand panel (mute checkbox + hide button, localStorage-persisted, session hide token). Reduced-motion safe; images have alt + explicit dimensions. lib/pnl-history.ts added `createSnapshotHistoryReader`/`readPortfolioSnapshotHistory` returning {snapshots, available} (empty ≠ unavailable) while preserving the old reader API.
+- Parent visual QA caught occlusion (full panel + translucent bubble covered hero status/legend) → polish commit 23ecdce: collapsed default, opaque bubble, click-to-expand, occlusion checks at 1440×1000 + 390×844.
+- Parent QA (independent): npm test 173/173 (12 files), lint 0 errors (1 pre-existing proxy.ts warning), build clean, UI contracts 297/297 (mascot 96/96 incl. resting/occlusion 8/8 + 26 DOM assertions), live verified (new build chunks serving; /login 200; /mascot asset gated 307 pre-auth as expected).
+- Revert: tag `pre-pnl-mascot-2026-09-05` + snapshot `backups/site-pre-pnl-mascot-2026-09-05/` (diff-clean).
+- Known flag: /mascot/* public assets are NOT in proxy.ts static allowlist → 307 pre-auth (fine post-login with session cookie; add to allowlist only if a public page ever needs them — proxy.ts is otherwise frozen).
+
+
+
 ## 2026-09-05: Run 2 — light USD restyle + P&L center (Sol gpt-6-astra ultra; commits 0ecd3b1 + 731128f, merge 731128f)
 - Bodin: "continue to finish" after Run 1 shipped invisible-by-design. Full light restyle of EVERY page + P&L center on the locked reference design: body #F5F7FB, white cards 10px radius / 1px #DFE5F2 / shadow rgba(21,35,72,.07) 0 14px 35px, headings #11162E, muted #5B6680, **Outfit font**, **USD primary + THB secondary** (was dark + THB-primary). Dark theme removed (bp6-dark / Classes.DARK = 0 in app/).
 - Home `/` = value hero → P&L metric strip → performance (value-vs-cost over `portfolio_snapshot`, 1M/3M/All) → allocation by class → UTC P&L calendar → per-asset P&L table (basisStatus chips t212-live / onchain-derived / airdrop-free / not-recorded + basisNote titles) → source strip. `/asset-list`, `/portfolio`, `/exchange-rate`, `/login` restyled; read-only + logout POST-only + wallet filter semantics preserved.
