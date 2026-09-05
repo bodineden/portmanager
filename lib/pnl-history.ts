@@ -160,12 +160,14 @@ export function mapPortfolioSnapshotRows(rows: unknown): PortfolioSnapshot[] {
 
 export type SnapshotReaderOptions = Pick<SnapshotRecorderOptions, "hasDb" | "getDb" | "timeoutMs" | "log">;
 
-/** Read only: an absent table, bad connection or timeout is an empty history. */
-export function createSnapshotReader(options: SnapshotReaderOptions = {}) {
-  return async (): Promise<PortfolioSnapshot[]> => {
+export type SnapshotHistory = { snapshots: PortfolioSnapshot[]; available: boolean };
+
+/** Read only; distinguish a successful empty history from unavailable evidence. */
+export function createSnapshotHistoryReader(options: SnapshotReaderOptions = {}) {
+  return async (): Promise<SnapshotHistory> => {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      if (!(options.hasDb ?? isNeonConfigured)()) return [];
+      if (!(options.hasDb ?? isNeonConfigured)()) return { snapshots: [], available: false };
       const db = (options.getDb ?? defaultDb)();
       const controller = new AbortController();
       const requestedTimeout = options.timeoutMs ?? 2_000;
@@ -179,15 +181,23 @@ export function createSnapshotReader(options: SnapshotReaderOptions = {}) {
         FROM portfolio_snapshot
         ORDER BY snapshot_date DESC
       `, [], controller.signal), timeout]);
-      return mapPortfolioSnapshotRows(rows);
+      const snapshots = mapPortfolioSnapshotRows(rows);
+      return { snapshots, available: Array.isArray(rows) && snapshots.length === rows.length };
     } catch {
       try { (options.log ?? console.warn)("[portfolio_snapshot] History unavailable; page remains available."); } catch { /* Logging is fail-soft too. */ }
-      return [];
+      return { snapshots: [], available: false };
     } finally {
       if (timer !== undefined) clearTimeout(timer);
     }
   };
 }
 
+/** Preserve the existing chart API and fail-soft empty-array behavior. */
+export function createSnapshotReader(options: SnapshotReaderOptions = {}) {
+  const read = createSnapshotHistoryReader(options);
+  return async (): Promise<PortfolioSnapshot[]> => (await read()).snapshots;
+}
+
 /** No DB construction or IO without the existing Neon configuration gate. */
 export const listPortfolioSnapshots = createSnapshotReader();
+export const readPortfolioSnapshotHistory = createSnapshotHistoryReader();

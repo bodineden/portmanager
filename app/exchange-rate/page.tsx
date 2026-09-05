@@ -1,5 +1,8 @@
 import Link from "next/link";
 import { AppSidebar } from "../components/app-sidebar";
+import MascotCompanion from "../mascot-companion";
+import { deriveMascotState } from "@/lib/mascot";
+import { readPortfolioSnapshotHistory } from "@/lib/pnl-history";
 import {
   getJoinedPortfolio,
   type LiveSourceState,
@@ -48,6 +51,8 @@ function SourceBadge({ state }: { state: LiveSourceState }) {
 
 export default async function ExchangeRatePage() {
   const portfolio = await getJoinedPortfolio();
+  const { available: snapshotHistoryAvailable } = await readPortfolioSnapshotHistory();
+  const mascot = deriveMascotState({ ...portfolio, snapshotHistoryAvailable }, new Date());
   const fiatState = portfolio.sources.fiatFx;
   const ethState = portfolio.sources.ethPrice;
   const fxState = combinedStatus([fiatState, ethState]);
@@ -245,6 +250,7 @@ export default async function ExchangeRatePage() {
           </aside>
         </div>
       </section>
+      <MascotCompanion state={mascot} />
     </main>
   );
 }

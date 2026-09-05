@@ -10,12 +10,13 @@ import "../app/globals.css";
 import "../app/home.css";
 
 // This entry is built only by the browser harness, outside the Next app/routes.
-const scenario = new URLSearchParams(location.search).get("scenario") ?? "recent";
+let scenario = new URLSearchParams(location.search).get("scenario") ?? "recent";
 const root = createRoot(document.getElementById("root")!);
 
 async function mount() {
   if (scenario.startsWith("portfolio-")) {
-    // Execute the actual page with fixture data boundaries, including its livePoint props.
+    // Execute the actual page with fixture data boundaries, including livePoint
+    // and the server-derived mascot props. No replacement guide UI lives here.
     root.render(await PortfolioPage());
     return;
   }
@@ -46,5 +47,17 @@ async function mount() {
       walletSourcesUnavailable={false} totalWalletUsd={formatViewUsd(totalUsd)} totalWalletThb={formatViewThb(totalThb)} />
   </main>);
 }
+
+// Fixture-only prop transition: rebuild the same real page without replacing the
+// document, so the harness can exercise new server props and retained preferences.
+window.addEventListener("ui-fixture:scenario", (event) => {
+  const next = (event as CustomEvent<unknown>).detail;
+  if (typeof next !== "string" || !fixture.mascotScenarios.some((entry) => entry.scenario === next)) return;
+  scenario = next;
+  const url = new URL(location.href);
+  url.searchParams.set("scenario", scenario);
+  history.pushState(null, "", url);
+  void mount();
+});
 
 void mount();

@@ -1,5 +1,8 @@
 import Link from "next/link";
 import { AppSidebar } from "../components/app-sidebar";
+import MascotCompanion from "../mascot-companion";
+import { deriveMascotState } from "@/lib/mascot";
+import { readPortfolioSnapshotHistory } from "@/lib/pnl-history";
 import { WalletAssetRegistry } from "./wallet-asset-registry";
 import {
   formatCurrency,
@@ -56,6 +59,8 @@ function SourceBadge({ state }: { state: LiveSourceState }) {
 
 export default async function AssetListPage() {
   const portfolio = await getJoinedPortfolio();
+  const { available: snapshotHistoryAvailable } = await readPortfolioSnapshotHistory();
+  const mascot = deriveMascotState({ ...portfolio, snapshotHistoryAvailable }, new Date());
   const rawPositionCount = portfolio.t212.investments.length;
   const rawNftTokenCount = portfolio.nfts.reduce((sum, holding) => sum + holding.tokenCount, 0);
   const walletTokens = [...portfolio.wallet.tokens].sort(
@@ -412,6 +417,7 @@ export default async function AssetListPage() {
           </aside>
         </div>
       </section>
+      <MascotCompanion state={mascot} />
     </main>
   );
 }

@@ -817,6 +817,95 @@ async function checkNoMutationControls(page, routeName) {
   });
 }
 
+const mascotMoods = ["calm", "happy", "excited", "thinking", "worried", "sad", "sleepy", "proud", "alert"];
+
+async function assertMascot(page, expectedMood) {
+  const companion = page.locator("[data-mascot-companion]");
+  requireCondition(await companion.count() === 1 && await companion.isVisible(), "mascot is missing, hidden or duplicated");
+  const mood = await companion.getAttribute("data-mascot-mood");
+  requireCondition(mascotMoods.includes(mood), `unknown mascot mood ${mood}`);
+  if (expectedMood) requireCondition(mood === expectedMood, `expected ${expectedMood}, rendered ${mood}`);
+  const sprite = companion.locator("img");
+  requireCondition(await sprite.count() === 1, "mascot sprite is missing or duplicated");
+  requireCondition(await sprite.getAttribute("alt") === `PortManager guide — ${mood}`, "mascot sprite lacks meaningful mood alt text");
+  requireCondition(await sprite.getAttribute("width") === "320" && await sprite.getAttribute("height") === "480", "mascot sprite lacks intrinsic 320×480 dimensions");
+  requireCondition(await sprite.getAttribute("src") === `/mascot/mascot-${mood}.webp`, "mascot sprite does not match its derived mood");
+  await sprite.evaluate((image) => image.decode());
+  requireCondition(await sprite.evaluate((image) => image.complete && image.naturalWidth === 320 && image.naturalHeight === 480), "mascot WebP failed to load at 320×480");
+  const bubble = companion.locator("[data-mascot-bubble]");
+  if (await bubble.count()) {
+    const message = compactText(await bubble.innerText());
+    requireCondition(message.length > 0 && message.length <= 100, `mascot bubble length is ${message.length}, expected 1–100 characters`);
+    requireCondition(!/[\d$฿%]|\b(?:USD|THB)\b/.test(message), "mascot bubble states a financial number or currency");
+    requireCondition(!/\b(?:buy|sell|guarantee|predict|moon|profit|loss)\b/i.test(message), "mascot bubble contains advice, hype or unsupported profit/loss wording");
+  }
+  const mute = companion.getByLabel("Mute guide", { exact: true });
+  const hide = companion.getByRole("button", { name: "Hide guide", exact: true });
+  requireCondition(await mute.count() === 1 && await mute.getAttribute("type") === "checkbox", "mascot mute is not an accessible checkbox");
+  requireCondition(await mute.evaluate((input) => input.parentElement?.tagName === "LABEL" && !input.closest("form")), "mascot mute is not a non-form labelled checkbox");
+  requireCondition(await mute.getAttribute("aria-pressed") === String(await mute.isChecked()), "mascot mute aria-pressed does not reflect its checked state");
+  requireCondition(await hide.count() === 1 && await hide.getAttribute("type") === "button", "mascot hide is not a type=button control");
+  requireCondition(await companion.locator("form").count() === 0, "mascot adds a form");
+  const labels = await companion.locator("label, button, input").evaluateAll((elements) => elements.map((element) => `${element.textContent ?? ""} ${element.getAttribute("aria-label") ?? ""}`));
+  requireCondition(labels.every((label) => !/add|edit|save|update|delete|remove|recover|override/i.test(label)), "mascot control label contains a banned mutation word");
+  return `${mood} · matching WebP/alt · 320×480 · number-free copy · safe controls`;
+}
+
+async function assertMascotPlacement(page) {
+  const geometry = await page.evaluate(() => {
+    const companion = document.querySelector("[data-mascot-companion]");
+    if (!companion) throw new Error("mascot is missing");
+    const bounds = companion.getBoundingClientRect();
+    const image = companion.querySelector("img");
+    const imageBounds = image?.getBoundingClientRect();
+    const clickables = [...companion.querySelectorAll("img, button, input, [data-mascot-bubble]")]
+      .map((element) => element.getBoundingClientRect()).filter((rect) => rect.width && rect.height);
+    const navBounds = [...document.querySelectorAll(".nav-menu a")].map((link) => link.getBoundingClientRect());
+    const overlapsNav = clickables.some((rect) => navBounds.some((nav) => rect.left < nav.right && rect.right > nav.left && rect.top < nav.bottom && rect.bottom > nav.top));
+    const blankX = bounds.left + 2;
+    const blankY = imageBounds ? imageBounds.top + imageBounds.height / 2 : bounds.top;
+    const blankHit = document.elementFromPoint(blankX, blankY);
+    return {
+      pointerEvents: getComputedStyle(companion).pointerEvents,
+      position: getComputedStyle(companion).position,
+      overlapsNav,
+      overflow: Math.max(document.body.scrollWidth, document.documentElement.scrollWidth) - document.documentElement.clientWidth,
+      insideViewport: bounds.left >= -1 && bounds.right <= innerWidth + 1 && bounds.top >= -1 && bounds.bottom <= innerHeight + 1,
+      blankPassesThrough: imageBounds && blankX < imageBounds.left ? !companion.contains(blankHit) : true,
+    };
+  });
+  requireCondition(geometry.position === "fixed" && geometry.pointerEvents === "none", "mascot wrapper is not a fixed, non-intercepting overlay");
+  requireCondition(!geometry.overlapsNav, "mascot overlaps primary navigation");
+  requireCondition(geometry.blankPassesThrough, "mascot's blank wrapper area intercepts page content");
+  requireCondition(geometry.insideViewport && geometry.overflow <= 1, `mascot escapes the viewport or adds ${geometry.overflow}px overflow`);
+  for (const link of await page.locator(".nav-menu a").all()) await link.click({ trial: true });
+  return `${geometry.overflow}px overflow · nav clickable · blank overlay passes through`;
+}
+
+async function checkMascotRoute(page, route, viewport, response) {
+  const prefix = `${viewport.name} ${route.path} mascot`;
+  await check(`${prefix} server HTML defaults visible only after login`, async () => {
+    const html = await response.text();
+    const serverMarkup = await page.evaluate((source) => {
+      const doc = new DOMParser().parseFromString(source, "text/html");
+      const companions = [...doc.querySelectorAll("[data-mascot-companion]")];
+      return { count: companions.length, visible: companions.every((element) => !element.hasAttribute("hidden")),
+        sprites: companions.reduce((sum, element) => sum + element.querySelectorAll("img[alt][width='320'][height='480']").length, 0) };
+    }, html);
+    requireCondition(serverMarkup.count === (route.name === "login" ? 0 : 1), `server HTML has ${serverMarkup.count} companions`);
+    if (route.name !== "login") requireCondition(serverMarkup.visible && serverMarkup.sprites === 1, "server HTML omits the visible default mascot sprite");
+    return route.name === "login" ? "absent from login HTML" : "visible sprite present before hydration";
+  });
+  if (route.name === "login") {
+    await check(`${prefix} remains absent after hydration`, async () => {
+      requireCondition(await page.locator("[data-mascot-companion], img[src^='/mascot/']").count() === 0, "login renders a mascot");
+    });
+    return;
+  }
+  await check(`${prefix} renders an accessible sprite and read-only controls`, () => assertMascot(page));
+  await check(`${prefix} preserves navigation, page hit targets and viewport bounds`, () => assertMascotPlacement(page));
+}
+
 function expectedUsd(value) {
   return value === null ? "—" : new Intl.NumberFormat("en-GB", {
     style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 2,
@@ -1102,6 +1191,125 @@ async function auditPopulatedFixtures(browser, fixtureUrl, viewport) {
   }
 }
 
+async function auditMascotFixtures(browser, fixtureUrl, viewport) {
+  const page = await browser.newPage({ viewport: { width: viewport.width, height: viewport.height } });
+  const browserErrors = [];
+  page.on("pageerror", (error) => browserErrors.push(`page: ${error.message}`));
+  page.on("console", (message) => { if (message.type() === "error") browserErrors.push(`console: ${message.text()}`); });
+  const prefix = `${viewport.name} mascot fixture`;
+  try {
+    const coveredMoods = new Set();
+    for (const fixture of browserFixture.mascotScenarios) {
+      await check(`${prefix} ${fixture.scenario} derives ${fixture.mood}`, async () => {
+        const clock = new Date(browserFixture.asOf);
+        clock.setUTCHours(fixture.hourUtc, 0, 0, 0);
+        await page.clock.setFixedTime(clock);
+        const response = await page.goto(`${fixtureUrl}/?scenario=${fixture.scenario}`, { waitUntil: "networkidle", timeout: 15_000 });
+        requireCondition(response?.ok(), `fixture HTTP ${response?.status() ?? "unavailable"}`);
+        await page.locator("[data-mascot-companion]").waitFor();
+        await assertMascot(page, fixture.mood);
+        await assertMascotPlacement(page);
+        coveredMoods.add(fixture.mood);
+        return fixture.description;
+      });
+    }
+    await check(`${prefix} covers all nine distinct mood sprites`, async () => {
+      requireCondition(mascotMoods.every((mood) => coveredMoods.has(mood)), `missing moods: ${mascotMoods.filter((mood) => !coveredMoods.has(mood)).join(", ")}`);
+      return `${coveredMoods.size} mood sprites loaded with intrinsic dimensions and meaningful alt text`;
+    });
+
+    await check(`${prefix} new server props refresh mood and preserve mute`, async () => {
+      await page.goto(`${fixtureUrl}/?scenario=portfolio-mascot-thinking`, { waitUntil: "networkidle" });
+      await assertMascot(page, "thinking");
+      await page.getByLabel("Mute guide", { exact: true }).check();
+      await page.evaluate(() => window.dispatchEvent(new CustomEvent("ui-fixture:scenario", { detail: "portfolio-mascot-worried" })));
+      await page.locator('[data-mascot-mood="worried"]').waitFor();
+      requireCondition(await page.getByLabel("Mute guide", { exact: true }).isChecked(), "server prop change lost mute preference");
+      requireCondition(await page.locator("[data-mascot-bubble]").count() === 0, "server prop change revealed a muted bubble");
+      await page.getByLabel("Mute guide", { exact: true }).uncheck();
+      await assertMascot(page, "worried");
+      requireCondition(await page.locator("[data-mascot-bubble]").isVisible(), "unmute did not expose the latest server message");
+      await page.evaluate(() => window.dispatchEvent(new CustomEvent("ui-fixture:scenario", { detail: "portfolio-mascot-thinking" })));
+      await page.locator('[data-mascot-mood="thinking"]').waitFor();
+      requireCondition(/mapping cost basis/i.test(await page.locator("[data-mascot-bubble]").innerText()), "new mood retained a stale P&L message");
+    });
+    await check(`${prefix} reduced motion disables mascot animation and fade`, async () => {
+      await page.emulateMedia({ reducedMotion: "reduce" });
+      const styles = await page.locator("[data-mascot-companion], [data-mascot-companion] *").evaluateAll((elements) => elements.map((element) => {
+        const style = getComputedStyle(element);
+        return { animation: style.animationName, transition: style.transitionDuration, property: style.transitionProperty };
+      }));
+      requireCondition(styles.every((style) => style.animation === "none" && (style.property === "none"
+        || style.transition.split(",").every((duration) => parseFloat(duration) <= 0.00001))), "mascot still animates with reduced motion");
+    });
+    await check(`${prefix} console remains clean across every mood and prop transition`, async () => {
+      requireCondition(browserErrors.length === 0, browserErrors.join(" | "));
+    });
+  } finally {
+    await page.close();
+  }
+}
+
+async function auditMascotInteractions(browser, viewport) {
+  const page = await browser.newPage({ viewport: { width: viewport.width, height: viewport.height } });
+  const browserErrors = [];
+  page.on("pageerror", (error) => browserErrors.push(`page: ${error.message}`));
+  page.on("console", (message) => { if (message.type() === "error") browserErrors.push(`console: ${message.text()}`); });
+  const prefix = `${viewport.name} production mascot`;
+  try {
+    const ready = await check(`${prefix} interaction route loads`, async () => {
+      const response = await page.goto(`${baseUrl}/portfolio`, { waitUntil: "networkidle", timeout: 45_000 });
+      requireCondition(response?.ok(), `HTTP ${response?.status() ?? "unavailable"}`);
+      await assertMascot(page);
+      requireCondition(await page.locator("[data-mascot-bubble]").isVisible(), "fresh default bubble is not visible");
+    });
+    if (!ready) return;
+    await check(`${prefix} mute hides the bubble, retains the sprite and persists on reload`, async () => {
+      const mute = page.getByLabel("Mute guide", { exact: true });
+      await mute.check();
+      requireCondition(await mute.isChecked() && await mute.getAttribute("aria-pressed") === "true", "mute does not expose its pressed state");
+      requireCondition(await page.locator("[data-mascot-bubble]").count() === 0 && await page.locator("[data-mascot-companion] img").isVisible(), "mute hides the sprite or leaves a bubble");
+      requireCondition(await page.evaluate(() => localStorage.getItem("portmanager:mascot:muted")) === "true", "mute is not stored client-side");
+      await page.reload({ waitUntil: "networkidle" });
+      requireCondition(await mute.isChecked() && await mute.getAttribute("aria-pressed") === "true", "reload lost mute");
+      requireCondition(await page.locator("[data-mascot-bubble]").count() === 0 && await page.locator("[data-mascot-companion] img").isVisible(), "reload reveals a muted bubble or loses the sprite");
+      await mute.focus();
+      await page.keyboard.press("Space");
+      requireCondition(!await mute.isChecked() && await mute.getAttribute("aria-pressed") === "false", "keyboard unmute does not update state");
+      requireCondition(await page.locator("[data-mascot-bubble]").isVisible(), "keyboard unmute does not restore bubble");
+    });
+    await check(`${prefix} bubble settles once into a status dot after six seconds`, async () => {
+      await page.locator("[data-mascot-bubble]").waitFor({ state: "detached", timeout: 8_000 });
+      requireCondition(await page.locator("[data-mascot-status]").isVisible(), "elapsed bubble does not leave a status dot");
+      requireCondition(await page.locator("[data-mascot-companion] img").isVisible(), "elapsed bubble hides the sprite");
+      await page.waitForTimeout(300);
+      requireCondition(await page.locator("[data-mascot-bubble]").count() === 0, "bubble animation loops");
+    });
+    await check(`${prefix} hide survives real client navigation and resets on reload`, async () => {
+      const documentToken = await page.evaluate(() => performance.timeOrigin);
+      await page.getByRole("button", { name: "Hide guide", exact: true }).click();
+      requireCondition(await page.locator("[data-mascot-companion]").count() === 0, "hide leaves the companion visible");
+      requireCondition(await page.evaluate(() => localStorage.getItem("portmanager:mascot:hidden-document")) === String(documentToken), "hide is not persisted for this document");
+      for (const [name, route] of [["Asset List", "/asset-list"], ["Exchange Rate", "/exchange-rate"], ["Home", "/"]]) {
+        await page.locator(".nav-menu").getByRole("link", { name, exact: true }).click();
+        await page.waitForURL(`${baseUrl}${route}`, { waitUntil: "networkidle", timeout: 45_000 });
+        requireCondition(await page.evaluate(() => performance.timeOrigin) === documentToken, `${route} used a full document load instead of client navigation`);
+        requireCondition(await page.locator("[data-mascot-companion]").count() === 0, `${route} lost hidden state on client navigation`);
+      }
+      await page.reload({ waitUntil: "networkidle" });
+      requireCondition(await page.evaluate(() => performance.timeOrigin) !== documentToken, "reload did not create a new document");
+      await assertMascot(page);
+      requireCondition(!await page.getByLabel("Mute guide", { exact: true }).isChecked(), "reload lost the separately persisted unmuted state");
+      return "hidden across all four pages in one document; visible after reload";
+    });
+    await check(`${prefix} interaction and hydration console stays clean`, async () => {
+      requireCondition(browserErrors.length === 0, browserErrors.join(" | "));
+    });
+  } finally {
+    await page.close();
+  }
+}
+
 async function auditRoute(browser, route, viewport) {
   const page = await browser.newPage({
     viewport: { width: viewport.width, height: viewport.height },
@@ -1124,6 +1332,8 @@ async function auditRoute(browser, route, viewport) {
       return `HTTP ${response.status()} · ${finalPath}`;
     });
     if (!navigated) return;
+
+    await checkMascotRoute(page, route, viewport, response);
 
     await check(`${viewport.name} ${route.path} uses the light Outfit design`, async () => {
       const theme = await page.evaluate(() => ({
@@ -1220,6 +1430,7 @@ try {
     for (const route of routes) {
       await auditRoute(browser, route, viewport);
     }
+    await auditMascotInteractions(browser, viewport);
   }
   let fixtureServer;
   try {
@@ -1228,7 +1439,10 @@ try {
       return "scripts/__fixtures__/pnl-browser.json + real app components; temporary assets and ephemeral localhost port";
     });
     if (started) {
-      for (const viewport of viewports) await auditPopulatedFixtures(browser, fixtureServer.url, viewport);
+      for (const viewport of viewports) {
+        await auditPopulatedFixtures(browser, fixtureServer.url, viewport);
+        await auditMascotFixtures(browser, fixtureServer.url, viewport);
+      }
     }
   } finally {
     await fixtureServer?.close();
@@ -1238,5 +1452,8 @@ try {
 }
 
 const failures = results.filter((result) => !result.passed);
+const mascotResults = results.filter((result) => /mascot/i.test(result.label));
+const mascotFailures = mascotResults.filter((result) => !result.passed);
+process.stdout.write(`\n${mascotFailures.length === 0 ? "PASS" : "FAIL"} | Mascot contract summary — ${mascotResults.length - mascotFailures.length}/${mascotResults.length} checks passed\n`);
 process.stdout.write(`\n${failures.length === 0 ? "PASS" : "FAIL"} | UI contract summary — ${results.length - failures.length}/${results.length} checks passed\n`);
 if (failures.length > 0) process.exitCode = 1;

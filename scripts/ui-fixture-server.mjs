@@ -22,7 +22,7 @@ export async function startUiFixtureServer() {
     // chart, history, calendar, wallet, formatters and styles are built unchanged.
     const virtualData = "\0ui-fixture-live-data";
     const virtualArchive = "\0ui-fixture-archive";
-    const virtualRecorder = "\0ui-fixture-recorder";
+    const virtualHistory = "\0ui-fixture-history";
     const virtualLink = "\0ui-fixture-link";
     await build({
       root: temporaryRoot,
@@ -44,7 +44,8 @@ export async function startUiFixtureServer() {
           if (source === path.join(projectRoot, "lib/live-data") || source === "@/lib/live-data") return virtualData;
           if (source === path.join(projectRoot, "lib/assets-db") || source === "@/lib/assets-db"
             || (source === "./assets-db" && importer === path.join(projectRoot, "lib/live-data.ts"))) return virtualArchive;
-          if (source === "./pnl-history" && importer === path.join(projectRoot, "lib/live-data.ts")) return virtualRecorder;
+          if (source === "@/lib/pnl-history" || source === path.join(projectRoot, "lib/pnl-history")
+            || (source === "./pnl-history" && importer === path.join(projectRoot, "lib/live-data.ts"))) return virtualHistory;
         },
         load(id) {
           if (id === virtualData) return `
@@ -52,9 +53,23 @@ export async function startUiFixtureServer() {
             export { formatCurrency, formatEth, formatThb, formatUsd } from ${JSON.stringify(path.join(projectRoot, "lib/live-data.ts"))};
             export async function getJoinedPortfolio() {
               const portfolio = structuredClone(fixture.portfolio);
-              if (new URLSearchParams(location.search).get("scenario") === "portfolio-unavailable") {
+              const scenario = new URLSearchParams(location.search).get("scenario");
+              const mascot = fixture.mascotScenarios.find((entry) => entry.scenario === scenario);
+              if (mascot?.totals) {
+                Object.assign(portfolio.totals, mascot.totals);
+                const { costBasisUsd, costBasisThb, pnlUsd, pnlThb, pnlPct, pnlCoverage } = portfolio.totals;
+                portfolio.totals.pnlByClass.t212 = { costBasisUsd, costBasisThb, pnlUsd, pnlThb, pnlPct, pnlCoverage: structuredClone(pnlCoverage) };
+              }
+              for (const [key, status] of Object.entries(mascot?.sourceStatuses ?? {})) portfolio.sources[key].status = status;
+              if (scenario === "portfolio-unavailable") {
                 portfolio.totals.grandTotalUsd = null;
                 portfolio.totals.grandTotalThb = null;
+                portfolio.totals.costBasisUsd = null;
+                portfolio.totals.costBasisThb = null;
+                portfolio.totals.pnlUsd = null;
+                portfolio.totals.pnlThb = null;
+                portfolio.totals.pnlCoverage.status = "partial";
+                portfolio.totals.pnlCoverage.sourcesComplete = false;
                 for (const source of Object.values(portfolio.sources)) source.status = "unavailable";
               }
               return portfolio;
@@ -65,7 +80,17 @@ export async function startUiFixtureServer() {
             export function isNeonConfigured() { return true; }
             export async function listPortfolioValueSeries() { return structuredClone(fixture.legacyPoints); }
           `;
-          if (id === virtualRecorder) return 'export async function recordPortfolioSnapshot() { throw new Error("Fixture must never record snapshots"); }';
+          if (id === virtualHistory) return `
+            import fixture from ${JSON.stringify(fixturePath)};
+            export async function recordPortfolioSnapshot() { throw new Error("Fixture must never record snapshots"); }
+            export async function readPortfolioSnapshotHistory() {
+              const scenario = new URLSearchParams(location.search).get("scenario");
+              const mascot = fixture.mascotScenarios.find((entry) => entry.scenario === scenario);
+              const available = mascot?.snapshotHistoryAvailable !== false;
+              return { snapshots: available ? structuredClone(fixture.snapshots) : [], available };
+            }
+            export async function listPortfolioSnapshots() { return (await readPortfolioSnapshotHistory()).snapshots; }
+          `;
           if (id === virtualLink) return 'import { createElement } from "react"; export default function Link(props) { return createElement("a", props); }';
         },
       }],
@@ -78,6 +103,12 @@ export async function startUiFixtureServer() {
       try {
         const pathname = new URL(request.url ?? "/", "http://127.0.0.1").pathname;
         if (pathname === "/favicon.ico") { response.writeHead(204).end(); return; }
+        if (/^\/mascot\/mascot-(?:calm|happy|excited|thinking|worried|sad|sleepy|proud|alert)\.webp$/.test(pathname)) {
+          const contents = await readFile(path.join(projectRoot, "public", pathname.slice(1)));
+          response.setHeader("Content-Type", "image/webp");
+          response.end(contents);
+          return;
+        }
         const relativePath = pathname === "/" ? "index.html" : decodeURIComponent(pathname).slice(1);
         const requestedFile = path.resolve(outputRoot, relativePath);
         if (!requestedFile.startsWith(`${outputRoot}${path.sep}`)) { response.writeHead(404).end(); return; }

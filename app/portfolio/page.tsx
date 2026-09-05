@@ -1,5 +1,8 @@
 import Link from "next/link";
 import { AppSidebar } from "../components/app-sidebar";
+import MascotCompanion from "../mascot-companion";
+import { deriveMascotState } from "@/lib/mascot";
+import { readPortfolioSnapshotHistory } from "@/lib/pnl-history";
 import { isNeonConfigured, listPortfolioValueSeries, type PortfolioValuePoint } from "@/lib/assets-db";
 import {
   formatCurrency,
@@ -64,6 +67,8 @@ export default async function PortfolioPage() {
     getJoinedPortfolio(),
     loadLegacyHistory(),
   ]);
+  const { available: snapshotHistoryAvailable } = await readPortfolioSnapshotHistory();
+  const mascot = deriveMascotState({ ...portfolio, snapshotHistoryAvailable }, new Date());
 
   const liveDate = portfolio.asOf.slice(0, 10);
   // The database helper includes today. Its retired holdings are not the joined
@@ -197,6 +202,7 @@ export default async function PortfolioPage() {
           </section>
         </div>
       </section>
+      <MascotCompanion state={mascot} />
     </main>
   );
 }

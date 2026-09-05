@@ -1,10 +1,12 @@
 import Link from "next/link";
 import { AppSidebar } from "./components/app-sidebar";
+import MascotCompanion from "./mascot-companion";
+import { deriveMascotState } from "@/lib/mascot";
 import { WalletBalancesPanel } from "./home-wallet-panel";
 import { PnlPerformance, PnlCalendar } from "./pnl-history-panels";
 import { PnlAssetTable } from "./pnl-asset-table";
 import { formatCurrency, formatThb, formatUsd, getJoinedPortfolio, type LiveSourceState } from "@/lib/live-data";
-import { listPortfolioSnapshots } from "@/lib/pnl-history";
+import { readPortfolioSnapshotHistory } from "@/lib/pnl-history";
 import { coverageLabel, dailyChange, formatPnlPercent, formatSnapshotAsOf, formatHoldingQuantity, snapshotFiatUsd, valueAllocation } from "@/lib/pnl-view";
 import { requireSession } from "@/lib/auth";
 import "./home.css";
@@ -19,7 +21,8 @@ function SourceBadge({ state }: { state: LiveSourceState }) {
 export default async function Home() {
   const [email, portfolio] = await Promise.all([requireSession(), getJoinedPortfolio()]);
   // Read after the joined boundary has finished its existing daily recorder.
-  const history = await listPortfolioSnapshots();
+  const { snapshots: history, available: snapshotHistoryAvailable } = await readPortfolioSnapshotHistory();
+  const mascot = deriveMascotState({ ...portfolio, snapshotHistoryAvailable }, new Date());
   const { t212, wallet, fx, totals, sources } = portfolio;
   const coverage = totals.pnlCoverage;
   const hasRecordedPnl = coverage.eligible > 0 && totals.pnlUsd !== null;
@@ -134,6 +137,7 @@ export default async function Home() {
           <footer className="home-footnote"><p>USD is the primary view. THB uses this snapshot’s FX. NFT values use collection floors, not sale proceeds.</p><Link href="/asset-list" className="toolbar-link">Browse asset registry →</Link></footer>
         </div>
       </section>
+      <MascotCompanion state={mascot} />
     </main>
   );
 }

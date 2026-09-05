@@ -35,7 +35,92 @@
       "walletTokensUsd": 0,
       "walletTokensThb": 0,
       "walletUsd": 0,
-      "walletThb": 0
+      "walletThb": 0,
+      "costBasisUsd": 0,
+      "costBasisThb": 0,
+      "pnlUsd": 0,
+      "pnlThb": 0,
+      "pnlPct": null,
+      "pnlCoverage": {
+        "status": "complete",
+        "sourcesComplete": true,
+        "totalHoldings": 0,
+        "eligible": 0,
+        "notRecorded": 0,
+        "dust": 0,
+        "unpriced": 0,
+        "unreconciled": 0
+      },
+      "pnlByClass": {
+        "t212": {
+          "costBasisUsd": 0,
+          "costBasisThb": 0,
+          "pnlUsd": 0,
+          "pnlThb": 0,
+          "pnlPct": null,
+          "pnlCoverage": {
+            "status": "complete",
+            "sourcesComplete": true,
+            "totalHoldings": 0,
+            "eligible": 0,
+            "notRecorded": 0,
+            "dust": 0,
+            "unpriced": 0,
+            "unreconciled": 0
+          }
+        },
+        "nfts": {
+          "costBasisUsd": 0,
+          "costBasisThb": 0,
+          "pnlUsd": 0,
+          "pnlThb": 0,
+          "pnlPct": null,
+          "pnlCoverage": {
+            "status": "complete",
+            "sourcesComplete": true,
+            "totalHoldings": 0,
+            "eligible": 0,
+            "notRecorded": 0,
+            "dust": 0,
+            "unpriced": 0,
+            "unreconciled": 0
+          }
+        },
+        "walletNative": {
+          "costBasisUsd": 0,
+          "costBasisThb": 0,
+          "pnlUsd": 0,
+          "pnlThb": 0,
+          "pnlPct": null,
+          "pnlCoverage": {
+            "status": "complete",
+            "sourcesComplete": true,
+            "totalHoldings": 0,
+            "eligible": 0,
+            "notRecorded": 0,
+            "dust": 0,
+            "unpriced": 0,
+            "unreconciled": 0
+          }
+        },
+        "walletTokens": {
+          "costBasisUsd": 0,
+          "costBasisThb": 0,
+          "pnlUsd": 0,
+          "pnlThb": 0,
+          "pnlPct": null,
+          "pnlCoverage": {
+            "status": "complete",
+            "sourcesComplete": true,
+            "totalHoldings": 0,
+            "eligible": 0,
+            "notRecorded": 0,
+            "dust": 0,
+            "unpriced": 0,
+            "unreconciled": 0
+          }
+        }
+      }
     },
     "sources": {
       "t212Summary": {
@@ -318,5 +403,282 @@
         "priced": false
       }
     ]
-  }
+  },
+  "mascotScenarios": [
+    {
+      "scenario": "portfolio-live",
+      "mood": "calm",
+      "hourUtc": 12,
+      "description": "Healthy empty joined holding set, no recorded gain or loss."
+    },
+    {
+      "scenario": "portfolio-unavailable",
+      "mood": "sad",
+      "hourUtc": 12,
+      "description": "Every source offline and joined total unknown."
+    },
+    {
+      "scenario": "portfolio-mascot-thinking",
+      "mood": "thinking",
+      "hourUtc": 12,
+      "description": "Sources all live; one holding has no acquisition basis.",
+      "totals": {
+        "costBasisUsd": null,
+        "costBasisThb": null,
+        "pnlUsd": null,
+        "pnlThb": null,
+        "pnlPct": null,
+        "pnlCoverage": {
+          "status": "partial",
+          "sourcesComplete": true,
+          "totalHoldings": 1,
+          "eligible": 0,
+          "notRecorded": 1,
+          "dust": 0,
+          "unpriced": 0,
+          "unreconciled": 0
+        }
+      }
+    },
+    {
+      "scenario": "portfolio-mascot-worried",
+      "mood": "worried",
+      "hourUtc": 12,
+      "description": "Eligible recorded loss beats otherwise complete coverage.",
+      "totals": {
+        "costBasisUsd": 1000,
+        "costBasisThb": 36000,
+        "pnlUsd": -20,
+        "pnlThb": -720,
+        "pnlPct": -2,
+        "pnlCoverage": {
+          "status": "complete",
+          "sourcesComplete": true,
+          "totalHoldings": 1,
+          "eligible": 1,
+          "notRecorded": 0,
+          "dust": 0,
+          "unpriced": 0,
+          "unreconciled": 0
+        }
+      }
+    },
+    {
+      "scenario": "portfolio-mascot-happy",
+      "mood": "happy",
+      "hourUtc": 12,
+      "description": "Recorded gain below threshold; dust excluded, no missing basis.",
+      "totals": {
+        "costBasisUsd": 1000,
+        "costBasisThb": 36000,
+        "pnlUsd": 20,
+        "pnlThb": 720,
+        "pnlPct": 2,
+        "pnlCoverage": {
+          "status": "partial",
+          "sourcesComplete": true,
+          "totalHoldings": 2,
+          "eligible": 1,
+          "notRecorded": 0,
+          "dust": 1,
+          "unpriced": 0,
+          "unreconciled": 0
+        }
+      }
+    },
+    {
+      "scenario": "portfolio-mascot-excited",
+      "mood": "excited",
+      "hourUtc": 12,
+      "description": "Recorded gain with full basis coverage, even below threshold.",
+      "totals": {
+        "costBasisUsd": 1000,
+        "costBasisThb": 36000,
+        "pnlUsd": 20,
+        "pnlThb": 720,
+        "pnlPct": 2,
+        "pnlCoverage": {
+          "status": "complete",
+          "sourcesComplete": true,
+          "totalHoldings": 1,
+          "eligible": 1,
+          "notRecorded": 0,
+          "dust": 0,
+          "unpriced": 0,
+          "unreconciled": 0
+        }
+      }
+    },
+    {
+      "scenario": "portfolio-mascot-proud",
+      "mood": "proud",
+      "hourUtc": 12,
+      "description": "Flat recorded P&L and every holding eligible.",
+      "totals": {
+        "costBasisUsd": 1000,
+        "costBasisThb": 36000,
+        "pnlUsd": 0,
+        "pnlThb": 0,
+        "pnlPct": 0,
+        "pnlCoverage": {
+          "status": "complete",
+          "sourcesComplete": true,
+          "totalHoldings": 1,
+          "eligible": 1,
+          "notRecorded": 0,
+          "dust": 0,
+          "unpriced": 0,
+          "unreconciled": 0
+        }
+      }
+    },
+    {
+      "scenario": "portfolio-mascot-sleepy",
+      "mood": "sleepy",
+      "hourUtc": 3,
+      "description": "Healthy flat eligible subset with dust; no higher priority state.",
+      "totals": {
+        "costBasisUsd": 1000,
+        "costBasisThb": 36000,
+        "pnlUsd": 0,
+        "pnlThb": 0,
+        "pnlPct": 0,
+        "pnlCoverage": {
+          "status": "partial",
+          "sourcesComplete": true,
+          "totalHoldings": 2,
+          "eligible": 1,
+          "notRecorded": 0,
+          "dust": 1,
+          "unpriced": 0,
+          "unreconciled": 0
+        }
+      }
+    },
+    {
+      "scenario": "portfolio-mascot-alert",
+      "mood": "alert",
+      "hourUtc": 12,
+      "description": "One partial source outranks a recorded gain.",
+      "sourceStatuses": {
+        "walletNative": "partial"
+      },
+      "totals": {
+        "costBasisUsd": 1000,
+        "costBasisThb": 36000,
+        "pnlUsd": 20,
+        "pnlThb": 720,
+        "pnlPct": 2,
+        "pnlCoverage": {
+          "status": "partial",
+          "sourcesComplete": false,
+          "totalHoldings": 1,
+          "eligible": 1,
+          "notRecorded": 0,
+          "dust": 0,
+          "unpriced": 0,
+          "unreconciled": 0
+        }
+      }
+    },
+    {
+      "scenario": "portfolio-mascot-history-unavailable",
+      "mood": "alert",
+      "hourUtc": 12,
+      "description": "All sources live but snapshot history unavailable.",
+      "snapshotHistoryAvailable": false
+    },
+    {
+      "scenario": "portfolio-mascot-unreconciled",
+      "mood": "alert",
+      "hourUtc": 12,
+      "description": "An unreconciled holding outranks missing acquisition basis.",
+      "totals": {
+        "costBasisUsd": null,
+        "costBasisThb": null,
+        "pnlUsd": null,
+        "pnlThb": null,
+        "pnlPct": null,
+        "pnlCoverage": {
+          "status": "partial",
+          "sourcesComplete": true,
+          "totalHoldings": 2,
+          "eligible": 0,
+          "notRecorded": 1,
+          "dust": 0,
+          "unpriced": 0,
+          "unreconciled": 1
+        }
+      }
+    },
+    {
+      "scenario": "portfolio-mascot-excited-partial",
+      "mood": "excited",
+      "hourUtc": 12,
+      "description": "Threshold reached with excluded dust, without claiming full coverage.",
+      "totals": {
+        "costBasisUsd": 1000,
+        "costBasisThb": 36000,
+        "pnlUsd": 50,
+        "pnlThb": 1800,
+        "pnlPct": 5,
+        "pnlCoverage": {
+          "status": "partial",
+          "sourcesComplete": true,
+          "totalHoldings": 2,
+          "eligible": 1,
+          "notRecorded": 0,
+          "dust": 1,
+          "unpriced": 0,
+          "unreconciled": 0
+        }
+      }
+    },
+    {
+      "scenario": "portfolio-mascot-airdrop",
+      "mood": "happy",
+      "hourUtc": 12,
+      "description": "Verified free acquisition has positive recorded P&L and no percentage; dust keeps coverage partial.",
+      "totals": {
+        "costBasisUsd": 0,
+        "costBasisThb": 0,
+        "pnlUsd": 20,
+        "pnlThb": 720,
+        "pnlPct": null,
+        "pnlCoverage": {
+          "status": "partial",
+          "sourcesComplete": true,
+          "totalHoldings": 2,
+          "eligible": 1,
+          "notRecorded": 0,
+          "dust": 1,
+          "unpriced": 0,
+          "unreconciled": 0
+        }
+      }
+    },
+    {
+      "scenario": "portfolio-mascot-null-pnl",
+      "mood": "calm",
+      "hourUtc": 12,
+      "description": "Only excluded dust; unknown P&L never implies a gain or loss.",
+      "totals": {
+        "costBasisUsd": null,
+        "costBasisThb": null,
+        "pnlUsd": null,
+        "pnlThb": null,
+        "pnlPct": null,
+        "pnlCoverage": {
+          "status": "partial",
+          "sourcesComplete": true,
+          "totalHoldings": 1,
+          "eligible": 0,
+          "notRecorded": 0,
+          "dust": 1,
+          "unpriced": 0,
+          "unreconciled": 0
+        }
+      }
+    }
+  ]
 }
