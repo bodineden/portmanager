@@ -15,6 +15,30 @@ function portfolio(): JoinedPortfolio {
 afterEach(() => { __resetSnapshotCacheForTests(); vi.restoreAllMocks(); vi.unstubAllEnvs(); vi.unstubAllGlobals(); });
 
 describe("daily snapshot recorder", () => {
+  it("records non-null partial values with explicit partial source status and observation time", async () => {
+    const query = vi.fn(async (_text: string, _params?: unknown[]) => { void _text; void _params; return [{ snapshot_date: "2026-09-05" }]; });
+    const book = portfolio(); book.sources.walletNative.status = "partial";
+    const record = history.createSnapshotRecorder({ hasDb: () => true, getDb: () => ({ query }), now: () => Date.parse(DATE) });
+    expect(await record(book)).toBe("recorded");
+    const row = query.mock.calls[1][1]!;
+    expect(JSON.parse(String(row[8])).sources.walletNative.status).toBe("partial");
+    expect(row[9]).toBe(book.asOf);
+  });
+
+  it("allows next-day recovery after an error even if the logger throws", async () => {
+    let now = Date.parse(DATE);
+    let fail = true;
+    const query = vi.fn(async () => { if (fail) throw new Error("offline"); return [{ snapshot_date: "2026-09-06" }]; });
+    const record = history.createSnapshotRecorder({ hasDb: () => true, getDb: () => ({ query }), now: () => now, log: () => { throw new Error("logger unavailable"); } });
+    const book = portfolio();
+    expect(await record(book)).toBe("error");
+    fail = false;
+    expect(await record(book)).toBe("skipped");
+    now = Date.parse("2026-09-06T00:00:00Z"); book.asOf = new Date(now).toISOString();
+    expect(await record(book)).toBe("recorded");
+    expect(query).toHaveBeenCalledTimes(3);
+  });
+
   it("hooks the existing joined server path only with DB configuration and forwards the injected clock", async () => {
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("offline fixture")));
     const record = vi.spyOn(history, "recordPortfolioSnapshot").mockResolvedValue("skipped");

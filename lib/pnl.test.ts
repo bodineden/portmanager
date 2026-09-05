@@ -36,6 +36,28 @@ const purchaseEvidence = (): pnl.AcquisitionEvidence => {
 };
 
 describe("on-chain conservative classification", () => {
+  it.each(["airdrop", "claim", "mint"] as const)("verifies %s only with all no-payment evidence", (operation) => {
+    const evidence = freeEvidence(); evidence.lots[0].operation = operation;
+    expect(pnl.deriveOnchainPnl(tokenHolding, 36, evidence).basisStatus).toBe("airdrop-free");
+    evidence.lots[0].tokenOutflows.push({ assetId: "payment-contract", amountRaw: "1", decimals: 18, historicalPrice: null });
+    expect(pnl.deriveOnchainPnl(tokenHolding, 36, evidence).basisStatus).toBe("not-recorded");
+  });
+
+  it("rejects RH Blockscout evidence, malformed histories and one-unit lot mismatches", () => {
+    const evidence = freeEvidence(); evidence.chainId = 4663;
+    expect(pnl.deriveOnchainPnl({ ...tokenHolding, chainId: 4663 }, 36, evidence).basisStatus).toBe("not-recorded");
+    expect(pnl.deriveOnchainPnl(tokenHolding, 36, {} as pnl.AcquisitionEvidence).basisStatus).toBe("not-recorded");
+    const mismatch = freeEvidence(); mismatch.lots[0].quantityRaw = "2000000000000000001";
+    expect(pnl.deriveOnchainPnl(tokenHolding, 36, mismatch).basisStatus).toBe("not-recorded");
+  });
+
+  it("never reads evidence for dust and never rounds a raw payment through Number first", () => {
+    const evidence = new Proxy({} as pnl.AcquisitionEvidence, { get: () => { throw new Error("must not derive dust"); } });
+    expect(pnl.deriveOnchainPnl({ ...tokenHolding, valueUsd: 0.99 }, 36, evidence).pnlEligibility).toBe("dust");
+    const purchase = purchaseEvidence(); purchase.lots[0].nativeOutflowRaw = "123456789012345678";
+    expect(pnl.deriveOnchainPnl(tokenHolding, 36, purchase).costBasisUsd).toBe(Number("0.123456789012345678") * 2000);
+  });
+
   it("values a clean purchase with its historical payment-asset price", () => {
     const evidence = purchaseEvidence();
     expect(pnl.deriveOnchainPnl(tokenHolding, 36, evidence)).toMatchObject({
