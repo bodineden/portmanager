@@ -1,0 +1,322 @@
+{
+  "description": "Synthetic values only. History and wallet scenarios extracted from the prior temporary browser QA; no provider records, credentials or generated bundles.",
+  "asOf": "2026-09-05T12:00:00.000Z",
+  "portfolio": {
+    "asOf": "2026-09-05T12:00:00.000Z",
+    "t212": {
+      "currency": "USD",
+      "cashAvailable": 250.5,
+      "totalValue": 1250.5,
+      "investmentsCurrentValue": 1000,
+      "investments": [],
+      "asOf": "2026-09-05T12:00:00.000Z"
+    },
+    "nfts": [],
+    "wallet": {
+      "native": [],
+      "tokens": []
+    },
+    "fx": {
+      "usdToThb": 36,
+      "gbpToThb": 47,
+      "eurToThb": 40,
+      "ethToUsd": 3000,
+      "asOf": "2026-09-05T12:00:00.000Z"
+    },
+    "totals": {
+      "grandTotalUsd": 1250.5,
+      "grandTotalThb": 45018,
+      "t212Thb": 45018,
+      "nftsEth": 0,
+      "nftsUsd": 0,
+      "nftsThb": 0,
+      "walletNativeUsd": 0,
+      "walletNativeThb": 0,
+      "walletTokensUsd": 0,
+      "walletTokensThb": 0,
+      "walletUsd": 0,
+      "walletThb": 0
+    },
+    "sources": {
+      "t212Summary": {
+        "status": "live",
+        "asOf": "2026-09-05T12:00:00.000Z",
+        "message": "Synthetic browser fixture: source observation available"
+      },
+      "t212Positions": {
+        "status": "live",
+        "asOf": "2026-09-05T12:00:00.000Z",
+        "message": "Synthetic browser fixture: source observation available"
+      },
+      "nfts": {
+        "status": "live",
+        "asOf": "2026-09-05T12:00:00.000Z",
+        "message": "Synthetic browser fixture: source observation available"
+      },
+      "fiatFx": {
+        "status": "live",
+        "asOf": "2026-09-05T12:00:00.000Z",
+        "message": "Synthetic browser fixture: source observation available"
+      },
+      "ethPrice": {
+        "status": "live",
+        "asOf": "2026-09-05T12:00:00.000Z",
+        "message": "Synthetic browser fixture: source observation available"
+      },
+      "walletNative": {
+        "status": "live",
+        "asOf": "2026-09-05T12:00:00.000Z",
+        "message": "Synthetic browser fixture: source observation available"
+      },
+      "walletTokens": {
+        "status": "live",
+        "asOf": "2026-09-05T12:00:00.000Z",
+        "message": "Synthetic browser fixture: source observation available"
+      }
+    }
+  },
+  "legacyPoints": [
+    {
+      "date": "2026-07-01",
+      "valueThb": 28000,
+      "holdingCount": 2
+    },
+    {
+      "date": "2026-08-31",
+      "valueThb": 32000,
+      "holdingCount": 2
+    }
+  ],
+  "snapshots": [
+    {
+      "date": "2026-04-01",
+      "totalValueUsd": 800,
+      "totalValueThb": 28800,
+      "costBasisUsd": 500,
+      "costBasisThb": 18000,
+      "pnlUsd": 300,
+      "pnlThb": 10800,
+      "pnlPct": 60.0,
+      "coverage": {
+        "status": "complete",
+        "sourcesComplete": true,
+        "totalHoldings": 1,
+        "eligible": 1,
+        "notRecorded": 0,
+        "dust": 0,
+        "unpriced": 0,
+        "unreconciled": 0
+      }
+    },
+    {
+      "date": "2026-07-01",
+      "totalValueUsd": 1000,
+      "totalValueThb": 36000,
+      "costBasisUsd": 900,
+      "costBasisThb": 32400,
+      "pnlUsd": 100,
+      "pnlThb": 3600,
+      "pnlPct": 11.11111111111111,
+      "coverage": {
+        "status": "partial",
+        "sourcesComplete": true,
+        "totalHoldings": 3,
+        "eligible": 2,
+        "notRecorded": 1,
+        "dust": 0,
+        "unpriced": 0,
+        "unreconciled": 0
+      }
+    },
+    {
+      "date": "2026-08-31",
+      "totalValueUsd": 1000,
+      "totalValueThb": 36000,
+      "costBasisUsd": 850,
+      "costBasisThb": 30600,
+      "pnlUsd": 150,
+      "pnlThb": 5400,
+      "pnlPct": 17.647058823529413,
+      "coverage": {
+        "status": "partial",
+        "sourcesComplete": true,
+        "totalHoldings": 3,
+        "eligible": 2,
+        "notRecorded": 1,
+        "dust": 0,
+        "unpriced": 0,
+        "unreconciled": 0
+      }
+    },
+    {
+      "date": "2026-09-01",
+      "totalValueUsd": 1100,
+      "totalValueThb": 39600,
+      "costBasisUsd": 900,
+      "costBasisThb": 32400,
+      "pnlUsd": 200,
+      "pnlThb": 7200,
+      "pnlPct": 22.22222222222222,
+      "coverage": {
+        "status": "partial",
+        "sourcesComplete": true,
+        "totalHoldings": 3,
+        "eligible": 2,
+        "notRecorded": 1,
+        "dust": 0,
+        "unpriced": 0,
+        "unreconciled": 0
+      }
+    },
+    {
+      "date": "2026-09-02",
+      "totalValueUsd": 1200,
+      "totalValueThb": 43200,
+      "costBasisUsd": null,
+      "costBasisThb": null,
+      "pnlUsd": null,
+      "pnlThb": null,
+      "pnlPct": null,
+      "coverage": {
+        "status": "partial",
+        "sourcesComplete": true,
+        "totalHoldings": 3,
+        "eligible": 0,
+        "notRecorded": 3,
+        "dust": 0,
+        "unpriced": 0,
+        "unreconciled": 0
+      }
+    },
+    {
+      "date": "2026-09-03",
+      "totalValueUsd": 40,
+      "totalValueThb": 1440,
+      "costBasisUsd": 0,
+      "costBasisThb": 0,
+      "pnlUsd": 40,
+      "pnlThb": 1440,
+      "pnlPct": null,
+      "coverage": {
+        "status": "complete",
+        "sourcesComplete": true,
+        "totalHoldings": 1,
+        "eligible": 1,
+        "notRecorded": 0,
+        "dust": 0,
+        "unpriced": 0,
+        "unreconciled": 0
+      }
+    },
+    {
+      "date": "2026-09-04",
+      "totalValueUsd": 1200,
+      "totalValueThb": 43200,
+      "costBasisUsd": 1000,
+      "costBasisThb": 36000,
+      "pnlUsd": 200,
+      "pnlThb": 7200,
+      "pnlPct": 20.0,
+      "coverage": {
+        "status": "complete",
+        "sourcesComplete": true,
+        "totalHoldings": 1,
+        "eligible": 1,
+        "notRecorded": 0,
+        "dust": 0,
+        "unpriced": 0,
+        "unreconciled": 0
+      }
+    },
+    {
+      "date": "2026-09-05",
+      "totalValueUsd": 1250,
+      "totalValueThb": 45000,
+      "costBasisUsd": 1000,
+      "costBasisThb": 36000,
+      "pnlUsd": 250,
+      "pnlThb": 9000,
+      "pnlPct": 25.0,
+      "coverage": {
+        "status": "complete",
+        "sourcesComplete": true,
+        "totalHoldings": 1,
+        "eligible": 1,
+        "notRecorded": 0,
+        "dust": 0,
+        "unpriced": 0,
+        "unreconciled": 0
+      }
+    }
+  ],
+  "wallet": {
+    "source": {
+      "status": "partial",
+      "message": "Synthetic browser fixture; unknown quotes remain unknown"
+    },
+    "nativeRows": [
+      {
+        "id": "native:1",
+        "symbol": "NATIVE-ONE",
+        "chainName": "Fixture chain",
+        "chainId": 1,
+        "amount": "1",
+        "valueUsd": 1,
+        "valueThb": 36
+      },
+      {
+        "id": "native:2",
+        "symbol": "NATIVE-DUST",
+        "chainName": "Fixture chain",
+        "chainId": 2,
+        "amount": "1",
+        "valueUsd": 0.999,
+        "valueThb": 35.964
+      },
+      {
+        "id": "native:3",
+        "symbol": "NATIVE-UNPRICED",
+        "chainName": "Fixture chain",
+        "chainId": 3,
+        "amount": "1",
+        "valueUsd": null,
+        "valueThb": null
+      }
+    ],
+    "tokenRows": [
+      {
+        "id": "token:4",
+        "symbol": "TOKEN-ONE",
+        "chainName": "Fixture chain",
+        "chainId": 4,
+        "amount": "1",
+        "valueUsd": 1,
+        "valueThb": 36,
+        "name": "Fixture token",
+        "priced": true
+      },
+      {
+        "id": "token:5",
+        "symbol": "TOKEN-DUST",
+        "chainName": "Fixture chain",
+        "chainId": 5,
+        "amount": "1",
+        "valueUsd": 0.01,
+        "valueThb": 0.36,
+        "name": "Fixture token",
+        "priced": true
+      },
+      {
+        "id": "token:6",
+        "symbol": "TOKEN-UNPRICED",
+        "chainName": "Fixture chain",
+        "chainId": 6,
+        "amount": "1",
+        "valueUsd": null,
+        "valueThb": null,
+        "name": "Fixture token",
+        "priced": false
+      }
+    ]
+  }
+}

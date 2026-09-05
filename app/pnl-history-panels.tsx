@@ -14,7 +14,7 @@ export function PnlPerformance({ snapshots, asOf }: { snapshots: PortfolioSnapsh
   const valueRows = useMemo(() => rows.filter((row) => row.totalValueUsd !== null), [rows]);
 
   useEffect(() => {
-    if (!target.current || valueRows.length === 0) return;
+    if (chartError || !target.current || valueRows.length === 0) return;
     const host = target.current;
     let disposed = false;
     let release: (() => void) | undefined;
@@ -69,7 +69,7 @@ export function PnlPerformance({ snapshots, asOf }: { snapshots: PortfolioSnapsh
     }
     void draw();
     return () => { disposed = true; release?.(); };
-  }, [rows, valueRows]);
+  }, [chartError, rows, valueRows]);
 
   return <section className="panel pnl-performance" data-history-count={snapshots.length} data-period-count={rows.length}>
     <div className="panel-header"><div><p className="eyebrow">DAILY OBSERVATIONS / USD</p><h2 className="panel-title">Performance</h2></div>

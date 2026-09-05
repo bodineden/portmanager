@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import { chromium } from "playwright";
+import { browserFixture, startUiFixtureServer } from "./ui-fixture-server.mjs";
 
 const baseUrl = process.env.UI_BASE_URL ?? "http://127.0.0.1:8125";
 const configuredBrowser = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH;
@@ -266,7 +267,7 @@ async function checkPnlContract(page) {
     const summaryBefore = compactText((await page.locator("[data-pnl-summary]").textContent()) ?? "");
     for (const label of ["1M", "3M", "All"]) {
       const button = periods.getByRole("button", { name: label, exact: true });
-      if (await button.isDisabled()) continue;
+      requireCondition(await button.isEnabled(), `populated-history period ${label} is disabled`);
       await button.click();
       await page.waitForFunction(() => {
         const card = document.querySelector(".pnl-performance");
@@ -442,6 +443,7 @@ async function checkHomeContract(page) {
     const headerCounts = await readHomeWalletHeaderCounts(panel);
     requireCondition(headerCounts.native === visibleNativeCount, `header shows ${headerCounts.native} native, found ${visibleNativeCount}`);
     requireCondition(headerCounts.token === visibleTokenCount, `header shows ${headerCounts.token} tokens, found ${visibleTokenCount}`);
+    // Unknown-price native balances stay visible; unpriced tokens are hidden by the existing dust filter.
     requireCondition(
       await panel.locator('tr[data-wallet-kind="token"][data-wallet-priced="false"]').count() === 0,
       "an unpriced token is visible while the filter is on",
@@ -815,7 +817,76 @@ async function checkNoMutationControls(page, routeName) {
   });
 }
 
-async function checkPortfolioContract(page) {
+function expectedUsd(value) {
+  return value === null ? "—" : new Intl.NumberFormat("en-GB", {
+    style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 2,
+  }).format(value);
+}
+
+function expectedThb(value) {
+  return value === null ? "—" : `฿${value.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+async function assertPortfolioChart(page, independentPortfolio) {
+  const knownLive = independentPortfolio !== undefined
+    && Object.values(independentPortfolio.sources).some((source) => source.status === "live")
+    && Number.isFinite(independentPortfolio.totals.grandTotalUsd)
+    && Number.isFinite(independentPortfolio.totals.grandTotalThb);
+  const host = page.locator(".portfolio-chart-host");
+  const hostCount = await host.count();
+  requireCondition(hostCount <= 1, `expected at most one chart host, found ${hostCount}`);
+  // Independent known data must survive even an incorrectly hidden host/unavailable legend.
+  requireCondition(!knownLive || hostCount === 1, "known live fixture value has no chart host");
+  if (hostCount === 0) {
+    const empty = page.locator(".portfolio-chart-empty");
+    requireCondition(await empty.count() === 1, "portfolio chart lacks an explicit empty/unavailable state");
+    requireCondition(/no valuation snapshot|unavailable|no recorded/i.test((await empty.textContent()) ?? ""), "portfolio chart empty state is not explained");
+    return "no chart host · explicit unavailable valuation state";
+  }
+
+  await host.waitFor({ state: "visible", timeout: 15_000 });
+  await page.waitForFunction(
+    () => document.querySelector(".portfolio-chart-host")?.getAttribute("data-chart-ready") === "true",
+    undefined,
+    { timeout: 15_000 },
+  );
+  const axisCount = await host.locator(".axis").count();
+  requireCondition(axisCount >= 2, `expected at least two Plottable axes, found ${axisCount}`);
+  const liveMarkers = await host.locator(".scatter-plot path").evaluateAll((paths) => paths
+    .filter((path) => {
+      const style = getComputedStyle(path);
+      const fill = `${path.getAttribute("fill") ?? ""} ${style.fill}`;
+      const box = path.getBoundingClientRect();
+      return /#355cc9|rgb\(\s*53\s*,\s*92\s*,\s*201\s*\)/i.test(fill)
+        && style.visibility !== "hidden" && style.display !== "none" && Number(style.opacity) > 0
+        && box.width > 0 && box.height > 0;
+    })
+    .map((path) => path.__data__));
+  const liveUnavailable = await page.locator(".chart-legend .is-unavailable").count() > 0;
+  const expectsLiveMarker = independentPortfolio === undefined ? !liveUnavailable : knownLive;
+  requireCondition(expectsLiveMarker ? liveMarkers.length > 0 : liveMarkers.length === 0,
+    expectsLiveMarker ? "known live value is missing its visible Plottable marker" : "unavailable live value has an invented Plottable marker");
+
+  if (knownLive) {
+    requireCondition(!liveUnavailable, "known live fixture value is incorrectly marked unavailable");
+    const { grandTotalUsd, grandTotalThb } = independentPortfolio.totals;
+    requireCondition(liveMarkers.length === 1 && liveMarkers[0].series === "live"
+      && liveMarkers[0].date === independentPortfolio.asOf.slice(0, 10)
+      && liveMarkers[0].asOf === independentPortfolio.asOf
+      && liveMarkers[0].valueUsd === grandTotalUsd && liveMarkers[0].valueThb === grandTotalThb,
+    "live marker datum differs from independent fixture date/USD/THB");
+    const kpi = page.locator(".portfolio-kpi-card.live-edge");
+    requireCondition(compactText(await kpi.locator(".metric-value").innerText()) === expectedUsd(grandTotalUsd), "live KPI USD differs from independent fixture value");
+    requireCondition(compactText(await kpi.locator("small").innerText()) === `${expectedThb(grandTotalThb)} · THB equivalent`, "live KPI THB differs from independent fixture value");
+    const ledger = page.locator(".live-ledger-row .value-cell");
+    requireCondition(await ledger.evaluate((element) => element.firstChild?.textContent) === expectedUsd(grandTotalUsd), "live register USD differs from independent fixture value");
+    requireCondition(compactText(await ledger.locator("small").innerText()) === expectedThb(grandTotalThb), "live register THB differs from independent fixture value");
+    return `independent source=live · USD ${grandTotalUsd.toFixed(2)} · THB ${grandTotalThb.toFixed(2)} · exact live marker/KPI/register`;
+  }
+  return `${axisCount} axes · ${liveMarkers.length} live marker${liveMarkers.length === 1 ? "" : "s"}`;
+}
+
+async function checkPortfolioContract(page, independentPortfolio) {
   await check("portfolio separates live value from legacy context", async () => {
     const text = await renderedText(page);
     requireCondition(/\blive\b/i.test(text), "live series label is missing");
@@ -834,37 +905,201 @@ async function checkPortfolioContract(page) {
   });
 
   await check("portfolio Plottable chart contract", async () => {
-    const host = page.locator(".portfolio-chart-host");
-    const hostCount = await host.count();
-    requireCondition(hostCount <= 1, `expected at most one chart host, found ${hostCount}`);
-    if (hostCount === 0) {
-      const empty = page.locator(".portfolio-chart-empty");
-      requireCondition(await empty.count() === 1, "portfolio chart lacks an explicit empty/unavailable state");
-      requireCondition(/no valuation snapshot|unavailable|no recorded/i.test((await empty.textContent()) ?? ""), "portfolio chart empty state is not explained");
-      return "no chart host · explicit unavailable valuation state";
-    }
-
-    await host.waitFor({ state: "visible", timeout: 15_000 });
-    await page.waitForFunction(
-      () => document.querySelector(".portfolio-chart-host")?.getAttribute("data-chart-ready") === "true",
-      undefined,
-      { timeout: 15_000 },
-    );
-
-    const axisCount = await host.locator(".axis").count();
-    requireCondition(axisCount >= 2, `expected at least two Plottable axes, found ${axisCount}`);
-
-    const liveMarkerCount = await host.locator(".scatter-plot path").evaluateAll((paths) =>
-      paths.filter((path) => {
-        const fill = `${path.getAttribute("fill") ?? ""} ${getComputedStyle(path).fill}`;
-        return /#355cc9|rgb\(\s*53\s*,\s*92\s*,\s*201\s*\)/i.test(fill);
-      }).length,
-    );
-    const liveUnavailable = await page.locator(".chart-legend .is-unavailable").count() > 0;
-    requireCondition(liveUnavailable ? liveMarkerCount === 0 : liveMarkerCount > 0,
-      liveUnavailable ? "unavailable live value has an invented Plottable marker" : "live joined Plottable marker is missing");
-    return `${axisCount} axes · ${liveMarkerCount} live marker${liveMarkerCount === 1 ? "" : "s"}`;
+    return assertPortfolioChart(page, independentPortfolio);
   });
+}
+
+async function assertCalendarDetail(calendar, snapshot) {
+  const detail = calendar.locator(".pnl-calendar-detail");
+  requireCondition(compactText(await detail.locator("h3").innerText()) === snapshot.date, "selected calendar date did not change to the clicked record");
+  const eligible = snapshot.coverage.eligible > 0;
+  for (const [label, usd, thb] of [
+    ["P&L (recorded)", eligible ? snapshot.pnlUsd : null, eligible ? snapshot.pnlThb : null],
+    ["Portfolio value", snapshot.totalValueUsd, snapshot.totalValueThb],
+    ["Recorded basis", eligible ? snapshot.costBasisUsd : null, eligible ? snapshot.costBasisThb : null],
+  ]) {
+    const value = detail.locator("dl > div").filter({ has: detail.page().getByText(label, { exact: true }) }).locator("dd");
+    requireCondition(await value.evaluate((element) => element.firstChild?.textContent) === expectedUsd(usd), `${snapshot.date} ${label} USD differs from independent snapshot`);
+    const secondary = compactText(await value.locator("small").innerText());
+    const percentage = !eligible || snapshot.pnlPct === null ? "—"
+      : `${snapshot.pnlPct > 0 ? "+" : snapshot.pnlPct < 0 ? "−" : ""}${Math.abs(snapshot.pnlPct).toFixed(2)}%`;
+    const expectedSecondary = label === "P&L (recorded)" ? `${expectedThb(thb)} · ${percentage}` : expectedThb(thb);
+    requireCondition(secondary === expectedSecondary, `${snapshot.date} ${label} THB/percentage differs from independent snapshot: ${secondary}`);
+  }
+  const coverage = detail.locator("dl > div").filter({ has: detail.page().getByText("Coverage", { exact: true }) }).locator("dd");
+  requireCondition(await coverage.evaluate((element) => element.firstChild?.textContent) === snapshot.coverage.status, "selected calendar coverage status differs from independent snapshot");
+  requireCondition(compactText(await coverage.locator("small").innerText())
+    === `${snapshot.coverage.eligible} / ${snapshot.coverage.totalHoldings} holdings eligible`, "selected calendar eligible holding counts differ from independent snapshot");
+}
+
+async function auditPopulatedFixtures(browser, fixtureUrl, viewport) {
+  const page = await browser.newPage({ viewport: { width: viewport.width, height: viewport.height } });
+  const browserErrors = [];
+  page.on("pageerror", (error) => browserErrors.push(`page: ${error.message}`));
+  page.on("console", (message) => { if (message.type() === "error") browserErrors.push(`console: ${message.text()}`); });
+  const prefix = `${viewport.name} fixture`;
+  const navigate = (scenario) => check(`${prefix} ${scenario} renders real app components`, async () => {
+    const response = await page.goto(`${fixtureUrl}/?scenario=${scenario}`, { waitUntil: "networkidle", timeout: 15_000 });
+    requireCondition(response?.ok(), `fixture HTTP ${response?.status() ?? "unavailable"}`);
+    await page.locator(scenario.startsWith("portfolio-") ? ".portfolio-chart-panel" : ".pnl-performance").waitFor();
+  });
+  try {
+    if (!await navigate("portfolio-live")) return;
+    await check(`${prefix} finding #2 known live source requires exact live marker and USD/THB value`, async () => {
+      const input = browserFixture.portfolio;
+      requireCondition(Object.values(input.sources).every((source) => source.status === "live")
+        && Number.isFinite(input.totals.grandTotalUsd) && input.totals.grandTotalUsd > 0
+        && Number.isFinite(input.totals.grandTotalThb) && input.totals.grandTotalThb > 0,
+      "independent fixture no longer supplies known positive USD/THB and live sources");
+      return assertPortfolioChart(page, input);
+    });
+    await check(`${prefix} finding #2 rejects hidden live marker plus a false unavailable legend`, async () => {
+      await page.evaluate(() => {
+        for (const path of document.querySelectorAll('.scatter-plot path[fill="#355CC9"]')) path.style.visibility = "hidden";
+        const legend = document.querySelector(".chart-legend .legend-marker.live")?.parentElement;
+        legend?.classList.add("is-unavailable");
+        legend?.append(" unavailable");
+      });
+      let rejection = "";
+      try { await assertPortfolioChart(page, browserFixture.portfolio); } catch (error) { rejection = String(error); }
+      requireCondition(/known live value is missing its visible Plottable marker/.test(rejection), "independent live requirement accepted a hidden known marker and unavailable legend");
+      return "negative control rejected; UI unavailable copy cannot waive known fixture data";
+    });
+    await check(`${prefix} finding #2 rejects a missing host for independently known live data`, async () => {
+      await page.locator(".portfolio-chart-host").evaluate((host) => {
+        const empty = document.createElement("div");
+        empty.className = "portfolio-chart-empty";
+        empty.textContent = "No valuation snapshot is available.";
+        host.replaceWith(empty);
+      });
+      let rejection = "";
+      try { await assertPortfolioChart(page, browserFixture.portfolio); } catch (error) { rejection = String(error); }
+      requireCondition(/known live fixture value has no chart host/.test(rejection), "independent live requirement accepted an invented empty chart state");
+      return "negative control rejected before empty-state return";
+    });
+
+    if (!await navigate("portfolio-unavailable")) return;
+    await check(`${prefix} independently unavailable live data retains honest legacy-only chart`, async () => {
+      const input = structuredClone(browserFixture.portfolio);
+      input.totals.grandTotalUsd = null;
+      input.totals.grandTotalThb = null;
+      for (const source of Object.values(input.sources)) source.status = "unavailable";
+      const result = await assertPortfolioChart(page, input);
+      requireCondition(await page.locator(".chart-legend .is-unavailable").count() === 1, "unknown live data is not marked unavailable");
+      requireCondition(await page.locator('.scatter-plot path[fill="#8290A5"]').count() === browserFixture.legacyPoints.length, "legacy-only chart dropped independent archive records");
+      requireCondition(compactText(await page.locator(".portfolio-kpi-card.live-edge .metric-value").innerText()) === "—", "unknown live KPI invents a value");
+      return result;
+    });
+
+    if (!await navigate("recent")) return;
+    await check(`${prefix} finding #4 populated periods are enabled and filter exact recorded rows`, async () => {
+      const performance = page.locator(".pnl-performance");
+      requireCondition(await performance.getAttribute("data-history-count") === String(browserFixture.snapshots.length), "populated performance dropped independent snapshot rows");
+      const periods = performance.getByRole("group", { name: "Performance period", exact: true });
+      for (const [label, count] of [["1M", 6], ["3M", 7], ["All", 8], ["1M", 6], ["All", 8]]) {
+        const button = periods.getByRole("button", { name: label, exact: true });
+        requireCondition(await button.isEnabled(), `populated-history period ${label} is disabled`);
+        await button.click();
+        await page.waitForFunction((expected) => document.querySelector(".pnl-performance")?.getAttribute("data-period-count") === String(expected)
+          && document.querySelector(".pnl-chart-host")?.getAttribute("data-chart-ready") === "true", count);
+        requireCondition(await button.getAttribute("aria-pressed") === "true", `period ${label} did not become selected`);
+        requireCondition(await performance.locator("tbody tr").count() === count, `period ${label} observation table differs from the fixture`);
+        requireCondition(await performance.locator(".axis").count() >= 2, `period ${label} has no Plottable axes`);
+      }
+      return "1M/3M/All enabled · 6/7/8 exact observations · repeated period changes draw charts";
+    });
+    const calendar = page.locator(".pnl-calendar");
+    for (const date of ["2026-09-01", "2026-09-02", "2026-09-03"]) {
+      await check(`${prefix} finding #4 clicking ${date} shows exact recorded USD/THB and coverage`, async () => {
+        const snapshot = browserFixture.snapshots.find((row) => row.date === date);
+        requireCondition(snapshot, `independent calendar fixture ${date} is missing`);
+        const day = calendar.locator(`[data-snapshot-date="${date}"]`);
+        requireCondition(await day.isEnabled(), `recorded calendar day ${date} is disabled`);
+        await day.click();
+        requireCondition(await day.getAttribute("aria-pressed") === "true", "clicked recorded day did not become selected");
+        await assertCalendarDetail(calendar, snapshot);
+        return `${date} · value ${expectedUsd(snapshot.totalValueUsd)} / ${expectedThb(snapshot.totalValueThb)} · P&L ${expectedUsd(snapshot.pnlUsd)} / ${expectedThb(snapshot.pnlThb)} · ${snapshot.coverage.status} ${snapshot.coverage.eligible}/${snapshot.coverage.totalHoldings}`;
+      });
+    }
+    await check(`${prefix} finding #4 previous/next month changes grid and exact selected observation`, async () => {
+      const previous = calendar.getByRole("button", { name: "Previous recorded month", exact: true });
+      const next = calendar.getByRole("button", { name: "Next recorded month", exact: true });
+      requireCondition(await previous.isEnabled() && await next.isDisabled(), "current fixture month has incorrect navigation availability");
+      await previous.click();
+      requireCondition(compactText(await calendar.locator(".pnl-month-controls strong").innerText()) === "August 2026", "previous month did not change the calendar heading");
+      requireCondition(await calendar.locator("[data-snapshot-date]").count() === 1
+        && await calendar.locator('[data-snapshot-date="2026-08-31"]').count() === 1, "previous month did not replace the recorded-day grid");
+      await assertCalendarDetail(calendar, browserFixture.snapshots.find((row) => row.date === "2026-08-31"));
+      requireCondition(await next.isEnabled(), "next recorded month cannot be reached");
+      await next.click();
+      requireCondition(compactText(await calendar.locator(".pnl-month-controls strong").innerText()) === "September 2026", "next month did not restore the calendar heading");
+      requireCondition(await calendar.locator("[data-snapshot-date]").count() === 5, "next month did not restore September recorded days");
+      await assertCalendarDetail(calendar, browserFixture.snapshots.find((row) => row.date === "2026-09-05"));
+      return "September → August (2026-08-31) → September (2026-09-05); exact grid/value/basis/P&L/coverage";
+    });
+    await check(`${prefix} wallet preserves raw $1 threshold, unknown native rows and full totals`, async () => {
+      const wallet = page.locator(".home-wallet-panel");
+      const toggle = wallet.getByRole("checkbox", { name: "Hide assets under $1", exact: true });
+      const symbols = () => wallet.locator("tbody .ticker-cell").allTextContents();
+      requireCondition(await toggle.isChecked(), "fixture wallet filter is not default-on");
+      requireCondition((await symbols()).join(",") === "NATIVE-ONE,NATIVE-UNPRICED,TOKEN-ONE", "strict raw $1 filter hid $1/unknown native or exposed $0.999/unpriced token");
+      const total = await wallet.locator("tfoot").innerText();
+      requireCondition(total.includes("US$3.01") && total.includes("฿108.32"), "wallet total omitted hidden priced dust");
+      await toggle.uncheck();
+      requireCondition((await symbols()).join(",") === [...browserFixture.wallet.nativeRows, ...browserFixture.wallet.tokenRows].map((row) => row.symbol).join(","), "wallet did not restore the full ordered fixture row set");
+      for (const row of await wallet.locator('tr[data-wallet-priced="false"]').all()) {
+        requireCondition(compactText(await row.locator("td").nth(3).innerText()) === "—" && compactText(await row.locator("td").nth(4).innerText()) === "—", "unpriced fixture quote/value invented a number");
+      }
+      requireCondition(await wallet.locator("tfoot").innerText() === total, "wallet uncheck changed full totals");
+      await toggle.check();
+      requireCondition((await symbols()).join(",") === "NATIVE-ONE,NATIVE-UNPRICED,TOKEN-ONE" && await wallet.locator("tfoot").innerText() === total, "wallet recheck changed default rows or full totals");
+    });
+    await check(`${prefix} populated page fits viewport and keeps numbers honest`, async () => {
+      const overflow = await page.evaluate(() => Math.max(document.body.scrollWidth, document.documentElement.scrollWidth) - document.documentElement.clientWidth);
+      requireCondition(overflow <= 1, `populated fixture overflows by ${overflow}px`);
+      requireCondition(!/\b(?:undefined|NaN|null)\b/.test(await renderedText(page)), "populated fixture renders undefined/NaN/null");
+      return `${overflow}px horizontal overflow`;
+    });
+
+    if (!await navigate("older")) return;
+    await check(`${prefix} older history keeps enabled empty-period controls and restores All`, async () => {
+      const performance = page.locator(".pnl-performance");
+      for (const label of ["1M", "3M"]) {
+        const button = performance.getByRole("button", { name: label, exact: true });
+        requireCondition(await button.isEnabled(), `older-history period ${label} is disabled`);
+        await button.click();
+        requireCondition((await performance.innerText()).includes("No snapshots in this period") && await performance.locator(".pnl-chart-host").count() === 0, "empty selected period invents a history chart");
+      }
+      await performance.getByRole("button", { name: "All", exact: true }).click();
+      await performance.locator('[data-chart-ready="true"]').waitFor();
+      requireCondition(await performance.getAttribute("data-period-count") === "1", "All failed to restore older snapshot");
+      requireCondition((await calendar.locator(".pnl-calendar-detail").innerText()).includes("No snapshots this month"), "current empty month hides older-history state");
+      await calendar.getByRole("button", { name: "Previous recorded month", exact: true }).click();
+      await assertCalendarDetail(calendar, browserFixture.snapshots[0]);
+    });
+    if (!await navigate("empty")) return;
+    await check(`${prefix} empty history disables periods/days and states history starts today`, async () => {
+      requireCondition(await page.locator(".pnl-periods button:disabled").count() === 3, "empty fixture period controls are enabled");
+      requireCondition(await page.locator(".pnl-calendar-day:not(:disabled)").count() === 0, "empty fixture calendar invents a selectable record");
+      requireCondition((await page.locator(".pnl-performance").innerText()).includes("History starts today")
+        && (await calendar.locator(".pnl-calendar-detail").innerText()).includes("History starts today"), "empty history explanation is missing");
+    });
+    if (!await navigate("filtered-empty")) return;
+    await check(`${prefix} all-dust wallet explains filtered empty state through both toggles`, async () => {
+      const wallet = page.locator(".home-wallet-panel");
+      const total = await wallet.locator("tfoot").innerText();
+      requireCondition((await wallet.locator(".home-wallet-filtered-empty").innerText()).includes("All 3 wallet assets are hidden under $1"), "all-dust fixture empty explanation is missing");
+      await wallet.getByRole("checkbox").uncheck();
+      requireCondition(await wallet.locator("tr[data-wallet-kind]").count() === 3 && await wallet.locator("tfoot").innerText() === total, "all-dust uncheck dropped rows or changed totals");
+      await wallet.getByRole("checkbox").check();
+      requireCondition(await wallet.locator(".home-wallet-filtered-empty").count() === 1 && await wallet.locator("tfoot").innerText() === total, "all-dust recheck lost the filtered state or changed totals");
+    });
+    await check(`${prefix} populated/empty/live/legacy interactions keep browser console clean`, async () => {
+      requireCondition(browserErrors.length === 0, browserErrors.join(" | "));
+    });
+  } finally {
+    await page.close();
+  }
 }
 
 async function auditRoute(browser, route, viewport) {
@@ -985,6 +1220,18 @@ try {
     for (const route of routes) {
       await auditRoute(browser, route, viewport);
     }
+  }
+  let fixtureServer;
+  try {
+    const started = await check("committed independent browser fixtures build and start locally", async () => {
+      fixtureServer = await startUiFixtureServer();
+      return "scripts/__fixtures__/pnl-browser.json + real app components; temporary assets and ephemeral localhost port";
+    });
+    if (started) {
+      for (const viewport of viewports) await auditPopulatedFixtures(browser, fixtureServer.url, viewport);
+    }
+  } finally {
+    await fixtureServer?.close();
   }
 } finally {
   await browser.close();

@@ -63,7 +63,7 @@ Preserved: successful routes and `/asset-master` redirect; ≤1px body overflow;
 
 Expanded: all these route-level contracts now also cover `/login` and both viewport sizes; both directions of Home and registry dust toggles are checked, with exact raw USD threshold at $1 additionally verified by pure and populated browser fixtures; native unknown-price visibility and full totals are checked; seven source keys and badges are checked; P&L none/partial/complete, unknown basis, free acquisitions and every exclusion reason are checked; history empty controls and populated period/calendar interactions are checked. Legacy-only charts no longer falsely require a nonexistent live point.
 
-Final production harness: **158/158 checks passed**. No original behavioral requirement was dropped. No pre-existing unit test was modified; new suites add pure mapping/view and rendered financial-state coverage.
+Initial production harness: **158/158 checks passed**. Independent review subsequently found that live-marker availability was gated by the UI's own legend and could miss a hidden known live value. The review fix pass below records the restored independent-data contract. No pre-existing unit test was modified; new suites add pure mapping/view and rendered financial-state coverage.
 
 ## Risks and post-merge live verification
 
@@ -193,4 +193,93 @@ PASS | Toolbar final CSS inspection — 6/6 narrow-route checks passed
 PASS | Populated component browser QA — 64/64 checks passed
 ```
 
-Screenshots and standalone fixture bundles were created only under `/tmp`; no screenshot artifacts or fixture routes were added to the repository.
+During the initial run, screenshots and standalone fixture bundles were created only under `/tmp`; no screenshot artifacts or fixture routes were added to the repository. Reusable data from those fixtures is addressed in the review fix pass below.
+
+## Run 2 review fix pass — `BRIEF-PNL-UI-FIX.md`
+
+Review round: the independent Run 2 review returned `passed:false` for chart recovery and the live-marker contract. This pass is limited to those findings, their regression/interaction coverage, and reusable synthetic browser fixture data. The revert path remains tag `pre-pnl-ui-2026-09-05` plus `backups/site-pre-pnl-ui-2026-09-05/`.
+
+### Finding dispositions
+
+1. **FIXED — same-period chart recovery:** `app/pnl-history-panels.tsx` includes `chartError` in the drawing effect dependencies and guards the error state. Clearing the error now initializes the chart host even when period and memoized observations are unchanged. `lib/pnl-chart-retry.test.ts` exercises real React and Plottable in Chromium: inject one draw failure, observe the unavailable state, click the already-selected **All**, and verify a second draw with a ready SVG, two axes and 15 data points while the same eight observations, table and selection remain unchanged. The regression failed on the original code at the recovered-SVG wait and passed with the two-line fix. React may reuse the underlying div; the test verifies initialization and drawing rather than DOM node identity.
+2. **FIXED — independent live-marker availability:** `assertPortfolioChart` and `auditPopulatedFixtures` in `scripts/ui-contract-check.mjs` require a known positive USD/THB total with live source states from committed JSON. The real `PortfolioPage` and `PortfolioChart` render with fixture data boundaries; the harness checks the visible marker's exact date/as-of/USD/THB datum and exact KPI/register values. A missing host fails before the empty-state return. Negative controls deliberately hide the marker and mark its legend unavailable, then remove the host: both must be rejected. Independently unavailable data still passes with its real legacy points and no live marker.
+3. **DOCUMENTED — native/token filter semantics:** a one-line comment at the Home default-filter assertion in `scripts/ui-contract-check.mjs` explains: **“Unknown-price native balances stay visible; unpriced tokens are hidden by the existing dust filter.”** Application filtering is unchanged.
+4. **FIXED — populated calendar/period interaction coverage:** the generic populated-history check now fails on disabled period buttons instead of skipping them. Mandatory desktop and mobile fixtures exercise enabled **1M/3M/All** controls with **6/7/8** observations and repeated chart redraws; select recorded partial, unknown-basis and free-basis days; compare exact value, basis, P&L, percentage and coverage against JSON; and navigate September → August → September, checking the grid and selected observation. Unknown amounts remain dashes and known free basis remains zero without a percentage.
+5. **FIXED — reusable populated browser fixtures:** added `scripts/__fixtures__/pnl-browser.json` and `pnl-browser.html`. The JSON extracts synthetic history/wallet cases from `/tmp/portmanager-pnl-populated-qa/fixture.tsx` and adds known-live/legacy input. The free-basis observation is internally consistent at USD value 40, basis 0 and P&L 40. `scripts/ui-fixture-entry.tsx` mounts real app components; `scripts/ui-fixture-server.mjs` builds them in a temporary directory and serves an ephemeral localhost port. The existing UI harness runs the fixtures automatically; the retry test shares the same helper. Fixtures contain no credentials, real provider records, generated JavaScript bundles or screenshot binaries. No app fixture route or API route was added.
+
+### Printed review self-QA
+
+```text
+npm test
+RUN v4.1.10 /home/user/projects/portmanager
+Current-book P&L: costBasisUsd=null; pnlUsd=null; pnlPct=null; eligible=0.
+Test Files  10 passed (10)
+     Tests  112 passed (112)
+
+npm run lint
+/home/user/projects/portmanager/proxy.ts
+  19:10  warning  'b64urlEncode' is defined but never used  @typescript-eslint/no-unused-vars
+✖ 1 problem (0 errors, 1 warning)
+
+npm run build
+▲ Next.js 16.2.6 (Turbopack)
+✓ Compiled successfully in 4.8s
+Running TypeScript ...
+Finished TypeScript in 2.8s ...
+✓ Generating static pages using 7 workers (5/5) in 89ms
+Finalizing page optimization ...
+
+Route (app)
+┌ ƒ /
+├ ○ /_not-found
+├ ƒ /api/auth/callback
+├ ƒ /api/auth/login
+├ ƒ /api/auth/logout
+├ ƒ /asset-list
+├ ○ /asset-master
+├ ƒ /exchange-rate
+├ ○ /icon.svg
+├ ƒ /login
+└ ƒ /portfolio
+ƒ Proxy (Middleware)
+
+npm run start -- --hostname 127.0.0.1 --port 8125
+▲ Next.js 16.2.6
+- Local: http://127.0.0.1:8125
+- Network: http://127.0.0.1:8125
+✓ Ready in 62ms
+
+node scripts/ui-contract-check.mjs
+PASS | home retains all seven source statuses and unavailable-source honesty — all seven sources unavailable · P&L remains honest
+PASS | committed independent browser fixtures build and start locally — scripts/__fixtures__/pnl-browser.json + real app components; temporary assets and ephemeral localhost port
+PASS | desktop fixture populated/empty/live/legacy interactions keep browser console clean
+PASS | mobile fixture populated/empty/live/legacy interactions keep browser console clean
+PASS | UI contract summary — 201/201 checks passed
+```
+
+The prior 111 tests pass unchanged, plus the new same-period chart recovery regression. Both the regression and browser fixtures use already-installed Playwright/Chromium and Vite (provided by the existing Vitest installation); no dependency, package script or configuration changed.
+
+The full production UI run printed all **201/201** passing checks: the original 158 route checks plus fixture setup and 42 desktop/mobile fixture checks. External providers are unavailable in this environment; credentials and Neon configuration are absent. As in the initial run, the background start command used `NODE_OPTIONS=--import=/tmp/portmanager-pnl-offline.mjs`, which rejects external fetches without supplying provider responses. The separate committed synthetic fixtures prove populated behavior without changing production responses. Lint retains only the pre-existing warning in protected `proxy.ts`.
+
+### Printed assertions for findings #1, #2 and #4
+
+```text
+npm test -- lib/pnl-chart-retry.test.ts --reporter=verbose
+✓ lib/pnl-chart-retry.test.ts > redraws after a chart draw failure when retrying the SAME selected period with unchanged observations
+Test Files  1 passed (1)
+     Tests  1 passed (1)
+
+PASS | desktop fixture finding #2 known live source requires exact live marker and USD/THB value — independent source=live · USD 1250.50 · THB 45018.00 · exact live marker/KPI/register
+PASS | desktop fixture finding #2 rejects hidden live marker plus a false unavailable legend — negative control rejected; UI unavailable copy cannot waive known fixture data
+PASS | desktop fixture finding #2 rejects a missing host for independently known live data — negative control rejected before empty-state return
+PASS | desktop fixture finding #4 populated periods are enabled and filter exact recorded rows — 1M/3M/All enabled · 6/7/8 exact observations · repeated period changes draw charts
+PASS | desktop fixture finding #4 clicking 2026-09-01 shows exact recorded USD/THB and coverage — 2026-09-01 · value US$1,100.00 / ฿39,600.00 · P&L US$200.00 / ฿7,200.00 · partial 2/3
+PASS | desktop fixture finding #4 clicking 2026-09-02 shows exact recorded USD/THB and coverage — 2026-09-02 · value US$1,200.00 / ฿43,200.00 · P&L — / — · partial 0/3
+PASS | desktop fixture finding #4 clicking 2026-09-03 shows exact recorded USD/THB and coverage — 2026-09-03 · value US$40.00 / ฿1,440.00 · P&L US$40.00 / ฿1,440.00 · complete 1/1
+PASS | desktop fixture finding #4 previous/next month changes grid and exact selected observation — September → August (2026-08-31) → September (2026-09-05); exact grid/value/basis/P&L/coverage
+PASS | mobile fixture finding #2 known live source requires exact live marker and USD/THB value — independent source=live · USD 1250.50 · THB 45018.00 · exact live marker/KPI/register
+PASS | mobile fixture finding #4 populated periods are enabled and filter exact recorded rows — 1M/3M/All enabled · 6/7/8 exact observations · repeated period changes draw charts
+PASS | mobile fixture finding #4 previous/next month changes grid and exact selected observation — September → August (2026-08-31) → September (2026-09-05); exact grid/value/basis/P&L/coverage
+```
+
+Independent read-only review of this fix pass returned **PASS**, with no blocking findings. `git diff --check` passed. Protected auth, archive/data-core/dust files, package manifests/lockfile and all configs have no diff against the initial Run 2 commit. Delivery is confined to `feat/pnl-astra-ui`; no deployment or main-branch push. Existing unrelated untracked briefs, reports, backups and screenshots remain outside the commit.
