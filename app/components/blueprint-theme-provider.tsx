@@ -1,7 +1,7 @@
 "use client";
 
-import { BlueprintProvider, Classes } from "@blueprintjs/core";
+import { BlueprintProvider } from "@blueprintjs/core";
 
 export function BlueprintThemeProvider({ children }: { children: React.ReactNode }) {
-  return <BlueprintProvider portalClassName={Classes.DARK}>{children}</BlueprintProvider>;
+  return <BlueprintProvider>{children}</BlueprintProvider>;
 }

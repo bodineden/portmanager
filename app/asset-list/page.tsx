@@ -11,6 +11,7 @@ import {
   type SourceStatus,
 } from "@/lib/live-data";
 import "./asset-list.css";
+import { snapshotFiatUsd } from "@/lib/pnl-view";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -70,6 +71,7 @@ export default async function AssetListPage() {
     valueUsd: holding.valueUsd,
     valueUsdText: formatUsd(holding.valueUsd),
     valueThb: formatThb(holding.valueThb),
+    priced: portfolio.fx.ethToUsd !== null,
   }));
   const walletTokenRows = walletTokens.map((holding) => ({
     id: `${holding.chainId}:${holding.contract?.toLowerCase() ?? holding.symbol}`,
@@ -130,7 +132,7 @@ export default async function AssetListPage() {
               <span className={`asset-source-light is-${registryState}`} aria-hidden="true" />
               {registryState === "live" ? "ALL FEEDS LIVE" : registryState === "partial" ? "PARTIAL LIVE DATA" : "FEEDS UNAVAILABLE"}
             </span>
-            <Link href="/" className="toolbar-link">Command Center</Link>
+            <Link href="/" className="toolbar-link">P&L Center</Link>
             <Link href="/asset-list" aria-label="Refresh live registry" title="Refresh live registry" className="refresh-link">R</Link>
           </div>
         </header>
@@ -138,10 +140,10 @@ export default async function AssetListPage() {
         <div className="page-content asset-list-content">
           <section className="asset-registry-hero" aria-labelledby="asset-registry-total">
             <div className="asset-registry-hero-copy">
-              <p className="eyebrow">JOINED LIVE VALUE / THB BASE</p>
-              <h2 id="asset-registry-total" className="asset-registry-value numeric">{formatThb(portfolio.totals.grandTotalThb)}</h2>
+              <p className="eyebrow">JOINED LIVE VALUE / USD</p>
+              <h2 id="asset-registry-total" className="asset-registry-value numeric">{formatUsd(portfolio.totals.grandTotalUsd)}</h2>
               <div className="asset-registry-secondary">
-                <span><small>USD</small><strong className="numeric">{formatUsd(portfolio.totals.grandTotalUsd)}</strong></span>
+                <span><small>THB EQUIVALENT</small><strong className="numeric">{formatThb(portfolio.totals.grandTotalThb)}</strong></span>
                 <span><small>NFT VALUE</small><strong className="numeric">{formatEth(portfolio.totals.nftsEth)}</strong></span>
                 <span><small>SNAPSHOT</small><strong className="mono">{formatTimestamp(portfolio.asOf)}</strong></span>
               </div>
@@ -151,18 +153,18 @@ export default async function AssetListPage() {
           <section className="asset-registry-kpis" aria-label="Live registry summary">
             <article className="panel asset-registry-kpi is-primary">
               <span className="asset-kpi-index">01 / T212 ACCOUNT</span>
-              <strong className="numeric">{formatThb(portfolio.totals.t212Thb)}</strong>
-              <small>{formatCurrency(portfolio.t212.totalValue, accountCurrency)} total value</small>
+              <strong className="numeric">{formatUsd(snapshotFiatUsd(portfolio.t212.totalValue, accountCurrency, portfolio.fx))}</strong>
+              <small>{formatThb(portfolio.totals.t212Thb)} · {formatCurrency(portfolio.t212.totalValue, accountCurrency)} in account</small>
             </article>
             <article className="panel asset-registry-kpi">
               <span className="asset-kpi-index">02 / CASH AVAILABLE</span>
-              <strong className="numeric">{formatCurrency(portfolio.t212.cashAvailable, accountCurrency)}</strong>
-              <small>{accountCurrency ?? "—"} · available to trade</small>
+              <strong className="numeric">{formatUsd(snapshotFiatUsd(portfolio.t212.cashAvailable, accountCurrency, portfolio.fx))}</strong>
+              <small>{formatCurrency(portfolio.t212.cashAvailable, accountCurrency)} in account · cash has no P&L</small>
             </article>
             <article className="panel asset-registry-kpi">
               <span className="asset-kpi-index">03 / NFT PORT</span>
-              <strong className="numeric">{formatThb(portfolio.totals.nftsThb)}</strong>
-              <small>{formatEth(portfolio.totals.nftsEth)} · {formatUsd(portfolio.totals.nftsUsd)}</small>
+              <strong className="numeric">{formatUsd(portfolio.totals.nftsUsd)}</strong>
+              <small>{formatThb(portfolio.totals.nftsThb)} · {formatEth(portfolio.totals.nftsEth)}</small>
             </article>
             <article className="panel asset-registry-kpi">
               <span className="asset-kpi-index">04 / LIVE REGISTRY</span>
@@ -218,15 +220,18 @@ export default async function AssetListPage() {
               </div>
               <div>
                 <span>CASH AVAILABLE</span>
-                <strong className="numeric">{formatCurrency(portfolio.t212.cashAvailable, accountCurrency)}</strong>
+                <strong className="numeric">{formatUsd(snapshotFiatUsd(portfolio.t212.cashAvailable, accountCurrency, portfolio.fx))}</strong>
+                <small>{formatCurrency(portfolio.t212.cashAvailable, accountCurrency)} in account</small>
               </div>
               <div>
                 <span>INVESTMENTS</span>
-                <strong className="numeric">{formatCurrency(portfolio.t212.investmentsCurrentValue, accountCurrency)}</strong>
+                <strong className="numeric">{formatUsd(snapshotFiatUsd(portfolio.t212.investmentsCurrentValue, accountCurrency, portfolio.fx))}</strong>
+                <small>{formatCurrency(portfolio.t212.investmentsCurrentValue, accountCurrency)} in account</small>
               </div>
               <div>
                 <span>TOTAL VALUE</span>
-                <strong className="numeric">{formatCurrency(portfolio.t212.totalValue, accountCurrency)}</strong>
+                <strong className="numeric">{formatUsd(snapshotFiatUsd(portfolio.t212.totalValue, accountCurrency, portfolio.fx))}</strong>
+                <small>{formatThb(portfolio.totals.t212Thb)} · {formatCurrency(portfolio.t212.totalValue, accountCurrency)} in account</small>
               </div>
             </div>
 
@@ -272,8 +277,8 @@ export default async function AssetListPage() {
                       <th scope="col" className="asset-cell-right">Average cost</th>
                       <th scope="col" className="asset-cell-right">Current price</th>
                       <th scope="col" className="asset-cell-right">Native value</th>
-                      <th scope="col" className="asset-cell-right">Value (THB)</th>
-                      <th scope="col" className="asset-cell-right">P/L</th>
+                      <th scope="col" className="asset-cell-right">Value (USD / THB)</th>
+                      <th scope="col" className="asset-cell-right">P&L (USD / THB)</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -287,9 +292,11 @@ export default async function AssetListPage() {
                         <td className="asset-cell-right numeric">{formatCurrency(position.averagePrice, position.currency)}</td>
                         <td className="asset-cell-right numeric">{formatCurrency(position.currentPrice, position.currency)}</td>
                         <td className="asset-cell-right numeric">{formatCurrency(position.valueNative, position.currency)}</td>
-                        <td className="asset-cell-right numeric asset-thb-value">{formatThb(position.valueThb)}</td>
-                        <td className={`asset-cell-right numeric ${position.ppl === null ? "muted" : position.ppl >= 0 ? "positive" : "negative"}`}>
-                          {formatCurrency(position.ppl, position.pplCurrency ?? accountCurrency)}
+                        <td className="asset-cell-right numeric asset-usd-value">{formatUsd(position.valueUsd)}<small>{formatThb(position.valueThb)}</small></td>
+                        <td title={position.basisNote} className={`asset-cell-right numeric ${position.pnlEligibility === "unreconciled" ? "warning" : position.pnlUsd === null ? "muted" : position.pnlUsd >= 0 ? "positive" : "negative"}`}>
+                          {formatUsd(position.pnlUsd)}<small>{formatThb(position.pnlThb)}</small>
+                          {position.pnlEligibility === "unreconciled" ? <small>Unreconciled · excluded from totals</small> : null}
+                          {position.basisStatus === "not-recorded" ? <small>Basis not recorded</small> : null}
                         </td>
                       </tr>
                     ))}
@@ -360,7 +367,7 @@ export default async function AssetListPage() {
                         <td className="asset-cell-right numeric">{holding.tokenCount.toLocaleString("en-US")}</td>
                         <td className="asset-cell-right numeric">{holding.floorEth === null ? "—" : `${formatNumber(holding.floorEth, 8)} ETH`}</td>
                         <td className="asset-cell-right numeric">{formatEth(holding.valueEth)}</td>
-                        <td className="asset-cell-right numeric">{formatUsd(holding.valueUsd)}</td>
+                        <td className="asset-cell-right numeric asset-usd-value">{formatUsd(holding.valueUsd)}</td>
                         <td className="asset-cell-right numeric asset-thb-value">{formatThb(holding.valueThb)}</td>
                       </tr>
                     ))}
@@ -400,8 +407,8 @@ export default async function AssetListPage() {
           </section>
 
           <aside className="asset-legacy-note">
-            <span>LEGACY (retired scraped era)</span>
-            <p>Retired assets remain in Neon for historical continuity only. They are excluded from this live registry, and all add, update, delete, recover, and manual-price controls have been removed from the rendered page.</p>
+            <span>HISTORICAL CONTEXT</span>
+            <p>The legacy holdings ledger is available on Portfolio for historical context. This read-only registry shows only the current live snapshot.</p>
           </aside>
         </div>
       </section>

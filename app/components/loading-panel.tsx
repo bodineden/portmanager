@@ -3,9 +3,9 @@ export function LoadingPanel({ label = "Loading workspace..." }: { label?: strin
     <main className="loading-canvas">
       <section className="loading-panel">
         <span className="loading-radar" aria-hidden="true"><span /></span>
-        <p className="eyebrow">SYSTEM REQUEST</p>
+        <p className="eyebrow">PORTFOLIO WORKSPACE</p>
         <h1>{label}</h1>
-        <p>Synchronizing the latest portfolio workspace state.</p>
+        <p>Reading the latest portfolio snapshot.</p>
       </section>
     </main>
   );

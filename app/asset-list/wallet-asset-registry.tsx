@@ -18,6 +18,7 @@ type WalletNativeRowView = {
   valueUsd: number | null;
   valueUsdText: string;
   valueThb: string;
+  priced: boolean;
 };
 
 type WalletTokenRowView = {
@@ -75,7 +76,7 @@ export function WalletAssetRegistry({
         <div>
           <p className="eyebrow">EVM WALLET / NATIVE + ERC-20</p>
           <h2 className="panel-title">Live Wallet Asset Registry</h2>
-          <p className="panel-subtitle">Positive native coin and token balances across the managed EVM chains</p>
+          <p className="panel-subtitle">Positive native coin and token balances. Full-set totals include hidden assets.</p>
         </div>
         <div className="asset-panel-status">
           <span className="asset-wallet-source-label">
@@ -136,8 +137,13 @@ export function WalletAssetRegistry({
               </tr>
             </thead>
             <tbody>
+              {visibleCount === 0 ? (
+                <tr className="asset-wallet-filtered-empty">
+                  <td colSpan={7}>All wallet assets are hidden by the under-$1 filter. Full-set priced totals remain below.</td>
+                </tr>
+              ) : null}
               {visibleNativeRows.map((holding) => (
-                <tr key={holding.id} data-wallet-kind="native">
+                <tr key={holding.id} data-wallet-kind="native" data-wallet-priced={holding.priced ? "true" : "false"}>
                   <td><span className="ticker-badge">{holding.symbol}</span></td>
                   <td>
                     <strong className="asset-collection-name">{holding.chainName}</strong>
@@ -146,7 +152,7 @@ export function WalletAssetRegistry({
                   <td><span className="data-tag">NATIVE</span></td>
                   <td className="asset-cell-right numeric">{holding.amount}</td>
                   <td className="asset-cell-right numeric">{holding.priceUsd}</td>
-                  <td className="asset-cell-right numeric">{holding.valueUsdText}</td>
+                  <td className="asset-cell-right numeric asset-usd-value">{holding.valueUsdText}</td>
                   <td className="asset-cell-right numeric asset-thb-value">{holding.valueThb}</td>
                 </tr>
               ))}
@@ -172,7 +178,7 @@ export function WalletAssetRegistry({
                   </td>
                   <td className="asset-cell-right numeric">{holding.amount}</td>
                   <td className="asset-cell-right numeric">{holding.priceUsd}</td>
-                  <td className="asset-cell-right numeric">{holding.valueUsdText}</td>
+                  <td className="asset-cell-right numeric asset-usd-value">{holding.valueUsdText}</td>
                   <td className="asset-cell-right numeric asset-thb-value">{holding.valueThb}</td>
                 </tr>
               ))}

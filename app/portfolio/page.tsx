@@ -10,6 +10,7 @@ import {
 } from "@/lib/live-data";
 import { PortfolioChart } from "./portfolio-chart";
 import "./portfolio.css";
+import { snapshotFiatUsd } from "@/lib/pnl-view";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -74,7 +75,7 @@ export default async function PortfolioPage() {
       change: index === 0 ? null : point.valueThb - legacyPoints[index - 1].valueThb,
     }))
     .reverse();
-  const liveValueAvailable = portfolio.totals.grandTotalThb !== null;
+  const liveValueAvailable = portfolio.totals.grandTotalUsd !== null;
   const legacyRange = legacyPoints.length > 0
     ? `${shortDate(legacyPoints[0].date)} → ${shortDate(legacyPoints.at(-1)!.date)}`
     : legacyHistory.status === "not-configured"
@@ -89,16 +90,16 @@ export default async function PortfolioPage() {
       <section className="workspace-main">
         <header className="page-header">
           <div className="page-title-group">
-            <p className="eyebrow">ANALYTICS / LIVE JOINED PORT</p>
+            <p className="eyebrow">READ-ONLY ANALYTICS / LIVE PORTFOLIO</p>
             <h1 className="page-title">Portfolio Value</h1>
-            <p className="page-subtitle">Current T212 + NFT valuation, with the retired Neon series retained as non-comparable context</p>
+            <p className="page-subtitle">Live T212, NFT and wallet value, with the legacy series retained as separate historical context</p>
           </div>
           <div className="header-tools">
             <span className={`header-status ${liveValueAvailable ? "" : "is-partial"}`}>
               <span className="status-light" aria-hidden="true" />
-              {liveValueAvailable ? "LIVE JOINED" : "LIVE SOURCES PARTIAL"} · {formatAsOf(portfolio.asOf)} UTC
+              {liveValueAvailable ? "LIVE JOINED" : "LIVE VALUE UNAVAILABLE"} · {formatAsOf(portfolio.asOf)} UTC
             </span>
-            <Link href="/" className="toolbar-link">Command Center</Link>
+            <Link href="/" className="toolbar-link">P&L Center</Link>
           </div>
         </header>
 
@@ -107,22 +108,22 @@ export default async function PortfolioPage() {
             <article className={`portfolio-kpi-card live-edge ${liveValueAvailable ? "" : "unavailable-edge"}`}>
               <span className="metric-index">01 / LIVE JOINED</span>
               <span className="metric-label">Current Value</span>
-              <strong className="metric-value">{formatThb(portfolio.totals.grandTotalThb)}</strong>
-              <small>{formatUsd(portfolio.totals.grandTotalUsd)} · THB headline</small>
+              <strong className="metric-value">{formatUsd(portfolio.totals.grandTotalUsd)}</strong>
+              <small>{formatThb(portfolio.totals.grandTotalThb)} · THB equivalent</small>
             </article>
             <article className="portfolio-kpi-card">
               <span className="metric-index">02 / T212 LIVE</span>
               <span className="metric-label">Account Total</span>
-              <strong className="metric-value">{formatThb(portfolio.totals.t212Thb)}</strong>
+              <strong className="metric-value">{formatUsd(snapshotFiatUsd(portfolio.t212.totalValue, portfolio.t212.currency, portfolio.fx))}</strong>
               <small>
-                {formatCurrency(portfolio.t212.totalValue, portfolio.t212.currency)} · {portfolio.t212.investments.length.toLocaleString("en-US")} positions
+                {formatThb(portfolio.totals.t212Thb)} · {formatCurrency(portfolio.t212.totalValue, portfolio.t212.currency)} in account
               </small>
             </article>
             <article className="portfolio-kpi-card">
               <span className="metric-index">03 / NFT LIVE</span>
               <span className="metric-label">Wallet Floor Value</span>
-              <strong className="metric-value">{formatThb(portfolio.totals.nftsThb)}</strong>
-              <small>{formatEth(portfolio.totals.nftsEth)} · {formatUsd(portfolio.totals.nftsUsd)}</small>
+              <strong className="metric-value">{formatUsd(portfolio.totals.nftsUsd)}</strong>
+              <small>{formatThb(portfolio.totals.nftsThb)} · {formatEth(portfolio.totals.nftsEth)}</small>
             </article>
             <article className="portfolio-kpi-card legacy-edge">
               <span className="metric-index">04 / LEGACY CONTEXT</span>
@@ -138,6 +139,7 @@ export default async function PortfolioPage() {
               date: liveDate,
               asOf: portfolio.asOf,
               valueThb: portfolio.totals.grandTotalThb,
+              valueUsd: portfolio.totals.grandTotalUsd,
             }}
           />
 
@@ -146,7 +148,7 @@ export default async function PortfolioPage() {
               <div>
                 <p className="eyebrow">VALUATION LEDGER / TWO ERAS</p>
                 <h2 className="panel-title">Snapshot Register</h2>
-                <p className="panel-subtitle">Live joined value is not compared with the retired holdings ledger.</p>
+                <p className="panel-subtitle">Live values are USD first. Legacy records retain their original THB units; historical USD was not recorded.</p>
               </div>
               <span className="panel-count">1 LIVE · {legacyPoints.length} LEGACY</span>
             </div>
@@ -157,7 +159,7 @@ export default async function PortfolioPage() {
                     <th>Series</th>
                     <th>Snapshot</th>
                     <th>Coverage</th>
-                    <th className="numeric">Value (THB)</th>
+                    <th className="numeric">Value (USD / THB)</th>
                     <th className="numeric">Within-series change</th>
                   </tr>
                 </thead>
@@ -168,8 +170,8 @@ export default async function PortfolioPage() {
                       <span className="ledger-date">{shortDate(liveDate)}</span>
                       <small>{formatAsOf(portfolio.asOf)} UTC</small>
                     </td>
-                    <td><span className="coverage-primary">T212 + NFT wallet</span><small>Current API snapshot</small></td>
-                    <td className="numeric value-cell">{formatThb(portfolio.totals.grandTotalThb)}</td>
+                    <td><span className="coverage-primary">T212 + NFT + wallet</span><small>Current live snapshot</small></td>
+                    <td className="numeric value-cell">{formatUsd(portfolio.totals.grandTotalUsd)}<small>{formatThb(portfolio.totals.grandTotalThb)}</small></td>
                     <td className="numeric muted">Not compared</td>
                   </tr>
                   {legacyRows.map((point) => (
@@ -177,7 +179,7 @@ export default async function PortfolioPage() {
                       <td><span className="series-badge is-legacy">LEGACY</span></td>
                       <td><span className="ledger-date">{shortDate(point.date)}</span><small>{point.date}</small></td>
                       <td><span className="coverage-primary">Retired holdings ledger</span><small>{point.holdingCount.toLocaleString("en-US")} holdings</small></td>
-                      <td className="numeric value-cell legacy-value">{formatThb(point.valueThb)}</td>
+                      <td className="numeric value-cell legacy-value">—<small>{formatThb(point.valueThb)} · original THB record</small></td>
                       <td className={`numeric ${point.change === null ? "muted" : point.change >= 0 ? "positive" : "negative"}`}>
                         {formatLegacyChange(point.change)}
                       </td>
@@ -186,7 +188,7 @@ export default async function PortfolioPage() {
                   {legacyPoints.length === 0 ? (
                     <tr className="legacy-empty-row">
                       <td><span className="series-badge is-legacy">LEGACY</span></td>
-                      <td colSpan={4} className="portfolio-empty-cell">{legacyRange}. The live joined snapshot above remains available.</td>
+                      <td colSpan={4} className="portfolio-empty-cell">{legacyRange}. Live source availability is reported separately above.</td>
                     </tr>
                   ) : null}
                 </tbody>

@@ -150,7 +150,7 @@ export function WalletBalancesPanel({
                 </tr>
               ) : null}
               {visibleNativeRows.map((holding) => (
-                <tr key={holding.id} data-wallet-kind="native">
+                <tr key={holding.id} data-wallet-kind="native" data-wallet-priced={holding.valueUsd !== null ? "true" : "false"}>
                   <td>
                     <span className="ticker-cell">{holding.symbol}</span>
                     <small className="sub-cell">{holding.chainName} · CHAIN {holding.chainId}</small>
@@ -158,8 +158,8 @@ export function WalletBalancesPanel({
                   <td><span className="data-tag">NATIVE</span></td>
                   <td className="numeric">{holding.amount}</td>
                   <td className="numeric">{holding.priceUsd}</td>
-                  <td className="numeric">{holding.valueUsdText}</td>
-                  <td className="numeric value-cell">{holding.valueThb}</td>
+                  <td className="numeric value-cell">{holding.valueUsdText}</td>
+                  <td className="numeric muted">{holding.valueThb}</td>
                 </tr>
               ))}
               {visibleTokenRows.map((holding) => (
@@ -180,8 +180,8 @@ export function WalletBalancesPanel({
                   </td>
                   <td className="numeric">{holding.amount}</td>
                   <td className="numeric">{holding.priceUsd}</td>
-                  <td className="numeric">{holding.valueUsdText}</td>
-                  <td className="numeric value-cell">{holding.valueThb}</td>
+                  <td className="numeric value-cell">{holding.valueUsdText}</td>
+                  <td className="numeric muted">{holding.valueThb}</td>
                 </tr>
               ))}
             </tbody>

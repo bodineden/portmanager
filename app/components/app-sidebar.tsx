@@ -21,7 +21,7 @@ export function AppSidebar({ active, email }: { active: ActivePage; email?: stri
         <span className="brand-mark">PM</span>
         <span className="brand-copy">
           <strong>Portfolio Manager</strong>
-          <small>CONTROL WORKSPACE</small>
+          <small>PORTFOLIO OVERVIEW</small>
         </span>
       </Link>
 
@@ -31,7 +31,7 @@ export function AppSidebar({ active, email }: { active: ActivePage; email?: stri
           const isActive = item.href.slice(1) === active || (item.href === "/" && active === "home");
 
           return (
-            <Link key={item.label} href={item.href} className={`nav-link${isActive ? " is-active" : ""}`} aria-current={isActive ? "page" : undefined}>
+            <Link key={item.label} href={item.href} className={`nav-link${isActive ? " is-active" : ""}`} aria-label={item.label} aria-current={isActive ? "page" : undefined}>
               <Icon icon={item.icon} size={16} />
               <span>{item.label}</span>
               {isActive ? <span className="nav-active-dot" aria-hidden="true" /> : null}
@@ -44,7 +44,7 @@ export function AppSidebar({ active, email }: { active: ActivePage; email?: stri
         <span className="status-orbit" aria-hidden="true"><span /></span>
         <span>
           <strong>PRIVATE WORKSPACE</strong>
-          <small>THB BASE CURRENCY</small>
+          <small>USD PRIMARY · THB SECONDARY</small>
         </span>
       </div>
 

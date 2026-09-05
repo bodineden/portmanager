@@ -1,19 +1,16 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import { Outfit } from "next/font/google";
 import "@blueprintjs/core/lib/css/blueprint.css";
 import "@blueprintjs/icons/lib/css/blueprint-icons.css";
 import "plottable/plottable.css";
 import "./globals.css";
 import { BlueprintThemeProvider } from "./components/blueprint-theme-provider";
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
+const outfit = Outfit({
+  variable: "--font-outfit",
   subsets: ["latin"],
-});
-
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
-  subsets: ["latin"],
+  display: "swap",
+  fallback: ["Arial", "sans-serif"],
 });
 
 export const metadata: Metadata = {
@@ -21,7 +18,7 @@ export const metadata: Metadata = {
     default: "PortManager — Portfolio Tracker",
     template: "%s | PortManager",
   },
-  description: "Track holdings, daily asset prices, exchange rates, and portfolio performance in Thai baht.",
+  description: "A private, read-only portfolio dashboard. Live values and recorded profit and loss in USD, with THB alongside.",
 };
 
 export default function RootLayout({
@@ -32,9 +29,9 @@ export default function RootLayout({
   return (
     <html
       lang="en"
-      className={`${geistSans.variable} ${geistMono.variable} bp6-dark`}
+      className={outfit.variable}
     >
-      <body className="bp6-dark">
+      <body>
         <BlueprintThemeProvider>
           <div className="app-root">{children}</div>
         </BlueprintThemeProvider>

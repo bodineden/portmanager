@@ -12,7 +12,7 @@ function errorMessage(searchParams: Record<string, string | string[] | undefined
     case "not_configured":
       return {
         title: "Sign-in not configured yet",
-        detail: "Google OAuth credentials are not set. Add GOOGLE_CLIENT_ID + GOOGLE_CLIENT_SECRET to the environment, then reload.",
+        detail: "Google sign-in is not available yet. Please contact an administrator.",
       };
     case "denied":
       return { title: "Sign-in cancelled", detail: "You closed the Google sign-in window. Try again when ready." };
@@ -26,7 +26,7 @@ function errorMessage(searchParams: Record<string, string | string[] | undefined
       const email = typeof searchParams.email === "string" ? searchParams.email : "that account";
       return {
         title: "Access denied",
-        detail: `${email} is not on the allowlist. If this is you, ask the owner to add your Gmail address.`,
+        detail: `${email} is not approved for this workspace. Please contact an administrator.`,
       };
     }
     default:
@@ -52,7 +52,7 @@ export default async function LoginPage({
           <span className="brand-mark">PM</span>
           <div className="login-brand-copy">
             <strong>Portfolio Manager</strong>
-            <small>PRIVATE CONTROL WORKSPACE</small>
+            <small>YOUR PRIVATE PORTFOLIO</small>
           </div>
         </div>
 

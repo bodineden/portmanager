@@ -1,6 +1,7 @@
 import { neon } from "@neondatabase/serverless";
 import { isNeonConfigured, PORTFOLIO_SNAPSHOT_DDL } from "./assets-db";
 import type { JoinedPortfolio } from "./live-data";
+import type { PnlCoverage } from "./pnl";
 
 export type SnapshotDb = { query: (text: string, params?: unknown[], signal?: AbortSignal) => Promise<unknown> };
 export type SnapshotRecorderOptions = {
@@ -75,3 +76,118 @@ export function createSnapshotRecorder(options: SnapshotRecorderOptions = {}) {
 
 /** Production singleton: no DB construction, DDL or IO until configured and eligible. */
 export const recordPortfolioSnapshot = createSnapshotRecorder();
+
+/** First qualifying observation of a UTC date; these are not market closes. */
+export type PortfolioSnapshot = {
+  date: string;
+  totalValueUsd: number | null;
+  totalValueThb: number | null;
+  costBasisUsd: number | null;
+  costBasisThb: number | null;
+  pnlUsd: number | null;
+  pnlThb: number | null;
+  pnlPct: number | null;
+  coverage: PnlCoverage;
+};
+
+function snapshotNumber(value: unknown, nonNegative = false): number | null {
+  // PostgreSQL NUMERIC comes back as a string. Empty strings and booleans are
+  // missing data, not zero; no conversion or historical FX is inferred here.
+  if (typeof value !== "number" && (typeof value !== "string" || !/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/.test(value.trim()))) return null;
+  const number = Number(value);
+  return Number.isFinite(number) && (!nonNegative || number >= 0) ? number : null;
+}
+
+function snapshotDate(value: unknown): string | null {
+  const date = value instanceof Date && Number.isFinite(value.getTime()) ? value.toISOString().slice(0, 10) : value;
+  if (typeof date !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
+  const timestamp = Date.parse(`${date}T00:00:00.000Z`);
+  return Number.isFinite(timestamp) && new Date(timestamp).toISOString().slice(0, 10) === date ? date : null;
+}
+
+function snapshotCoverage(value: unknown): PnlCoverage | null {
+  let parsed = value;
+  if (typeof parsed === "string") {
+    try { parsed = JSON.parse(parsed); } catch { return null; }
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  const row = parsed as Record<string, unknown>;
+  const counts = ["totalHoldings", "eligible", "notRecorded", "dust", "unpriced", "unreconciled"] as const;
+  if (!counts.every((key) => typeof row[key] === "number" && Number.isSafeInteger(row[key]) && row[key] >= 0)
+    || (row.status !== "complete" && row.status !== "partial") || typeof row.sourcesComplete !== "boolean") return null;
+  const coverage: PnlCoverage = {
+    totalHoldings: row.totalHoldings as number,
+    eligible: row.eligible as number,
+    notRecorded: row.notRecorded as number,
+    dust: row.dust as number,
+    unpriced: row.unpriced as number,
+    unreconciled: row.unreconciled as number,
+    status: row.status,
+    sourcesComplete: row.sourcesComplete,
+  };
+  const excluded = coverage.notRecorded + coverage.dust + coverage.unpriced + coverage.unreconciled;
+  if (coverage.eligible + excluded !== coverage.totalHoldings
+    || (coverage.status === "complete" && (!coverage.sourcesComplete || excluded > 0))) return null;
+  return coverage;
+}
+
+/** Pure driver-row boundary. Invalid coverage/date cannot become a chart point. */
+export function mapPortfolioSnapshotRow(value: unknown): PortfolioSnapshot | null {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
+  const row = value as Record<string, unknown>;
+  const date = snapshotDate(row.snapshot_date);
+  const coverage = snapshotCoverage(row.coverage);
+  if (!date || !coverage) return null;
+  return {
+    date,
+    totalValueUsd: snapshotNumber(row.total_value_usd, true),
+    totalValueThb: snapshotNumber(row.total_value_thb, true),
+    costBasisUsd: snapshotNumber(row.cost_basis_usd, true),
+    costBasisThb: snapshotNumber(row.cost_basis_thb, true),
+    pnlUsd: snapshotNumber(row.pnl_usd),
+    pnlThb: snapshotNumber(row.pnl_thb),
+    pnlPct: snapshotNumber(row.pnl_pct),
+    coverage,
+  };
+}
+
+/** Pure normalization also guarantees ordering independently of the driver. */
+export function mapPortfolioSnapshotRows(rows: unknown): PortfolioSnapshot[] {
+  if (!Array.isArray(rows)) return [];
+  return rows.map(mapPortfolioSnapshotRow).filter((row): row is PortfolioSnapshot => row !== null)
+    .sort((a, b) => b.date.localeCompare(a.date));
+}
+
+export type SnapshotReaderOptions = Pick<SnapshotRecorderOptions, "hasDb" | "getDb" | "timeoutMs" | "log">;
+
+/** Read only: an absent table, bad connection or timeout is an empty history. */
+export function createSnapshotReader(options: SnapshotReaderOptions = {}) {
+  return async (): Promise<PortfolioSnapshot[]> => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      if (!(options.hasDb ?? isNeonConfigured)()) return [];
+      const db = (options.getDb ?? defaultDb)();
+      const controller = new AbortController();
+      const requestedTimeout = options.timeoutMs ?? 2_000;
+      const timeoutMs = Number.isFinite(requestedTimeout) && requestedTimeout > 0 && requestedTimeout <= 30_000 ? requestedTimeout : 2_000;
+      const timeout = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => { controller.abort(); reject(new Error("Snapshot read timed out")); }, timeoutMs);
+      });
+      const rows = await Promise.race([db.query(`
+        SELECT snapshot_date::text AS snapshot_date, total_value_usd, total_value_thb,
+          cost_basis_usd, cost_basis_thb, pnl_usd, pnl_thb, pnl_pct, coverage
+        FROM portfolio_snapshot
+        ORDER BY snapshot_date DESC
+      `, [], controller.signal), timeout]);
+      return mapPortfolioSnapshotRows(rows);
+    } catch {
+      try { (options.log ?? console.warn)("[portfolio_snapshot] History unavailable; page remains available."); } catch { /* Logging is fail-soft too. */ }
+      return [];
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+  };
+}
+
+/** No DB construction or IO without the existing Neon configuration gate. */
+export const listPortfolioSnapshots = createSnapshotReader();

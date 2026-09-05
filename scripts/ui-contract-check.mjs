@@ -20,6 +20,7 @@ const routes = [
   { name: "exchange-rate", path: "/exchange-rate", finalPaths: ["/exchange-rate"] },
   // This compatibility route intentionally redirects to the live registry.
   { name: "asset-master", path: "/asset-master", finalPaths: ["/asset-master", "/asset-list"] },
+  { name: "login", path: "/login", finalPaths: ["/login"] },
 ];
 
 const viewports = [
@@ -84,14 +85,18 @@ function parseDisplayedUsd(value) {
   return parsed;
 }
 
-async function readHomeWalletKpiCount(page) {
-  const text = compactText((await page
-    .locator('[aria-label="Joined live portfolio summary"] > .kpi-card')
-    .nth(3)
-    .textContent()) ?? "");
+async function readHomeWalletSummaryCount(page) {
+  const summary = page.locator("[data-wallet-summary-count]");
+  requireCondition(await summary.count() === 1, "full-set wallet summary is missing or duplicated");
+  const text = compactText((await summary.textContent()) ?? "");
   const match = text.match(/([\d,]+)\s+wallet assets?\b/i);
-  requireCondition(match, `wallet KPI count is missing: ${text}`);
-  return parseGroupedCount(match[1], "wallet KPI count");
+  requireCondition(match, `visible wallet summary count is missing: ${text}`);
+  const count = parseGroupedCount(match[1], "wallet summary count");
+  requireCondition(
+    await summary.getAttribute("data-wallet-summary-count") === String(count),
+    "wallet summary count differs from its visible label",
+  );
+  return count;
 }
 
 async function readHomeWalletPanelCounts(panel) {
@@ -118,7 +123,7 @@ async function readHomeWalletHeaderCounts(panel) {
 async function checkOwnershipLanguage(page, routeName) {
   const text = await renderedText(page);
 
-  await check(`${routeName} renders no investor names`, async () => {
+  await check(`${routeName} renders no owner/investor names or language`, async () => {
     for (const owner of removedOwnerNames) {
       requireCondition(!new RegExp(`\\b${owner}\\b`).test(text), `${owner} is rendered`);
     }
@@ -126,13 +131,217 @@ async function checkOwnershipLanguage(page, routeName) {
       requireCondition(!text.includes(retiredName), `retired demo investor ${retiredName} is rendered`);
     }
     requireCondition(!text.toUpperCase().includes(removedOwnershipLabel), `${removedOwnershipLabel} is rendered`);
+    requireCondition(!/\b(?:investors?|owners?|ownership)\b/i.test(text), "owner/investor language is rendered");
     requireCondition(!/\b(?:pending\s+migration|migration|demo(?:nstration)?)\b/i.test(text), "migration/demo wording is rendered");
   });
 }
 
+async function checkPnlContract(page) {
+  await check("home follows the P&L-center section order", async () => {
+    const selectors = [
+      ".pnl-value-hero", ".pnl-metric-strip", ".pnl-performance", ".pnl-allocation",
+      ".pnl-calendar", ".pnl-assets", ".pnl-source-strip",
+    ];
+    for (const selector of selectors) {
+      requireCondition(await page.locator(selector).count() === 1, `${selector} is missing or duplicated`);
+    }
+    const ordered = await page.evaluate((sectionSelectors) => sectionSelectors.every((selector, index) => {
+      if (index === 0) return true;
+      const previous = document.querySelector(sectionSelectors[index - 1]);
+      const current = document.querySelector(selector);
+      return Boolean(previous && current && (previous.compareDocumentPosition(current) & Node.DOCUMENT_POSITION_FOLLOWING));
+    }), selectors);
+    requireCondition(ordered, "P&L-center sections differ from the brief's order");
+  });
+
+  await check("home P&L summary distinguishes none, partial and complete honestly", async () => {
+    const summary = page.locator("[data-pnl-summary]");
+    requireCondition(await summary.count() === 1, "P&L summary is missing or duplicated");
+    const state = await summary.getAttribute("data-pnl-state");
+    requireCondition(["none", "partial", "complete"].includes(state), `invalid P&L summary state ${state}`);
+    const text = compactText((await summary.textContent()) ?? "");
+    requireCondition(/P&L \(recorded\)/i.test(text), "P&L is not identified as recorded");
+    if (state === "none") {
+      const unreconciledCount = await page.locator('.pnl-assets tr[data-pnl-eligibility="unreconciled"]').count();
+      requireCondition(unreconciledCount > 0
+        ? /Recorded P&L unavailable.*unreconciled holdings are excluded/i.test(text)
+        : /No recorded cost basis/i.test(text), "unavailable P&L explanation does not match the known basis evidence");
+      requireCondition(/P&L unavailable|P&L not computable/i.test(text), "P&L unavailability is not explicit");
+      requireCondition(text.includes("—"), "unknown P&L is not displayed as —");
+      requireCondition(!/(?:\$|฿|USD\s*|THB\s*)[+-]?0(?:\.0+)?(?![\d.])|[+-]?0(?:\.0+)?%/.test(text), "unknown P&L is displayed as zero");
+    } else if (state === "partial") {
+      requireCondition(/Partial P&L/i.test(text), "partial eligible-subset P&L is not identified");
+      requireCondition(/\d[\d,]* of \d[\d,]* holdings have recorded basis/i.test(text), "partial P&L omits its holding coverage");
+    } else {
+      requireCondition(/complete|all holdings/i.test(text), "complete P&L coverage is not identified");
+    }
+    const daily = page.locator("[data-daily-change]");
+    requireCondition(await daily.count() === 1, "daily-change state is missing or duplicated");
+    const dailyState = await daily.getAttribute("data-daily-change");
+    requireCondition(["available", "unavailable"].includes(dailyState), "daily-change availability is invalid");
+    if (dailyState === "unavailable") {
+      const metric = compactText((await daily.locator(".pnl-metric-line").textContent()) ?? "");
+      requireCondition(metric.includes("—") && !/\d/.test(metric), "unavailable daily change invents a value or percentage");
+      requireCondition(/Awaiting comparable snapshots/i.test((await daily.textContent()) ?? ""), "unavailable daily change lacks its history explanation");
+    }
+    return `P&L state: ${state}`;
+  });
+
+  await check("home per-asset P&L keeps unknown basis null and exclusions explicit", async () => {
+    const table = page.locator(".pnl-assets");
+    const rows = await table.locator("tr[data-basis-status]").evaluateAll((elements) => elements.map((element) => ({
+      status: element.getAttribute("data-basis-status"),
+      eligibility: element.getAttribute("data-pnl-eligibility"),
+      value: element.querySelector('[data-pnl-cell="value"]')?.textContent?.replace(/\s+/g, " ").trim() ?? "",
+      basis: element.querySelector('[data-pnl-cell="basis"]')?.textContent?.replace(/\s+/g, " ").trim() ?? "",
+      pnl: element.querySelector('[data-pnl-cell="pnl"]')?.textContent?.replace(/\s+/g, " ").trim() ?? "",
+      text: (element.textContent ?? "").replace(/\s+/g, " ").trim(),
+      note: element.getAttribute("title") || element.querySelector("[title]")?.getAttribute("title"),
+    })));
+    if (rows.length === 0) {
+      const text = compactText((await table.textContent()) ?? "");
+      requireCondition(/unavailable|no holdings|no joined holdings|no asset rows/i.test(text), "empty per-asset table lacks an explicit explanation");
+      return "no joined rows; unavailable/empty state remains explicit";
+    }
+    for (const row of rows) {
+      requireCondition(["t212-live", "onchain-derived", "airdrop-free", "not-recorded"].includes(row.status), `invalid basisStatus ${row.status}`);
+      requireCondition(["eligible", "not-recorded", "dust", "unpriced", "unreconciled"].includes(row.eligibility), `invalid pnlEligibility ${row.eligibility}`);
+      requireCondition(row.value.length > 0 && row.basis.length > 0 && row.pnl.length > 0, "P&L row omits value/basis/P&L cells");
+      requireCondition(row.text.includes(row.status), `basisStatus chip ${row.status} is not visible`);
+      requireCondition(Boolean(row.note?.trim()), `basis note tooltip is missing for ${row.status}`);
+      if (row.status === "not-recorded") {
+        requireCondition(/basis not recorded/i.test(row.text), "not-recorded row lacks an honest basis label");
+        for (const [name, value] of [["basis", row.basis], ["P&L", row.pnl]]) {
+          requireCondition(value.includes("—"), `unknown ${name} does not display —`);
+          requireCondition(!/(?:\$|฿|USD\s*|THB\s*)[+-]?0(?:\.0+)?(?![\d.])/.test(value), `unknown ${name} displays zero`);
+          requireCondition(!/[+-]?\d+(?:\.\d+)?%/.test(value), `unknown ${name} displays a percentage`);
+        }
+        requireCondition(row.eligibility !== "eligible", "not-recorded holding is marked eligible");
+      }
+      if (row.eligibility !== "eligible") {
+        requireCondition(/excluded/i.test(row.text), `${row.eligibility} row does not explain its exclusion`);
+      }
+      if (["dust", "unpriced", "unreconciled"].includes(row.eligibility)) {
+        requireCondition(new RegExp(row.eligibility, "i").test(row.text), `${row.eligibility} is not visually distinguished`);
+      }
+      if (row.eligibility === "unpriced") {
+        requireCondition(row.value.includes("—"), "unpriced current value is not —");
+        requireCondition(!/(?:\$|฿|USD\s*|THB\s*)[+-]?\d/.test(row.value), "unpriced row invents a current value");
+      }
+      if (row.status === "airdrop-free") {
+        requireCondition(/(?:\$|USD\s*)0(?:\.0+)?(?![\d.])/.test(row.basis), "verified free basis is not shown as zero USD");
+        requireCondition(!/[+-]?\d+(?:\.\d+)?%/.test(row.pnl), "zero-basis acquisition invents a P&L percentage");
+      }
+    }
+    const summaryState = await page.locator("[data-pnl-summary]").getAttribute("data-pnl-state");
+    if (rows.every((row) => row.eligibility !== "eligible")) {
+      requireCondition(summaryState === "none", "zero eligible holdings do not produce unavailable P&L");
+    }
+    if (summaryState === "complete") {
+      requireCondition(rows.every((row) => row.eligibility === "eligible"), "complete P&L includes excluded holdings");
+    }
+    return `${rows.length} joined rows · ${rows.filter((row) => row.status === "not-recorded").length} basis not recorded`;
+  });
+
+  await check("home performance uses snapshot history or the honest empty state", async () => {
+    const performance = page.locator(".pnl-performance");
+    const text = compactText((await performance.textContent()) ?? "");
+    requireCondition(/Performance/i.test(text), "performance title is missing");
+    const periods = performance.getByRole("group", { name: "Performance period", exact: true });
+    requireCondition(await periods.count() === 1, "accessible performance period group is missing");
+    for (const label of ["1M", "3M", "All"]) {
+      requireCondition(await periods.getByRole("button", { name: label, exact: true }).count() === 1, `period ${label} is missing or duplicated`);
+    }
+    const count = await performance.getAttribute("data-history-count");
+    requireCondition(count !== null, "performance snapshot count is missing");
+    const historyCount = parseGroupedCount(count, "performance history count");
+    if (historyCount === 0) {
+      requireCondition(/history starts today/i.test(text), "empty performance invents history or lacks the history-starts-today label");
+      for (const button of await periods.getByRole("button").all()) {
+        requireCondition(await button.isDisabled(), "empty-history period control is enabled");
+      }
+      requireCondition(await performance.locator(".axis").count() === 0, "empty performance renders chart axes with no observations");
+      return "history starts today · empty period controls disabled";
+    }
+    const summaryBefore = compactText((await page.locator("[data-pnl-summary]").textContent()) ?? "");
+    for (const label of ["1M", "3M", "All"]) {
+      const button = periods.getByRole("button", { name: label, exact: true });
+      if (await button.isDisabled()) continue;
+      await button.click();
+      await page.waitForFunction(() => {
+        const card = document.querySelector(".pnl-performance");
+        const chart = card?.querySelector("[data-chart-ready]");
+        return chart?.getAttribute("data-chart-ready") === "true"
+          || (!chart && /no snapshots? in (?:this|the selected) period|no recorded snapshots? in/i.test(card?.textContent ?? ""));
+      }, undefined, { timeout: 15_000 });
+      if (await performance.locator("[data-chart-ready]").count() > 0) {
+        requireCondition(await performance.locator(".axis").count() >= 2, "snapshot performance has no Plottable axes");
+      } else {
+        requireCondition(label !== "All", "All hides existing snapshot history");
+      }
+      requireCondition(compactText((await page.locator("[data-pnl-summary]").textContent()) ?? "") === summaryBefore, "period display filter changed current P&L totals");
+    }
+    return `${historyCount} snapshots · period controls preserve current totals`;
+  });
+
+  await check("home allocation remains value-based even when P&L is unavailable", async () => {
+    const allocation = page.locator(".pnl-allocation");
+    const text = compactText((await allocation.textContent()) ?? "");
+    requireCondition(/Allocation by class/i.test(text), "value allocation title is missing");
+    for (const label of ["T212", "NFT", "native", "tokens"]) {
+      requireCondition(new RegExp(label, "i").test(text), `allocation class ${label} is missing`);
+    }
+    requireCondition(/value|USD/i.test(text), "allocation is not identified as current value");
+  });
+
+  await check("home calendar displays recorded coverage or an honest empty month", async () => {
+    const calendar = page.locator(".pnl-calendar");
+    const text = compactText((await calendar.textContent()) ?? "");
+    requireCondition(/P&L calendar/i.test(text), "P&L calendar title is missing");
+    const count = await calendar.getAttribute("data-history-count");
+    requireCondition(count !== null, "calendar snapshot count is missing");
+    const historyCount = parseGroupedCount(count, "calendar history count");
+    const days = calendar.locator("[data-snapshot-date]");
+    requireCondition(await days.count() === historyCount, "calendar snapshot count differs from its recorded days");
+    if (historyCount === 0) {
+      requireCondition(/history starts today|no snapshots|no recorded snapshots/i.test(text), "empty month has no honest history explanation");
+      return "no recorded days; no historical P&L invented";
+    }
+    for (const day of await days.all()) {
+      const coverage = await day.getAttribute("data-snapshot-coverage");
+      requireCondition(["complete", "partial"].includes(coverage), "recorded calendar day lacks actual coverage");
+      const dayText = compactText((await day.textContent()) ?? "");
+      const accessibleText = `${dayText} ${await day.getAttribute("aria-label") ?? ""} ${await day.getAttribute("title") ?? ""}`;
+      requireCondition(new RegExp(coverage, "i").test(accessibleText), "calendar coverage is not readable");
+      requireCondition(/USD/i.test(accessibleText) && /THB/i.test(accessibleText), "calendar day omits explicit USD/THB units");
+      if (await day.getAttribute("data-pnl-available") === "false") {
+        requireCondition(dayText.includes("—"), "unknown calendar P&L does not display —");
+        const pnlLabel = ((await day.getAttribute("aria-label")) ?? "").split(/\bValue\b/)[0];
+        requireCondition(!/(?:\$|฿|USD\s*|THB\s*)[+-]?0(?:\.0+)?(?![\d.])/.test(pnlLabel), "unknown calendar P&L displays zero");
+      }
+    }
+    return `${historyCount} recorded days with per-day coverage`;
+  });
+
+  await check("home retains all seven source statuses and unavailable-source honesty", async () => {
+    const sources = page.locator(".pnl-source-strip [data-source-key]");
+    requireCondition(await sources.count() === 7, `expected seven sources, found ${await sources.count()}`);
+    const keys = await sources.evaluateAll((elements) => elements.map((element) => element.getAttribute("data-source-key")));
+    requireCondition(new Set(keys).size === 7, "source keys are duplicated");
+    for (const source of await sources.all()) {
+      requireCondition(/^(?:live|partial|unavailable)$/i.test(compactText((await source.locator(".live-source-badge").textContent()) ?? "")), "source has no readable availability status");
+    }
+    const allUnavailable = await sources.evaluateAll((elements) => elements.every((element) => element.querySelector(".live-source-badge")?.textContent?.trim() === "unavailable"));
+    if (allUnavailable) {
+      requireCondition(await page.locator("[data-pnl-summary]").getAttribute("data-pnl-state") === "none", "unavailable sources imply computable P&L");
+      requireCondition(/No recorded cost basis/i.test((await page.locator("[data-pnl-summary]").textContent()) ?? ""), "unavailable source fixture lacks the honest P&L empty state");
+    }
+    return allUnavailable ? "all seven sources unavailable · P&L remains honest" : "seven source statuses retained";
+  });
+}
+
 async function checkHomeContract(page) {
-  await checkOwnershipLanguage(page, "home");
-  await check("home renders no allocation language", async () => {
+  await check("home permits value allocation while banning retired ownership copy", async () => {
     const text = await renderedText(page);
     const forbiddenCopy = [
       removedOwnershipLabel,
@@ -145,12 +354,29 @@ async function checkHomeContract(page) {
     }
   });
 
-  await check("home preserves three KPIs and adds the non-NFT wallet KPI", async () => {
-    const cards = page.locator('[aria-label="Joined live portfolio summary"] > .kpi-card');
-    requireCondition(await cards.count() === 4, `expected 4 KPI cards, found ${await cards.count()}`);
-    const walletCardText = compactText((await cards.nth(3).textContent()) ?? "");
-    requireCondition(/04\s*\/\s*WALLET\s*\(NON-NFT\)/i.test(walletCardText), "wallet KPI label is missing");
-    requireCondition(/USD/i.test(walletCardText), "wallet KPI has no USD secondary value");
+  await check("home renders the USD-primary value hero and P&L metric strip", async () => {
+    const hero = page.locator(".pnl-value-hero");
+    requireCondition(await hero.count() === 1, "value hero is missing or duplicated");
+    const text = compactText((await hero.textContent()) ?? "");
+    requireCondition(/Portfolio value/i.test(text), "portfolio value label is missing");
+    requireCondition(/live joined portfolio/i.test(text), "live joined portfolio label is missing");
+    const primary = hero.locator('[data-value-currency="USD"]');
+    requireCondition(await primary.count() === 1, "value hero lacks its primary USD value");
+    requireCondition(/THB/i.test((await hero.locator(".pnl-secondary").textContent()) ?? ""), "value hero lacks its secondary THB value");
+    const usdFirst = await primary.evaluate((element) => {
+      const secondary = element.closest(".pnl-value-hero")?.querySelector(".pnl-secondary");
+      return Boolean(secondary && (element.compareDocumentPosition(secondary) & Node.DOCUMENT_POSITION_FOLLOWING));
+    });
+    requireCondition(usdFirst, "THB precedes USD in the value hero");
+    for (const label of ["T212", "NFT", "native", "tokens"]) {
+      requireCondition(new RegExp(label, "i").test(text), `class mini-value ${label} is missing`);
+    }
+    const strip = page.locator(".pnl-metric-strip");
+    requireCondition(await strip.count() === 1, "P&L metric strip is missing or duplicated");
+    const stripText = compactText((await strip.textContent()) ?? "");
+    requireCondition(/P&L \(recorded\)/i.test(stripText), "recorded P&L metric is missing");
+    requireCondition(/Daily change/i.test(stripText), "daily-change metric is missing");
+    await readHomeWalletSummaryCount(page);
   });
 
   await check("home wallet panel exposes both sources and the wallet table contract", async () => {
@@ -196,8 +422,8 @@ async function checkHomeContract(page) {
     const table = panel.locator(".home-wallet-table");
     const fullCounts = await readHomeWalletPanelCounts(panel);
     const fullCount = fullCounts.native + fullCounts.token;
-    const kpiCount = await readHomeWalletKpiCount(page);
-    requireCondition(fullCount === kpiCount, `panel has ${fullCount} total rows but wallet KPI reports ${kpiCount}`);
+    const summaryCount = await readHomeWalletSummaryCount(page);
+    requireCondition(fullCount === summaryCount, `panel has ${fullCount} total rows but wallet summary reports ${summaryCount}`);
 
     if (await table.count() === 0) {
       requireCondition(fullCount === 0, `wallet table is absent despite ${fullCount} total rows`);
@@ -217,7 +443,7 @@ async function checkHomeContract(page) {
     requireCondition(headerCounts.native === visibleNativeCount, `header shows ${headerCounts.native} native, found ${visibleNativeCount}`);
     requireCondition(headerCounts.token === visibleTokenCount, `header shows ${headerCounts.token} tokens, found ${visibleTokenCount}`);
     requireCondition(
-      await panel.locator('tr[data-wallet-kind][data-wallet-priced="false"]').count() === 0,
+      await panel.locator('tr[data-wallet-kind="token"][data-wallet-priced="false"]').count() === 0,
       "an unpriced token is visible while the filter is on",
     );
 
@@ -262,8 +488,8 @@ async function checkHomeContract(page) {
     const table = panel.locator(".home-wallet-table");
     const fullCounts = await readHomeWalletPanelCounts(panel);
     const fullCount = fullCounts.native + fullCounts.token;
-    const kpiCount = await readHomeWalletKpiCount(page);
-    requireCondition(fullCount === kpiCount, `panel has ${fullCount} total rows but wallet KPI reports ${kpiCount}`);
+    const summaryCount = await readHomeWalletSummaryCount(page);
+    requireCondition(fullCount === summaryCount, `panel has ${fullCount} total rows but wallet summary reports ${summaryCount}`);
 
     if (await table.count() === 0) {
       requireCondition(fullCount === 0, `wallet table is absent despite ${fullCount} total rows`);
@@ -274,10 +500,15 @@ async function checkHomeContract(page) {
         await panel.locator(".home-wallet-hidden-count").count() === 0,
         "hidden-under-$1 note appeared for an empty wallet after toggling off",
       );
-      return "wallet sources returned no display rows; empty state remained stable";
+      await toggle.check();
+      requireCondition(await toggle.isChecked(), "empty wallet filter did not return to its default state");
+      requireCondition(await panel.locator(".home-empty").count() === 1, "empty wallet state disappeared after restoring the filter");
+      return "wallet sources returned no display rows; empty state remained stable in both toggle directions";
     }
 
     const defaultVisibleCount = await panel.locator("tr[data-wallet-kind]").count();
+    const defaultVisibleRows = await panel.locator("tr[data-wallet-kind]").allTextContents();
+    const defaultUnpricedNativeCount = await panel.locator('tr[data-wallet-kind="native"][data-wallet-priced="false"]').count();
     const hiddenBefore = fullCount - defaultVisibleCount;
     const totalBefore = compactText((await table.locator(".table-total-row").textContent()) ?? "");
     requireCondition(/Total wallet \(priced\)/i.test(totalBefore), "priced wallet total is missing before toggling");
@@ -305,6 +536,10 @@ async function checkHomeContract(page) {
     const restoredTokenCount = rowContracts.filter((row) => row.kind === "token").length;
     requireCondition(restoredNativeCount === fullCounts.native, `restored ${restoredNativeCount}/${fullCounts.native} native rows`);
     requireCondition(restoredTokenCount === fullCounts.token, `restored ${restoredTokenCount}/${fullCounts.token} token rows`);
+    requireCondition(
+      rowContracts.filter((row) => row.kind === "native" && row.priced === "false").length === defaultUnpricedNativeCount,
+      "native holdings with unavailable prices were hidden by the default filter",
+    );
     const headerCounts = await readHomeWalletHeaderCounts(panel);
     requireCondition(headerCounts.native === restoredNativeCount, "restored native header count is incorrect");
     requireCondition(headerCounts.token === restoredTokenCount, "restored token header count is incorrect");
@@ -312,13 +547,14 @@ async function checkHomeContract(page) {
     let tokenSeen = false;
     let unpricedSeen = false;
     for (const row of rowContracts) {
+      requireCondition(row.kind === "native" || row.kind === "token", "restored row has invalid data-wallet-kind");
+      requireCondition(row.priced === "true" || row.priced === "false", "restored row has invalid data-wallet-priced");
       if (row.kind === "token") tokenSeen = true;
       if (row.kind === "native") requireCondition(!tokenSeen, "native row appears after a token row");
-      if (row.kind === "token") {
-        requireCondition(
-          row.priced === "true" || row.priced === "false",
-          "restored token has invalid data-wallet-priced",
-        );
+      if (row.kind === "native" && row.priced === "false") {
+        for (const index of [3, 4, 5]) {
+          requireCondition(row.cells[index] === "—", `unpriced native cell ${index + 1} is not —`);
+        }
       }
       if (row.kind === "token" && row.priced === "false") {
         unpricedSeen = true;
@@ -336,7 +572,19 @@ async function checkHomeContract(page) {
     requireCondition(await table.locator(".home-wallet-filtered-empty").count() === 0, "all-hidden explanation remained after toggling off");
     const totalAfter = compactText((await table.locator(".table-total-row").textContent()) ?? "");
     requireCondition(totalAfter === totalBefore, "priced wallet total changed after toggling");
-    return `${defaultVisibleCount} default · ${rowContracts.length} restored · totals unchanged`;
+    const overflow = await page.evaluate(() => Math.max(document.documentElement.scrollWidth, document.body.scrollWidth) - document.documentElement.clientWidth);
+    requireCondition(overflow <= 1, `unfiltered wallet creates ${overflow}px of horizontal body overflow`);
+    await toggle.check();
+    requireCondition(await toggle.isChecked(), "wallet filter did not return to its default state");
+    await page.waitForFunction(
+      (expected) => document.querySelectorAll(".home-wallet-panel tr[data-wallet-kind]").length === expected,
+      defaultVisibleCount,
+      { timeout: 5_000 },
+    );
+    const filteredAgain = await panel.locator("tr[data-wallet-kind]").allTextContents();
+    requireCondition(JSON.stringify(filteredAgain) === JSON.stringify(defaultVisibleRows), "restoring the filter changed its original row set");
+    requireCondition(compactText((await table.locator(".table-total-row").textContent()) ?? "") === totalBefore, "priced wallet total changed after restoring the filter");
+    return `${defaultVisibleCount} default · ${rowContracts.length} restored · both toggle directions preserve totals`;
   });
 
   await check("home wallet rows keep native/token order and unpriced nulls", async () => {
@@ -350,6 +598,8 @@ async function checkHomeContract(page) {
     let tokenSeen = false;
     let unpricedSeen = false;
     for (const row of rowContracts) {
+      requireCondition(row.kind === "native" || row.kind === "token", "wallet row has invalid data-wallet-kind");
+      requireCondition(row.priced === "true" || row.priced === "false", "wallet row has invalid data-wallet-priced");
       if (row.kind === "token") tokenSeen = true;
       if (row.kind === "native") requireCondition(!tokenSeen, "native row appears after a token row");
       if (row.kind === "token" && row.priced === "false") {
@@ -390,6 +640,83 @@ async function checkAssetWalletContract(page) {
     requireCondition(/Total wallet \(priced\)/i.test(compactText((await table.locator("tfoot").textContent()) ?? "")), "wallet registry total is missing");
   });
 
+  await check("asset-list wallet filter defaults on and preserves the full registry totals", async () => {
+    const panel = page.locator(".asset-wallet-panel");
+    const toggle = panel.locator('input[type="checkbox"][aria-label="Hide assets under $1"]');
+    requireCondition(await toggle.count() === 1 && await toggle.isChecked(), "registry filter is missing or not checked by default");
+    const summary = compactText((await page.locator(".asset-registry-kpi").last().textContent()) ?? "");
+    const match = summary.match(/([\d,]+)\s+wallet assets?\b/i);
+    const defaultRows = await panel.locator("tr[data-wallet-kind]").allTextContents();
+    const hiddenNote = panel.locator(".asset-wallet-hidden-count");
+    const hiddenText = await hiddenNote.count() > 0 ? compactText((await hiddenNote.textContent()) ?? "") : "";
+    const hiddenMatch = hiddenText.match(/^\(([\d,]+) hidden under \$1\)$/);
+    requireCondition(!hiddenText || hiddenMatch, "registry hidden-row count is malformed");
+    const hiddenCount = hiddenMatch ? parseGroupedCount(hiddenMatch[1], "hidden registry rows") : 0;
+    const fullCount = defaultRows.length + hiddenCount;
+    if (match) {
+      requireCondition(parseGroupedCount(match[1], "registry wallet count") === fullCount, "registry filter counts differ from the full summary");
+    } else {
+      requireCondition(/—\s+wallet assets?\b/i.test(summary), "registry summary omits its unavailable wallet count");
+      requireCondition(await panel.locator(".asset-source-badge.is-unavailable").count() > 0, "registry summary is unavailable despite complete wallet sources");
+    }
+    requireCondition(compactText((await panel.locator(".asset-wallet-count .panel-count").textContent()) ?? "") === `${defaultRows.length} ASSETS`, "registry visible count differs from its rows");
+    requireCondition(hiddenCount > 0
+      ? compactText((await hiddenNote.textContent()) ?? "") === `(${hiddenCount} hidden under $1)`
+      : await hiddenNote.count() === 0, "registry hidden-row count is incorrect");
+    const defaultValues = await panel.locator("tr[data-wallet-kind]").evaluateAll((elements) => elements.map((element) => ({
+      kind: element.getAttribute("data-wallet-kind"), priced: element.getAttribute("data-wallet-priced"),
+      value: element.querySelectorAll("td")[5]?.textContent ?? "",
+    })));
+    for (const row of defaultValues) {
+      requireCondition(row.kind !== "token" || row.priced === "true", "default registry displays an unpriced token");
+      const value = parseDisplayedUsd(row.value);
+      requireCondition(value === null || value >= 1, "default registry displays an under-$1 holding");
+    }
+    const table = panel.locator(".asset-wallet-table");
+    if (await table.count() === 0) {
+      requireCondition(fullCount === 0, "registry table is absent despite joined holdings");
+      await toggle.uncheck();
+      requireCondition(await panel.locator(".asset-empty-state").count() === 1, "empty registry state disappeared after toggling off");
+      await toggle.check();
+      requireCondition(await panel.locator(".asset-empty-state").count() === 1, "empty registry state disappeared after restoring the filter");
+      return "empty registry is stable in both toggle directions";
+    }
+    if (defaultRows.length === 0) {
+      requireCondition(await panel.locator(".asset-wallet-filtered-empty").count() === 1, "all-hidden registry has no explicit explanation");
+    }
+    const totals = compactText((await table.locator("tfoot").textContent()) ?? "");
+    await toggle.uncheck();
+    await page.waitForFunction((expected) => document.querySelectorAll(".asset-wallet-panel tr[data-wallet-kind]").length === expected, fullCount, { timeout: 5_000 });
+    const fullRows = await panel.locator("tr[data-wallet-kind]").evaluateAll((elements) => elements.map((element) => ({
+      kind: element.getAttribute("data-wallet-kind"), priced: element.getAttribute("data-wallet-priced"),
+      cells: Array.from(element.querySelectorAll("td"), (cell) => (cell.textContent ?? "").replace(/\s+/g, " ").trim()),
+    })));
+    let tokenSeen = false;
+    let unpricedTokenSeen = false;
+    for (const row of fullRows) {
+      requireCondition(["native", "token"].includes(row.kind) && ["true", "false"].includes(row.priced), "registry wallet attributes are invalid");
+      if (row.kind === "token") tokenSeen = true;
+      if (row.kind === "native") requireCondition(!tokenSeen, "restored registry native appears after a token");
+      if (row.priced === "false") {
+        for (const index of [4, 5, 6]) requireCondition(row.cells[index] === "—", "restored unpriced registry cell is not —");
+      }
+      if (row.kind === "token" && row.priced === "false") {
+        unpricedTokenSeen = true;
+        requireCondition(/UNPRICED/i.test(row.cells[2]), "restored unpriced token tag is missing");
+      }
+      if (row.kind === "token" && row.priced === "true") requireCondition(!unpricedTokenSeen, "restored priced token follows an unpriced token");
+    }
+    requireCondition(fullRows.filter((row) => row.kind === "native" && row.priced === "false").length
+      === defaultValues.filter((row) => row.kind === "native" && row.priced === "false").length, "registry filter hid a native holding with unavailable price");
+    requireCondition(await hiddenNote.count() === 0 && await panel.locator(".asset-wallet-filtered-empty").count() === 0, "registry hidden-state labels remained after toggling off");
+    requireCondition(compactText((await table.locator("tfoot").textContent()) ?? "") === totals, "registry filter changed full-set totals");
+    await toggle.check();
+    await page.waitForFunction((expected) => document.querySelectorAll(".asset-wallet-panel tr[data-wallet-kind]").length === expected, defaultRows.length, { timeout: 5_000 });
+    requireCondition(JSON.stringify(await panel.locator("tr[data-wallet-kind]").allTextContents()) === JSON.stringify(defaultRows), "restoring registry filter changed the default row set");
+    requireCondition(compactText((await table.locator("tfoot").textContent()) ?? "") === totals, "restoring registry filter changed totals");
+    return `${defaultRows.length} default · ${fullCount} restored · totals unchanged in both directions`;
+  });
+
   await check("asset-list wallet rows keep native/token order and unpriced nulls", async () => {
     const rows = page.locator(".asset-wallet-panel tr[data-wallet-kind]");
     const rowContracts = await rows.evaluateAll((elements) => elements.map((element) => ({
@@ -401,8 +728,15 @@ async function checkAssetWalletContract(page) {
     let tokenSeen = false;
     let unpricedSeen = false;
     for (const row of rowContracts) {
+      requireCondition(row.kind === "native" || row.kind === "token", "registry row has invalid data-wallet-kind");
+      requireCondition(row.priced === "true" || row.priced === "false", "registry row has invalid data-wallet-priced");
       if (row.kind === "token") tokenSeen = true;
       if (row.kind === "native") requireCondition(!tokenSeen, "native registry row appears after a token row");
+      if (row.kind === "native" && row.priced === "false") {
+        for (const index of [4, 5, 6]) {
+          requireCondition(row.cells[index] === "—", `unpriced native registry cell ${index + 1} is not —`);
+        }
+      }
       if (row.kind === "token" && row.priced === "false") {
         unpricedSeen = true;
         requireCondition(/UNPRICED/i.test(row.cells[2] ?? ""), "unpriced registry tag is missing");
@@ -439,7 +773,9 @@ async function checkReadonlyLivePage(page, routeName) {
     requireCondition(/\blive\b/i.test(text), "live label is missing");
     requireCondition(/\bread[\s-]*only\b/i.test(text), "read-only label is missing");
   });
+}
 
+async function checkNoMutationControls(page, routeName) {
   await check(`${routeName} exposes no mutation forms or controls`, async () => {
     const unexpectedForms = await page.locator("form").evaluateAll((forms) => forms
       .map((form) => ({
@@ -454,17 +790,11 @@ async function checkReadonlyLivePage(page, routeName) {
       )));
     requireCondition(unexpectedForms.length === 0, `unexpected form contracts: ${JSON.stringify(unexpectedForms)}`);
 
+    const bannedNames = ["currentPrice", "ticker", "fullName", "sourceLink", "rate", "currencyCode", "fromCurrency", "toCurrency"];
     const legacyMutationFields = page.locator([
       'button[type="submit"]',
-      'input[name="currentPrice"]',
-      'input[name="ticker"]',
-      'input[name="fullName"]',
-      'input[name="sourceLink"]',
-      'input[name="rate"]',
-      'select[name="currencyCode"]',
-      'select[name="fromCurrency"]',
-      'select[name="toCurrency"]',
-      '[contenteditable="true"]',
+      ...bannedNames.flatMap((name) => [`input[name="${name}"]`, `select[name="${name}"]`]),
+      '[contenteditable]:not([contenteditable="false"])',
     ].join(", "));
     const forbiddenMutationFields = await legacyMutationFields.evaluateAll((elements) => elements.filter((element) => {
       const form = element.closest("form");
@@ -477,7 +807,7 @@ async function checkReadonlyLivePage(page, routeName) {
     }).length);
     requireCondition(forbiddenMutationFields === 0, "a retired mutation field/control is rendered");
 
-    const controlLabels = await page.locator("button, [role='button']").evaluateAll((elements) =>
+    const controlLabels = await page.locator("button, [role='button'], input[type='button'], input[type='submit'], a").evaluateAll((elements) =>
       elements.map((element) => `${element.textContent ?? ""} ${element.getAttribute("aria-label") ?? ""}`.trim()),
     );
     const mutationControl = controlLabels.find((label) => /\b(?:add|edit|save|update|delete|remove|recover|override)\b/i.test(label));
@@ -507,7 +837,12 @@ async function checkPortfolioContract(page) {
     const host = page.locator(".portfolio-chart-host");
     const hostCount = await host.count();
     requireCondition(hostCount <= 1, `expected at most one chart host, found ${hostCount}`);
-    if (hostCount === 0) return "no chart host (live sources and Neon history may be unavailable)";
+    if (hostCount === 0) {
+      const empty = page.locator(".portfolio-chart-empty");
+      requireCondition(await empty.count() === 1, "portfolio chart lacks an explicit empty/unavailable state");
+      requireCondition(/no valuation snapshot|unavailable|no recorded/i.test((await empty.textContent()) ?? ""), "portfolio chart empty state is not explained");
+      return "no chart host · explicit unavailable valuation state";
+    }
 
     await host.waitFor({ state: "visible", timeout: 15_000 });
     await page.waitForFunction(
@@ -522,10 +857,12 @@ async function checkPortfolioContract(page) {
     const liveMarkerCount = await host.locator(".scatter-plot path").evaluateAll((paths) =>
       paths.filter((path) => {
         const fill = `${path.getAttribute("fill") ?? ""} ${getComputedStyle(path).fill}`;
-        return /#38bdf8|rgb\(\s*56\s*,\s*189\s*,\s*248\s*\)/i.test(fill);
+        return /#355cc9|rgb\(\s*53\s*,\s*92\s*,\s*201\s*\)/i.test(fill);
       }).length,
     );
-    requireCondition(liveMarkerCount > 0, "live joined Plottable marker is missing");
+    const liveUnavailable = await page.locator(".chart-legend .is-unavailable").count() > 0;
+    requireCondition(liveUnavailable ? liveMarkerCount === 0 : liveMarkerCount > 0,
+      liveUnavailable ? "unavailable live value has an invented Plottable marker" : "live joined Plottable marker is missing");
     return `${axisCount} axes · ${liveMarkerCount} live marker${liveMarkerCount === 1 ? "" : "s"}`;
   });
 }
@@ -553,14 +890,36 @@ async function auditRoute(browser, route, viewport) {
     });
     if (!navigated) return;
 
-    await check(`${viewport.name} ${route.path} uses the dark theme`, async () => {
+    await check(`${viewport.name} ${route.path} uses the light Outfit design`, async () => {
       const theme = await page.evaluate(() => ({
         htmlDark: document.documentElement.classList.contains("bp6-dark"),
         bodyDark: document.body.classList.contains("bp6-dark"),
+        darkProviders: document.querySelectorAll(".bp6-dark").length,
         colorScheme: getComputedStyle(document.documentElement).colorScheme,
+        background: getComputedStyle(document.body).backgroundColor,
+        font: getComputedStyle(document.body).fontFamily,
       }));
-      requireCondition(theme.htmlDark && theme.bodyDark, "bp6-dark is missing from html/body");
-      requireCondition(theme.colorScheme.includes("dark"), `computed color-scheme is ${theme.colorScheme || "unset"}`);
+      requireCondition(!theme.htmlDark && !theme.bodyDark && theme.darkProviders === 0, "bp6-dark remains on html/body or a provider");
+      requireCondition(theme.colorScheme.includes("light") && !theme.colorScheme.includes("dark"), `computed color-scheme is ${theme.colorScheme || "unset"}`);
+      requireCondition(theme.background === "rgb(245, 247, 251)", `page background is ${theme.background}, expected #F5F7FB`);
+      requireCondition(/outfit/i.test(theme.font), `body font is ${theme.font}, expected Outfit`);
+    });
+
+    await check(`${viewport.name} ${route.path} uses the reference card tokens`, async () => {
+      const cards = await page.locator(".panel, .kpi-card, .asset-kpi-card, .portfolio-kpi-card, .login-panel").evaluateAll((elements) => elements.map((element) => {
+        const style = getComputedStyle(element);
+        return { className: element.className, background: style.backgroundColor,
+          border: style.borderTopColor, width: style.borderTopWidth, radius: style.borderTopLeftRadius,
+          shadow: style.boxShadow };
+      }));
+      requireCondition(cards.length > 0, "no content card is rendered");
+      for (const card of cards) {
+        requireCondition(card.background === "rgb(255, 255, 255)", `${card.className} is not white`);
+        requireCondition(card.border === "rgb(223, 229, 242)" && card.width === "1px", `${card.className} lacks the #DFE5F2 1px border`);
+        requireCondition(card.radius === "10px", `${card.className} radius is ${card.radius}, expected 10px`);
+        requireCondition(/rgba\(21, 35, 72, 0\.07\) 0px 14px 35px(?: 0px)?/.test(card.shadow), `${card.className} shadow is ${card.shadow}`);
+      }
+      return `${cards.length} white cards · 10px radius · reference border/shadow`;
     });
 
     await check(`${viewport.name} ${route.path} has no horizontal body overflow`, async () => {
@@ -581,23 +940,31 @@ async function auditRoute(browser, route, viewport) {
       requireCondition(!forbidden, `rendered ${forbidden}`);
     });
 
-    await checkSidebarLogoutContract(page, route.path, viewport.name);
-
-    if (viewport.name === "desktop") {
-      if (route.name === "home") await checkHomeContract(page);
-      if (route.name === "asset-list" || route.name === "exchange-rate") {
-        await checkReadonlyLivePage(page, route.name);
-      }
-      if (route.name === "asset-list") {
-        await checkOwnershipLanguage(page, "asset-list");
-        await checkAssetWalletContract(page);
-      }
-      if (route.name === "portfolio") await checkPortfolioContract(page);
+    await checkNoMutationControls(page, `${viewport.name} ${route.name}`);
+    await checkOwnershipLanguage(page, `${viewport.name} ${route.name}`);
+    if (route.name === "login") {
+      await check(`${viewport.name} login preserves the Google sign-in gate`, async () => {
+        requireCondition(await page.getByRole("link", { name: "Continue with Google", exact: true }).count() === 1, "Google sign-in link is missing or duplicated");
+        requireCondition(await page.locator('a.google-signin-button[href="/api/auth/login"]').count() === 1, "Google sign-in destination changed");
+        requireCondition(await page.locator('form, a[href="/api/auth/logout"]').count() === 0, "login unexpectedly renders a form or logout link");
+      });
+    } else {
+      await checkSidebarLogoutContract(page, route.path, viewport.name);
     }
 
+    if (route.name === "home") {
+      await checkPnlContract(page);
+      await checkHomeContract(page);
+    }
+    if (route.name === "asset-list" || route.name === "exchange-rate" || route.name === "asset-master") {
+      await checkReadonlyLivePage(page, `${viewport.name} ${route.name}`);
+    }
+    if (route.name === "asset-list" || route.name === "asset-master") await checkAssetWalletContract(page);
+    if (route.name === "portfolio") await checkPortfolioContract(page);
+
     await page.waitForTimeout(200);
-    const consoleLabel = viewport.name === "desktop" && route.name === "home"
-      ? "H4 home wallet toggle path keeps the browser console clean"
+    const consoleLabel = route.name === "home"
+      ? `H4 ${viewport.name} home wallet/history toggle paths keep the browser console clean`
       : `${viewport.name} ${route.path} keeps the browser console clean`;
     await check(consoleLabel, async () => {
       requireCondition(browserErrors.length === 0, browserErrors.join(" | "));

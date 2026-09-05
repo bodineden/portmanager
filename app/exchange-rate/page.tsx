@@ -120,7 +120,7 @@ export default async function ExchangeRatePage() {
               <span className={`fx-source-light is-${fxState}`} aria-hidden="true" />
               {fxState === "live" ? "LIVE RATE SET" : fxState === "partial" ? "PARTIAL RATE SET" : "RATES UNAVAILABLE"}
             </span>
-            <Link href="/" className="toolbar-link">Command Center</Link>
+            <Link href="/" className="toolbar-link">P&L Center</Link>
             <Link href="/exchange-rate" aria-label="Refresh live exchange rates" title="Refresh live exchange rates" className="refresh-link">R</Link>
           </div>
         </header>
@@ -128,13 +128,13 @@ export default async function ExchangeRatePage() {
         <div className="page-content exchange-rate-content">
           <section className="fx-hero" aria-labelledby="fx-hero-title">
             <div>
-              <p className="eyebrow">THB REPORTING BASE</p>
+              <p className="eyebrow">USD PRIMARY / THB ALONGSIDE</p>
               <h2 id="fx-hero-title">Live conversion matrix</h2>
-              <p>USD, GBP, and EUR resolve into the THB reporting base. ETH resolves into USD before the joined core applies USD/THB.</p>
+              <p>Live exchange rates keep the portfolio in USD, with THB alongside. Fiat crosses use the same snapshot; ETH is quoted directly in USD.</p>
             </div>
             <div className="fx-hero-readout">
-              <span>BASE CURRENCY</span>
-              <strong className="mono">THB</strong>
+              <span>DISPLAY CURRENCIES</span>
+              <strong className="mono">USD <small>/ THB</small></strong>
               <small>Fiat as of <time dateTime={fiatAsOf ?? undefined}>{formatTimestamp(fiatAsOf)}</time></small>
             </div>
           </section>
@@ -162,7 +162,7 @@ export default async function ExchangeRatePage() {
               <div>
                 <p className="eyebrow">CURRENT MARKET INPUTS</p>
                 <h2 className="panel-title">Core Rate Matrix</h2>
-                <p className="panel-subtitle">Read-only values from the same getJoinedPortfolio snapshot used across the site</p>
+                <p className="panel-subtitle">Read-only rates from the same live snapshot used across the portfolio</p>
               </div>
               <span className="panel-count">04 CORE RATES</span>
             </div>
@@ -200,7 +200,7 @@ export default async function ExchangeRatePage() {
             </div>
             <div className="fx-matrix-footer">
               <span>READ-ONLY LIVE CORE</span>
-              <p>No Neon gate, manual override, or page-level market fetch is used here.</p>
+              <p>Source availability and observation times accompany every rate.</p>
               <time dateTime={portfolio.asOf}>Snapshot assembled {formatTimestamp(portfolio.asOf)}</time>
             </div>
           </section>
@@ -217,7 +217,7 @@ export default async function ExchangeRatePage() {
               <p>{fiatState.message}</p>
               <dl>
                 <div><dt>Endpoint base</dt><dd className="mono">USD</dd></div>
-                <div><dt>Portfolio base</dt><dd className="mono">THB</dd></div>
+                <div><dt>Portfolio display</dt><dd className="mono">USD / THB</dd></div>
                 <div><dt>Provider as of</dt><dd><time dateTime={fiatAsOf ?? undefined}>{formatTimestamp(fiatAsOf)}</time></dd></div>
               </dl>
             </article>
@@ -241,7 +241,7 @@ export default async function ExchangeRatePage() {
 
           <aside className="fx-method-note">
             <span>CONVERSION PATH</span>
-            <p>Trading 212 account values convert from their account currency directly to THB. NFT floor values convert from ETH to USD, then USD to THB. If a required source is unavailable, the dependent value remains <strong>—</strong>.</p>
+            <p>Trading 212 values use snapshot fiat rates for USD and THB. NFT floors and native ETH convert into USD before the THB equivalent. If a required rate is unavailable, the dependent value remains <strong>—</strong>.</p>
           </aside>
         </div>
       </section>

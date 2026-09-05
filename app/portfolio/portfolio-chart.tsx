@@ -4,8 +4,8 @@ import { Button, ButtonGroup, Icon } from "@blueprintjs/core";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 type LegacyPoint = { date: string; valueThb: number };
-type LivePoint = { date: string; asOf: string; valueThb: number | null };
-type ChartPoint = LegacyPoint & { series: "legacy" | "live"; asOf?: string };
+type LivePoint = { date: string; asOf: string; valueThb: number | null; valueUsd: number | null };
+type ChartPoint = LegacyPoint & { series: "legacy" | "live"; asOf?: string; valueUsd?: number | null };
 type Range = "1M" | "3M" | "6M" | "ALL";
 
 const ranges: Range[] = ["1M", "3M", "6M", "ALL"];
@@ -34,7 +34,10 @@ function pointLabel(point: ChartPoint) {
     currency: "THB",
     maximumFractionDigits: 0,
   }).format(point.valueThb);
-  return `${point.series === "live" ? "LIVE JOINED" : "LEGACY NEON"} · ${dateLabel(point.date)} · ${value}`;
+  const usd = point.series === "live" && point.valueUsd !== null && point.valueUsd !== undefined
+    ? `${new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 }).format(point.valueUsd)} · `
+    : "";
+  return `${point.series === "live" ? "LIVE JOINED" : "LEGACY RECORD"} · ${dateLabel(point.date)} · ${usd}${value}`;
 }
 
 export function PortfolioChart({
@@ -65,6 +68,7 @@ export function PortfolioChart({
       date: livePoint.date,
       asOf: livePoint.asOf,
       valueThb: livePoint.valueThb,
+      valueUsd: livePoint.valueUsd,
       series: "live",
     };
   }, [livePoint]);
@@ -118,7 +122,7 @@ export function PortfolioChart({
           .y((point: ChartPoint) => point.valueThb, yScale)
           .size(4)
           .attr("fill", "#8290A5")
-          .attr("stroke", "#0B0E14")
+          .attr("stroke", "#FFFFFF")
           .attr("stroke-width", 1);
 
         const liveHalo = new Plottable.Plots.Scatter<Date, number>()
@@ -127,8 +131,8 @@ export function PortfolioChart({
           .y((point: ChartPoint) => point.valueThb, yScale)
           .size(22)
           .symbol(() => Plottable.SymbolFactories.diamond())
-          .attr("fill", "rgba(56, 189, 248, 0.18)")
-          .attr("stroke", "rgba(56, 189, 248, 0.38)")
+          .attr("fill", "rgba(53, 92, 201, 0.12)")
+          .attr("stroke", "rgba(53, 92, 201, 0.28)")
           .attr("stroke-width", 1);
 
         const liveMarker = new Plottable.Plots.Scatter<Date, number>()
@@ -137,8 +141,8 @@ export function PortfolioChart({
           .y((point: ChartPoint) => point.valueThb, yScale)
           .size(10)
           .symbol(() => Plottable.SymbolFactories.diamond())
-          .attr("fill", "#38BDF8")
-          .attr("stroke", "#E0F7FF")
+          .attr("fill", "#355CC9")
+          .attr("stroke", "#FFFFFF")
           .attr("stroke-width", 1.5);
 
         const transitionGuide = chartLive
@@ -226,8 +230,9 @@ export function PortfolioChart({
     <section className="panel portfolio-chart-panel">
       <div className="portfolio-chart-header">
         <div>
-          <p className="eyebrow">VALUE SNAPSHOTS / THB</p>
+          <p className="eyebrow">VALUATION CONTEXT / ORIGINAL THB UNITS</p>
           <h2 className="panel-title">Live value with legacy context</h2>
+          <p className="panel-subtitle">The archive records THB only. No historical USD conversion is inferred.</p>
           <div className="chart-legend" aria-label="Chart legend">
             <span><i className="legend-line legacy" /> Legacy Neon ledger</span>
             <span className={chartLive ? "" : "is-unavailable"}><i className="legend-marker live" /> Live joined snapshot{chartLive ? "" : " unavailable"}</span>
