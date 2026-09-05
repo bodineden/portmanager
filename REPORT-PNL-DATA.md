@@ -172,3 +172,303 @@ Printed inline above; also printed by `npm test` ("CURRENT_BOOK_TABLE_BEGIN…EN
 6. **Write timeout + awaited bounded write** added to satisfy "never fail/hammer the page" under serverless semantics (design note above).
 
 No rendered UI, no API routes, no paid/scraped providers, no DB mutation beyond the new snapshot table, and no archive seed/ALTER/UPDATE executed by the recorder.
+
+## Final verification supplement
+
+The live workspace was committed concurrently as `b5526ea8034ba61d93494124004defcd73171e3f` while this execution was still finishing QA. That commit and its initial report were preserved, not amended or reset. A subsequent scoped commit includes seven additional regression tests and these final report corrections/logs. The latest suite is 79/79 (33 original + 46 new), not the interim 72/72 in that checkpoint's commit message.
+
+An independent, read-only Codex review returned `passed: true`, zero security concerns and zero logic errors. It did not change source. The only later code changes were additional tests; production code is the reviewed code.
+
+### API signatures and remaining semantic details
+
+```ts
+deriveT212Pnl(position: NormalizedT212Position, fx: FiatRates | null,
+  accountCurrency: string | null): HoldingPnl & { valueUsd: number | null }
+deriveOnchainPnl(holding: OnchainHolding, usdToThb: number | null,
+  evidence?: AcquisitionEvidence | null): HoldingPnl
+aggregatePnl(classes: Record<PnlClass, PnlClassInput>, usdToThb: number | null,
+  sourcesComplete?: boolean): PortfolioPnlTotals
+createSnapshotRecorder(options?: SnapshotRecorderOptions):
+  (portfolio: JoinedPortfolio, clock?: { now?: () => number }) => Promise<SnapshotRecordResult>
+recordPortfolioSnapshot: ReturnType<typeof createSnapshotRecorder>
+PORTFOLIO_SNAPSHOT_DDL: string
+
+// Additive to normalized and joined native holdings:
+amountRaw?: string
+
+// Pure evidence boundary, not a raw provider payload parser:
+type OnchainHolding = {
+  asOf?: string; kind: "native" | "token" | "nft"; chainId: number;
+  assetId: string; quantityRaw: string; decimals: number; valueUsd: number | null;
+};
+type AcquisitionEvidence = {
+  source: "blockscout-v2" | "opensea-v2" | "rpc";
+  chainId: number; assetId: string; decimals: number;
+  complete: boolean; hasDisposals: boolean; lots: AcquisitionLot[];
+};
+type AcquisitionLot = {
+  transactionHash: string; acquiredAt: string; quantityRaw: string;
+  operation: "purchase" | "mint" | "claim" | "airdrop" | "transfer" |
+    "bridge" | "exchange-deposit" | "wrapper" | "unknown";
+  success: boolean; allPaymentLegsObserved: boolean; acquiredAssetCount: number;
+  nativeOutflowRaw: string; nativePrice: HistoricalUsdPrice | null;
+  tokenOutflows: { assetId: string; amountRaw: string; decimals: number;
+    historicalPrice: HistoricalUsdPrice | null }[];
+};
+type HistoricalUsdPrice = {
+  provider: "defillama-historical" | "coingecko-history";
+  assetId: string; timestamp: string; priceUsd: number;
+};
+type PnlClass = "t212" | "nfts" | "walletNative" | "walletTokens";
+type PnlClassInput = {
+  holdings: readonly (HoldingPnl & { valueUsd: number | null })[];
+  sourceComplete: boolean;
+};
+type SnapshotDb = {
+  query: (text: string, params?: unknown[], signal?: AbortSignal) => Promise<unknown>;
+};
+type SnapshotRecorderOptions = {
+  hasDb?: () => boolean; getDb?: () => SnapshotDb; now?: () => number;
+  timeoutMs?: number; log?: (message: string) => void;
+};
+type SnapshotRecordResult = "recorded" | "already-exists" | "skipped" | "error";
+```
+
+- Coverage buckets are mutually exclusive: eligible / notRecorded / dust / unpriced / unreconciled. Their sum equals `totalHoldings`. Counts describe returned joined rows, not unseen failed-source holdings, NFT units, or T212 cash. `sourcesComplete` prevents an unavailable empty source being mistaken for a known-empty book.
+- With some eligible rows, totals are the **eligible-subset** sums and can be partial even when portfolio market value is known. With holdings but zero eligible rows, basis and P&L totals are null. A genuinely empty, live inventory alone can produce known zero basis/P&L. All-free eligible holdings have zero basis, current-value P&L, and null percentage. Missing THB FX never deletes known USD; THB mirrors stay null.
+- T212 reconciliation tolerates floating-point noise only: `16 * Number.EPSILON * max(1, abs(value), abs(basis), abs(pnl))`. The tested identity is exact for the simple fixture numbers and numerically consistent within that tolerance in general. The engine does not rewrite an API P&L quote or reverse-engineer a fake basis to force equality.
+- The evidence consumer rejects incomplete history, any disposal, unsupported operations, multiple acquired assets/payments, duplicate or failed transactions, future acquisitions relative to joined `asOf`, wrong chain/asset/decimals, invalid or mismatched exact raw quantities, and stale/missing/invalid payment quotes. BigInt validates raw units before decimal conversion to the app's existing `number` currency representation. Blockscout evidence for RH Chain is expressly unsupported. No end-user override API was added.
+- A decoded operation and `allPaymentLegsObserved` are **trusted normalized evidence assertions** that a future collector must establish from successful receipts/orders, native/internal transfers and ERC-20 transfers; method names, ownership, a zero transaction value, or a token symbol alone are not sufficient evidence. No current balance/floor source establishes these assertions. OpenSea acquisition/order reachability and authentication are unverified here; parent must verify with the legitimate key before enabling a collector.
+- Snapshots are first qualifying visits, not midnight closes, not daily-return calculations and not backfilled history. Failed eligible writes are suppressed for the rest of the UTC date in that module instance; another instance or a later date may retry. ON CONFLICT protects against cross-instance duplicates. A timeout can have an uncertain remote outcome, but can never overwrite that date. The next page stays available. No real Neon DDL/INSERT was executed or claimed verified; fake-client tests cover the logic/parameters, while production database permissions and insertion remain a post-merge check.
+- Scope and archive verification compare against the immutable `pre-pnl-astra-2026-09-05` tag, not movable HEAD. The scratch verifier was corrected to ignore binary favicon decoding and use that tag after the concurrent commit. These were QA-helper fixes outside the repository, not product defects.
+
+### Final per-file test counts (parsed from Vitest JSON)
+
+```json
+{
+  "total": 79,
+  "passed": 79,
+  "files": {
+    "auth-flow.test.ts": 3,
+    "dust-filter.test.ts": 7,
+    "live-data.test.ts": 20,
+    "pnl-history.test.ts": 8,
+    "pnl.test.ts": 38,
+    "portfolio-helpers.test.ts": 3
+  }
+}
+```
+
+### Captured final command output
+
+The exact required commands ran with exit code 0. The anchor check uses a temporary read-only Python equivalent of `grep -c` to count matching lines and additionally verifies protected paths and archive byte identity; no checked-in script was changed. Local UI verification used a fresh `npm run start -- --hostname 127.0.0.1 --port 8125` with an external-fetch-denying preload, health-checked HTTP 200 before running the untouched harness.
+
+#### `npm test` — exit 0
+
+```text
+npm notice run portmanager@0.1.0 test
+npm notice run vitest run
+
+ RUN  v4.1.10 /home/user/projects/portmanager
+
+
+CURRENT_BOOK_TABLE_BEGIN
+Fixture ETH/USD=2400; USD/THB=36, GBP/THB=45; not live quotes.
+| Holding | basisStatus | P&L bucket | Reason |
+|---|---|---|---|
+| T212 positions: 0 | N/A (no holding) | no-op | GBP 487 cash is value only; no P&L |
+| Arbitrum One ETH 0.248396 | not-recorded | not-recorded | Native balance only; no clean purchase provenance (bridge/deposit is not a basis) |
+| Ethereum ETH 0.000781 | not-recorded | not-recorded | Native balance only; no clean purchase provenance (bridge/deposit is not a basis) |
+| Base ETH 0.000099 | not-recorded | dust | Dust: current value below $1; basis derivation skipped |
+| Robinhood Chain ETH 0.000526 | not-recorded | not-recorded | Native balance only; no clean purchase provenance (bridge/deposit is not a basis) |
+| USDG 1.475 | not-recorded | not-recorded | Token balance only; no clean acquisition/payment history recorded |
+| STACK token (sub-cent) | not-recorded | dust | Operator reports sub-cent value; no basis derivation; exact quantity not supplied |
+| GME token (sub-cent) | not-recorded | dust | Operator reports sub-cent value; no basis derivation; exact quantity not supplied |
+| 2× Stackers NFT | not-recorded | not-recorded | OpenSea inventory/floor only; acquisition and payment history not recorded |
+| 2× G00fyz NFT | not-recorded | not-recorded | OpenSea inventory/floor only; acquisition and payment history not recorded |
+Current-book P&L: costBasisUsd=null; pnlUsd=null; pnlPct=null; eligible=0.
+CURRENT_BOOK_TABLE_END
+
+ Test Files  6 passed (6)
+      Tests  79 passed (79)
+   Start at  05:50:05
+   Duration  256ms (transform 438ms, setup 0ms, import 574ms, tests 98ms, environment 0ms)
+```
+
+#### `npm run lint` — exit 0
+
+```text
+npm notice run portmanager@0.1.0 lint
+npm notice run eslint
+
+/home/user/projects/portmanager/proxy.ts
+  19:10  warning  'b64urlEncode' is defined but never used  @typescript-eslint/no-unused-vars
+
+✖ 1 problem (0 errors, 1 warning)
+```
+
+#### `npm run build` — exit 0
+
+```text
+npm notice run portmanager@0.1.0 build
+npm notice run next build
+▲ Next.js 16.2.6 (Turbopack)
+
+  Creating an optimized production build ...
+✓ Compiled successfully in 3.5s
+  Running TypeScript ...
+  Finished TypeScript in 2.1s ...
+  Collecting page data using 7 workers ...
+  Generating static pages using 7 workers (0/5) ...
+  Generating static pages using 7 workers (1/5)
+  Generating static pages using 7 workers (2/5)
+  Generating static pages using 7 workers (3/5)
+✓ Generating static pages using 7 workers (5/5) in 99ms
+  Finalizing page optimization ...
+
+Route (app)
+┌ ƒ /
+├ ○ /_not-found
+├ ƒ /api/auth/callback
+├ ƒ /api/auth/login
+├ ƒ /api/auth/logout
+├ ƒ /asset-list
+├ ○ /asset-master
+├ ƒ /exchange-rate
+├ ○ /icon.svg
+├ ƒ /login
+└ ƒ /portfolio
+
+
+ƒ Proxy (Middleware)
+
+○  (Static)   prerendered as static content
+ƒ  (Dynamic)  server-rendered on demand
+```
+
+#### `python /tmp/portmanager-pnl-anchors.py` — exit 0
+
+```text
+lib/pnl.ts: BasisStatus: 3 matching lines; 1 exported declaration
+lib/pnl.ts: PnlEligibility: 3 matching lines; 1 exported declaration
+lib/pnl.ts: HoldingPnl: 7 matching lines; 1 exported declaration
+lib/pnl.ts: deriveT212Pnl: 1 matching lines; 1 exported declaration
+lib/pnl.ts: OnchainHolding: 3 matching lines; 1 exported declaration
+lib/pnl.ts: AcquisitionEvidence: 3 matching lines; 1 exported declaration
+lib/pnl.ts: AcquisitionLot: 3 matching lines; 1 exported declaration
+lib/pnl.ts: HistoricalUsdPrice: 3 matching lines; 1 exported declaration
+lib/pnl.ts: deriveOnchainPnl: 1 matching lines; 1 exported declaration
+lib/pnl.ts: PnlClass: 8 matching lines; 1 exported declaration
+lib/pnl.ts: PnlCoverage: 3 matching lines; 1 exported declaration
+lib/pnl.ts: PnlSummary: 4 matching lines; 1 exported declaration
+lib/pnl.ts: PortfolioPnlTotals: 2 matching lines; 1 exported declaration
+lib/pnl.ts: PnlClassInput: 4 matching lines; 1 exported declaration
+lib/pnl.ts: aggregatePnl: 1 matching lines; 1 exported declaration
+lib/pnl-history.ts: SnapshotDb: 3 matching lines; 1 exported declaration
+lib/pnl-history.ts: SnapshotRecorderOptions: 2 matching lines; 1 exported declaration
+lib/pnl-history.ts: SnapshotRecordResult: 3 matching lines; 1 exported declaration
+lib/pnl-history.ts: createSnapshotRecorder: 2 matching lines; 1 exported declaration
+lib/pnl-history.ts: recordPortfolioSnapshot: 1 matching lines; 1 exported declaration
+lib/assets-db.ts: PORTFOLIO_SNAPSHOT_DDL: 1 exported declaration
+lib/pnl.test.ts: basisStatus: 27 matching lines
+lib/pnl.ts: basisStatus: 4 matching lines
+lib/: basisStatus: TOTAL 31 matching lines
+lib/assets-db.ts: portfolio_snapshot: 1 matching lines
+lib/pnl-history.ts: portfolio_snapshot: 2 matching lines
+lib/: portfolio_snapshot: TOTAL 3 matching lines
+app/: new P&L symbol/field references: 0
+Protected app/scripts/auth/dust/package paths: unchanged; git diff --check: PASS
+Archive schema/seed/code: byte-identical after removing ONLY snapshot DDL addition
+UI contract script: byte-identical; 12/12 named UI anchors present
+Static security scan hardcoded secrets: 0
+Static security scan shell injection: 0
+Static security scan eval/exec: 0
+Static security scan unsafe deserialization: 0
+Static security scan SQL interpolation: 0
+Independent read-only Codex review: PASS; 0 security concerns; 0 logic errors
+```
+
+#### `curl --fail --silent --show-error --output /dev/null --write-out 'Local production health: HTTP %{http_code}\n' http://127.0.0.1:8125/ && node scripts/ui-contract-check.mjs` — exit 0
+
+```text
+Local production health: HTTP 200
+PASS | desktop / responds successfully — HTTP 200 · /
+PASS | desktop / uses the dark theme
+PASS | desktop / has no horizontal body overflow — 1440px / 1440px
+PASS | desktop / renders no undefined/null/NaN
+PASS | desktop / uses a POST-only sidebar logout control — POST form · no logout link
+PASS | home renders no investor names
+PASS | home renders no allocation language
+PASS | home preserves three KPIs and adds the non-NFT wallet KPI
+PASS | home wallet panel exposes both sources and the wallet table contract — wallet sources returned no display rows
+PASS | H1 home wallet hide-under-$1 toggle is present and checked by default
+PASS | H2 home wallet default view hides unpriced and under-$1 rows — wallet sources returned no display rows
+PASS | H3 home wallet toggle restores the full ordered row set and preserves totals — wallet sources returned no display rows; empty state remained stable
+PASS | home wallet rows keep native/token order and unpriced nulls — 0 wallet rows
+PASS | H4 home wallet toggle path keeps the browser console clean
+PASS | desktop /asset-list responds successfully — HTTP 200 · /asset-list
+PASS | desktop /asset-list uses the dark theme
+PASS | desktop /asset-list has no horizontal body overflow — 1440px / 1440px
+PASS | desktop /asset-list renders no undefined/null/NaN
+PASS | desktop /asset-list uses a POST-only sidebar logout control — POST form · no logout link
+PASS | asset-list is labelled live and read-only
+PASS | asset-list exposes no mutation forms or controls
+PASS | asset-list renders no investor names
+PASS | asset-list renders the read-only wallet registry — wallet sources returned no registry rows
+PASS | asset-list wallet rows keep native/token order and unpriced nulls — 0 wallet registry rows
+PASS | desktop /asset-list keeps the browser console clean
+PASS | desktop /portfolio responds successfully — HTTP 200 · /portfolio
+PASS | desktop /portfolio uses the dark theme
+PASS | desktop /portfolio has no horizontal body overflow — 1440px / 1440px
+PASS | desktop /portfolio renders no undefined/null/NaN
+PASS | desktop /portfolio uses a POST-only sidebar logout control — POST form · no logout link
+PASS | portfolio separates live value from legacy context
+PASS | portfolio Plottable chart contract — no chart host (live sources and Neon history may be unavailable)
+PASS | desktop /portfolio keeps the browser console clean
+PASS | desktop /exchange-rate responds successfully — HTTP 200 · /exchange-rate
+PASS | desktop /exchange-rate uses the dark theme
+PASS | desktop /exchange-rate has no horizontal body overflow — 1440px / 1440px
+PASS | desktop /exchange-rate renders no undefined/null/NaN
+PASS | desktop /exchange-rate uses a POST-only sidebar logout control — POST form · no logout link
+PASS | exchange-rate is labelled live and read-only
+PASS | exchange-rate exposes no mutation forms or controls
+PASS | desktop /exchange-rate keeps the browser console clean
+PASS | desktop /asset-master responds successfully — HTTP 200 · /asset-list
+PASS | desktop /asset-master uses the dark theme
+PASS | desktop /asset-master has no horizontal body overflow — 1440px / 1440px
+PASS | desktop /asset-master renders no undefined/null/NaN
+PASS | desktop /asset-master uses a POST-only sidebar logout control — POST form · no logout link
+PASS | desktop /asset-master keeps the browser console clean
+PASS | mobile / responds successfully — HTTP 200 · /
+PASS | mobile / uses the dark theme
+PASS | mobile / has no horizontal body overflow — 390px / 390px
+PASS | mobile / renders no undefined/null/NaN
+PASS | mobile / uses a POST-only sidebar logout control — POST form · no logout link
+PASS | mobile / keeps the browser console clean
+PASS | mobile /asset-list responds successfully — HTTP 200 · /asset-list
+PASS | mobile /asset-list uses the dark theme
+PASS | mobile /asset-list has no horizontal body overflow — 390px / 390px
+PASS | mobile /asset-list renders no undefined/null/NaN
+PASS | mobile /asset-list uses a POST-only sidebar logout control — POST form · no logout link
+PASS | mobile /asset-list keeps the browser console clean
+PASS | mobile /portfolio responds successfully — HTTP 200 · /portfolio
+PASS | mobile /portfolio uses the dark theme
+PASS | mobile /portfolio has no horizontal body overflow — 390px / 390px
+PASS | mobile /portfolio renders no undefined/null/NaN
+PASS | mobile /portfolio uses a POST-only sidebar logout control — POST form · no logout link
+PASS | mobile /portfolio keeps the browser console clean
+PASS | mobile /exchange-rate responds successfully — HTTP 200 · /exchange-rate
+PASS | mobile /exchange-rate uses the dark theme
+PASS | mobile /exchange-rate has no horizontal body overflow — 390px / 390px
+PASS | mobile /exchange-rate renders no undefined/null/NaN
+PASS | mobile /exchange-rate uses a POST-only sidebar logout control — POST form · no logout link
+PASS | mobile /exchange-rate keeps the browser console clean
+PASS | mobile /asset-master responds successfully — HTTP 200 · /asset-list
+PASS | mobile /asset-master uses the dark theme
+PASS | mobile /asset-master has no horizontal body overflow — 390px / 390px
+PASS | mobile /asset-master renders no undefined/null/NaN
+PASS | mobile /asset-master uses a POST-only sidebar logout control — POST form · no logout link
+PASS | mobile /asset-master keeps the browser console clean
+
+PASS | UI contract summary — 77/77 checks passed
+```
