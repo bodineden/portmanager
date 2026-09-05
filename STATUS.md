@@ -1,6 +1,21 @@
 # PortManager — Status
 
-As of: 2026-09-04 (UTC)
+As of: 2026-09-05 (UTC)
+
+## 2026-09-05: Run 2 — light USD restyle + P&L center (Sol gpt-6-astra ultra; commits 0ecd3b1 + 731128f, merge 731128f)
+- Bodin: "continue to finish" after Run 1 shipped invisible-by-design. Full light restyle of EVERY page + P&L center on the locked reference design: body #F5F7FB, white cards 10px radius / 1px #DFE5F2 / shadow rgba(21,35,72,.07) 0 14px 35px, headings #11162E, muted #5B6680, **Outfit font**, **USD primary + THB secondary** (was dark + THB-primary). Dark theme removed (bp6-dark / Classes.DARK = 0 in app/).
+- Home `/` = value hero → P&L metric strip → performance (value-vs-cost over `portfolio_snapshot`, 1M/3M/All) → allocation by class → UTC P&L calendar → per-asset P&L table (basisStatus chips t212-live / onchain-derived / airdrop-free / not-recorded + basisNote titles) → source strip. `/asset-list`, `/portfolio`, `/exchange-rate`, `/login` restyled; read-only + logout POST-only + wallet filter semantics preserved.
+- **Honesty enforced**: current book has zero recorded basis → home renders "No recorded cost basis yet — P&L unavailable", values `—`, coverage partial 0 eligible; unreconciled/dust/unpriced excluded from sums with explicit labels; cash "value only, no P&L"; airdrop-free $0 basis but pnlPct `—`; THB never stale-rate. Nulls never rendered $0 (harness negative controls prove UI "unavailable" copy cannot waive known fixture data).
+- Reader `listPortfolioSnapshots()` in lib/pnl-history.ts (SELECT-only, gated on isNeonConfigured, [] on failure, no DDL/seed). New pure lib/pnl-view.ts + 8 new lib test files/32 tests.
+- Harness expanded 77 → **201 checks** (light tokens, /login both viewports, P&L states none/partial/complete, fixture-populated interactions: chart retry after failure, calendar day clicks + month nav, wallet $1 threshold + full-set totals). Independent review round 1 found 1 logic error (chart retry left blank after error → fixed 731128f + regression test) + 1 contract gap (live marker must be validated vs independent fixture → fixed with positive/negative controls).
+- Parent QA (independent): npm test 112/112 (10 files), lint 0 errors (1 pre-existing proxy.ts warning), build clean, UI contracts 201/201, live verified (#F5F7FB rgb(245,247,251) body + Outfit on prod /login, 0 dark refs). Merged 731128f → pushed → Vercel auto-deploy.
+- Revert: tag `pre-pnl-ui-2026-09-05` + snapshot `backups/site-pre-pnl-ui-2026-09-05/` (diff-verified clean).
+
+## 2026-09-05: Run 1 — P&L data core (Sol gpt-6-astra ultra; commits b5526ea/9ca94a1/05e089f, merge 05e089f)
+- Pure cost-basis engine + vocabulary `lib/pnl.ts`: `t212-live` (API avg cost + ppl, reconciliation guard → `unreconciled` excluded from sums), `onchain-derived` (requires verified acquisition evidence + historical payment-asset price), `airdrop-free` (verified no-payment only, basis $0, pnlPct null), `not-recorded` (never fake $0; dust <$1 and unpriced excluded from P&L). Additive `HoldingPnl` on every joined holding + `totals.costBasisUsd/Thb`, `pnlUsd/Thb`, `pnlPct`, `pnlCoverage`, `pnlByClass` (USD primary + THB mirrors, snapshot FX).
+- `portfolio_snapshot` Neon table (idempotent DDL in lib/assets-db.ts; archive tables untouched) + recorder `lib/pnl-history.ts` (once per UTC day, ON CONFLICT DO NOTHING, injectable clock, 2s bound, error-swallow; hook behind isNeonConfigured in getJoinedPortfolio). No rendered-UI change in Run 1 (Bodin rule: data core first).
+- Parent QA: npm test 79/79, lint 0 errors, build clean, UI contracts 77/77 (pre-restyle), independent Codex review PASS. Current book = no recorded basis anywhere (correct). Revert: tag `pre-pnl-astra-2026-09-05` + snapshot `backups/site-pre-pnl-astra-2026-09-05/`.
+
 
 ## 2026-09-04: Hide-under-$1 extended to HOME "Wallet Balances" panel (Bodin: "it still has not"; Sol gpt-5.6-sol ultra aa38d1d, merge 603b057)
 - Gap: 2026-09-04 earlier round scoped the hide-under-$1 toggle to /asset-list only; home page Wallet Balances panel (the landing view) still rendered dust rows unfiltered. Bodin confirmed home was the surface (clarify 2026-09-04).
