@@ -839,16 +839,127 @@ async function assertMascot(page, expectedMood) {
     requireCondition(!/[\d$฿%]|\b(?:USD|THB)\b/.test(message), "mascot bubble states a financial number or currency");
     requireCondition(!/\b(?:buy|sell|guarantee|predict|moon|profit|loss)\b/i.test(message), "mascot bubble contains advice, hype or unsupported profit/loss wording");
   }
+  const toggle = companion.getByRole("button", { name: "Toggle guide", exact: true });
+  requireCondition(await toggle.count() === 1 && await toggle.getAttribute("type") === "button", "mascot chip is not an accessible type=button toggle");
+  requireCondition(await toggle.evaluate((button) => button.tabIndex >= 0 && button.matches("[data-mascot-toggle]")), "mascot chip is not keyboard focusable");
+  const expanded = await toggle.getAttribute("aria-expanded");
+  requireCondition(["true", "false"].includes(expanded), "mascot chip lacks its expanded state");
+  requireCondition(await companion.locator("[data-mascot-status]").isVisible(), "mascot chip lacks its tiny status dot");
   const mute = companion.getByLabel("Mute guide", { exact: true });
   const hide = companion.getByRole("button", { name: "Hide guide", exact: true });
-  requireCondition(await mute.count() === 1 && await mute.getAttribute("type") === "checkbox", "mascot mute is not an accessible checkbox");
-  requireCondition(await mute.evaluate((input) => input.parentElement?.tagName === "LABEL" && !input.closest("form")), "mascot mute is not a non-form labelled checkbox");
-  requireCondition(await mute.getAttribute("aria-pressed") === String(await mute.isChecked()), "mascot mute aria-pressed does not reflect its checked state");
-  requireCondition(await hide.count() === 1 && await hide.getAttribute("type") === "button", "mascot hide is not a type=button control");
+  if (expanded === "true") {
+    requireCondition(await mute.count() === 1 && await mute.isVisible() && await mute.getAttribute("type") === "checkbox", "expanded mascot mute is not an accessible checkbox");
+    requireCondition(await mute.evaluate((input) => input.parentElement?.tagName === "LABEL" && !input.closest("form")), "mascot mute is not a non-form labelled checkbox");
+    requireCondition(await mute.getAttribute("aria-pressed") === String(await mute.isChecked()), "mascot mute aria-pressed does not reflect its checked state");
+    requireCondition(await hide.count() === 1 && await hide.isVisible() && await hide.getAttribute("type") === "button", "expanded mascot hide is not a type=button control");
+    requireCondition(await hide.getAttribute("aria-label") === "Hide guide", "mascot hide lacks its explicit safe aria-label");
+  } else {
+    requireCondition(!await companion.locator(".mascot-controls").isVisible() && !await mute.isVisible() && !await hide.isVisible(), "collapsed mascot exposes controls");
+  }
   requireCondition(await companion.locator("form").count() === 0, "mascot adds a form");
   const labels = await companion.locator("label, button, input").evaluateAll((elements) => elements.map((element) => `${element.textContent ?? ""} ${element.getAttribute("aria-label") ?? ""}`));
   requireCondition(labels.every((label) => !/add|edit|save|update|delete|remove|recover|override/i.test(label)), "mascot control label contains a banned mutation word");
-  return `${mood} · matching WebP/alt · 320×480 · number-free copy · safe controls`;
+  return `${mood} · matching WebP/alt · 320×480 intrinsic · focusable ${expanded === "true" ? "expanded" : "collapsed"} chip · safe controls`;
+}
+
+async function assertMascotResting(page) {
+  await assertMascot(page);
+  requireCondition(await page.locator("[data-mascot-toggle]").getAttribute("aria-expanded") === "false", "resting mascot is expanded");
+  requireCondition(!await page.locator(".mascot-bubble").isVisible(), "resting mascot has a visible bubble");
+  requireCondition(!await page.locator(".mascot-controls").isVisible(), "resting mascot has a visible controls row");
+  const geometry = await page.locator(".mascot-card").evaluate((card) => {
+    const rect = card.getBoundingClientRect();
+    const style = getComputedStyle(card);
+    const sprite = card.querySelector("img").getBoundingClientRect();
+    const dot = card.querySelector("[data-mascot-status]").getBoundingClientRect();
+    return { width: rect.width, height: rect.height, ratio: sprite.width / sprite.height,
+      radius: style.borderTopLeftRadius, border: style.borderTopColor, borderWidth: style.borderTopWidth,
+      shadow: style.boxShadow, dotWidth: dot.width, dotHeight: dot.height };
+  });
+  requireCondition(Math.abs(geometry.width - 64) <= 1 && Math.abs(geometry.height - 96) <= 3, `resting card is ${geometry.width}×${geometry.height}, expected about 64×96`);
+  requireCondition(Math.abs(geometry.ratio - 2 / 3) < 0.01, "compact sprite loses its 2:3 aspect ratio");
+  requireCondition(geometry.radius === "12px", `compact card radius is ${geometry.radius}, expected 12px`);
+  requireCondition(geometry.border === "rgb(223, 229, 242)" && geometry.borderWidth === "1px" && /rgba\(21, 35, 72, 0\.07\) 0px 14px 35px(?: 0px)?/.test(geometry.shadow), "compact card lacks the app border/shadow tokens");
+  requireCondition(geometry.dotWidth > 0 && geometry.dotWidth <= 10 && geometry.dotHeight <= 10, "resting status dot is absent or not tiny");
+  return `${geometry.width}×${geometry.height}px chip · 2:3 sprite · tiny status dot · no visible bubble or controls`;
+}
+
+async function assertOpaqueMascotBubble(page) {
+  const bubble = page.locator(".mascot-bubble");
+  requireCondition(await bubble.isVisible(), "mascot bubble is not visible");
+  const styles = await bubble.evaluate((element) => {
+    const style = getComputedStyle(element);
+    const ancestorOpacities = [];
+    for (let ancestor = element; ancestor; ancestor = ancestor.parentElement) ancestorOpacities.push(getComputedStyle(ancestor).opacity);
+    return { background: style.backgroundColor, border: style.borderTopColor, borderWidth: style.borderTopWidth,
+      radius: style.borderTopLeftRadius, shadow: style.boxShadow, font: style.fontFamily,
+      bodyFont: getComputedStyle(document.body).fontFamily, ancestorOpacities };
+  });
+  requireCondition(styles.background === "rgb(255, 255, 255)", `bubble background is ${styles.background}, expected opaque white with no alpha`);
+  requireCondition(styles.ancestorOpacities.every((opacity) => Number(opacity) === 1), `bubble/ancestor opacity permits content bleed: ${styles.ancestorOpacities.join(", ")}`);
+  requireCondition(styles.border === "rgb(223, 229, 242)" && styles.borderWidth === "1px" && styles.radius === "10px", "bubble lacks its #DFE5F2 1px border and 10px radius");
+  requireCondition(/rgba\(21, 35, 72, 0\.07\) 0px 14px 35px(?: 0px)?/.test(styles.shadow), `bubble lacks the standard shadow: ${styles.shadow}`);
+  requireCondition(styles.font === styles.bodyFont, `bubble font ${styles.font} differs from app body font ${styles.bodyFont}`);
+  // The fixture builds real page components outside Next's root layout, which
+  // loads Outfit. Its declared body token intentionally uses the Arial fallback.
+  if (new URL(page.url()).origin === new URL(baseUrl).origin) {
+    requireCondition(/outfit/i.test(styles.font), `production bubble lacks Outfit: ${styles.font}`);
+  }
+  return `computed background rgb(255, 255, 255) · opacity 1 through every ancestor · #DFE5F2 border · 10px radius · app body font ${styles.font}`;
+}
+
+async function assertMascotExpanded(page) {
+  await assertMascot(page);
+  requireCondition(await page.locator("[data-mascot-toggle]").getAttribute("aria-expanded") === "true", "chip did not expand");
+  requireCondition(await page.locator(".mascot-controls").isVisible(), "expanded guide lacks visible controls");
+  const width = await page.locator(".mascot-card").evaluate((card) => card.getBoundingClientRect().width);
+  requireCondition(Math.abs(width - 128) <= 1, `expanded card width is ${width}px, expected about 128px`);
+  const muted = await page.getByLabel("Mute guide", { exact: true }).isChecked();
+  requireCondition(await page.locator(".mascot-bubble").isVisible() === !muted, "expanded bubble does not respect mute");
+  return `${width}px panel · aria-expanded=true · visible safe controls · ${muted ? "muted bubble hidden" : "current bubble visible"}`;
+}
+
+async function assertHomeMascotOcclusion(page, selector, description) {
+  requireCondition(await page.evaluate(() => scrollY) === 0, "first-view occlusion check did not start at scrollY=0");
+  const targets = page.locator(selector);
+  const count = await targets.count();
+  requireCondition(count > 0, `${description} targets are missing`);
+  const inspect = (element) => {
+    const range = document.createRange();
+    range.selectNodeContents(element);
+    const rects = [...range.getClientRects()].filter((rect) => rect.width > 0 && rect.height > 0);
+    const card = document.querySelector(".mascot-card").getBoundingClientRect();
+    const visible = rects.map((rect) => ({ left: Math.max(0, rect.left), right: Math.min(innerWidth, rect.right),
+      top: Math.max(0, rect.top), bottom: Math.min(innerHeight, rect.bottom) }))
+      .filter((rect) => rect.right > rect.left && rect.bottom > rect.top);
+    const blocked = visible.some((rect) => {
+      if (rect.left < card.right && rect.right > card.left && rect.top < card.bottom && rect.bottom > card.top) return true;
+      return [0.15, 0.5, 0.85].some((portion) => {
+        const hit = document.elementFromPoint(rect.left + (rect.right - rect.left) * portion, (rect.top + rect.bottom) / 2);
+        return !hit || !element.contains(hit);
+      });
+    });
+    const style = getComputedStyle(element);
+    return { text: element.textContent?.replace(/\s+/g, " ").trim(), visible: visible.length > 0,
+      fullyVisible: rects.length > 0 && rects.every((rect) => rect.left >= 0 && rect.right <= innerWidth && rect.top >= 0 && rect.bottom <= innerHeight),
+      blocked, rendered: style.visibility === "visible" && style.display !== "none" && Number(style.opacity) > 0 };
+  };
+  let firstViewVisible = 0;
+  const outsideFirstView = [];
+  for (let index = 0; index < count; index++) {
+    const result = await targets.nth(index).evaluate(inspect);
+    requireCondition(result.rendered && result.text, `${description} has hidden or empty text`);
+    requireCondition(!result.blocked, `resting mascot or another surface covers first-view ${description}: ${result.text}`);
+    if (result.visible) firstViewVisible++;
+    if (!result.fullyVisible) outsideFirstView.push(index);
+  }
+  for (const index of outsideFirstView) {
+    await targets.nth(index).evaluate((element) => element.scrollIntoView({ block: "center", inline: "nearest", behavior: "instant" }));
+    const result = await targets.nth(index).evaluate(inspect);
+    requireCondition(result.fullyVisible && !result.blocked, `${description} is not fully visible/hittable after scrolling: ${result.text}`);
+  }
+  await page.evaluate(() => scrollTo({ top: 0, behavior: "instant" }));
+  return `${description}: ${firstViewVisible}/${count} text targets intersect first view and are unoccluded/hittable; ${outsideFirstView.length} outside/partial first-view targets separately scrolled fully into view and hit-tested`;
 }
 
 async function assertMascotPlacement(page) {
@@ -856,22 +967,23 @@ async function assertMascotPlacement(page) {
     const companion = document.querySelector("[data-mascot-companion]");
     if (!companion) throw new Error("mascot is missing");
     const bounds = companion.getBoundingClientRect();
-    const image = companion.querySelector("img");
-    const imageBounds = image?.getBoundingClientRect();
+    const cardBounds = companion.querySelector(".mascot-card")?.getBoundingClientRect();
     const clickables = [...companion.querySelectorAll("img, button, input, [data-mascot-bubble]")]
       .map((element) => element.getBoundingClientRect()).filter((rect) => rect.width && rect.height);
     const navBounds = [...document.querySelectorAll(".nav-menu a")].map((link) => link.getBoundingClientRect());
     const overlapsNav = clickables.some((rect) => navBounds.some((nav) => rect.left < nav.right && rect.right > nav.left && rect.top < nav.bottom && rect.bottom > nav.top));
-    const blankX = bounds.left + 2;
-    const blankY = imageBounds ? imageBounds.top + imageBounds.height / 2 : bounds.top;
+    // Exercise a real empty point in the gap above the card, including when
+    // the collapsed wrapper has shrunk to the chip itself.
+    const blankX = cardBounds ? cardBounds.right - 4 : bounds.left;
+    const blankY = cardBounds ? cardBounds.top - 4 : bounds.top;
     const blankHit = document.elementFromPoint(blankX, blankY);
     return {
       pointerEvents: getComputedStyle(companion).pointerEvents,
       position: getComputedStyle(companion).position,
       overlapsNav,
       overflow: Math.max(document.body.scrollWidth, document.documentElement.scrollWidth) - document.documentElement.clientWidth,
-      insideViewport: bounds.left >= -1 && bounds.right <= innerWidth + 1 && bounds.top >= -1 && bounds.bottom <= innerHeight + 1,
-      blankPassesThrough: imageBounds && blankX < imageBounds.left ? !companion.contains(blankHit) : true,
+      insideViewport: [bounds, ...clickables].every((rect) => rect.left >= -1 && rect.right <= innerWidth + 1 && rect.top >= -1 && rect.bottom <= innerHeight + 1),
+      blankPassesThrough: Boolean(blankHit) && !companion.contains(blankHit),
     };
   });
   requireCondition(geometry.position === "fixed" && geometry.pointerEvents === "none", "mascot wrapper is not a fixed, non-intercepting overlay");
@@ -890,11 +1002,12 @@ async function checkMascotRoute(page, route, viewport, response) {
       const doc = new DOMParser().parseFromString(source, "text/html");
       const companions = [...doc.querySelectorAll("[data-mascot-companion]")];
       return { count: companions.length, visible: companions.every((element) => !element.hasAttribute("hidden")),
+        collapsed: companions.every((element) => element.querySelector('[data-mascot-toggle][aria-expanded="false"]') && !element.querySelector(".mascot-controls")),
         sprites: companions.reduce((sum, element) => sum + element.querySelectorAll("img[alt][width='320'][height='480']").length, 0) };
     }, html);
     requireCondition(serverMarkup.count === (route.name === "login" ? 0 : 1), `server HTML has ${serverMarkup.count} companions`);
-    if (route.name !== "login") requireCondition(serverMarkup.visible && serverMarkup.sprites === 1, "server HTML omits the visible default mascot sprite");
-    return route.name === "login" ? "absent from login HTML" : "visible sprite present before hydration";
+    if (route.name !== "login") requireCondition(serverMarkup.visible && serverMarkup.sprites === 1 && serverMarkup.collapsed, "server HTML omits the collapsed default sprite or exposes expanded controls");
+    return route.name === "login" ? "absent from login HTML" : "collapsed sprite present before hydration; no controls row";
   });
   if (route.name === "login") {
     await check(`${prefix} remains absent after hydration`, async () => {
@@ -902,7 +1015,14 @@ async function checkMascotRoute(page, route, viewport, response) {
     });
     return;
   }
-  await check(`${prefix} renders an accessible sprite and read-only controls`, () => assertMascot(page));
+  await check(`${prefix} renders an accessible chip and expanded read-only controls`, async () => {
+    await assertMascot(page);
+    requireCondition(await page.locator("[data-mascot-toggle]").getAttribute("aria-expanded") === "false", "route defaults to an expanded mascot");
+    await page.locator("[data-mascot-toggle]").click();
+    await assertMascotExpanded(page);
+    await page.locator("[data-mascot-toggle]").click();
+    return assertMascotResting(page);
+  });
   await check(`${prefix} preserves navigation, page hit targets and viewport bounds`, () => assertMascotPlacement(page));
 }
 
@@ -1208,7 +1328,13 @@ async function auditMascotFixtures(browser, fixtureUrl, viewport) {
         requireCondition(response?.ok(), `fixture HTTP ${response?.status() ?? "unavailable"}`);
         await page.locator("[data-mascot-companion]").waitFor();
         await assertMascot(page, fixture.mood);
+        requireCondition(await page.locator("[data-mascot-toggle]").getAttribute("aria-expanded") === "false", "new fixture defaults expanded");
+        await assertOpaqueMascotBubble(page);
+        await page.locator("[data-mascot-toggle]").click();
+        await assertMascotExpanded(page);
         await assertMascotPlacement(page);
+        await page.locator("[data-mascot-toggle]").click();
+        await assertMascotResting(page);
         coveredMoods.add(fixture.mood);
         return fixture.description;
       });
@@ -1218,29 +1344,60 @@ async function auditMascotFixtures(browser, fixtureUrl, viewport) {
       return `${coveredMoods.size} mood sprites loaded with intrinsic dimensions and meaningful alt text`;
     });
 
-    await check(`${prefix} new server props refresh mood and preserve mute`, async () => {
+    await check(`${prefix} DOM new server props refresh mood and preserve expanded mute`, async () => {
       await page.goto(`${fixtureUrl}/?scenario=portfolio-mascot-thinking`, { waitUntil: "networkidle" });
       await assertMascot(page, "thinking");
+      await page.locator("[data-mascot-toggle]").click();
       await page.getByLabel("Mute guide", { exact: true }).check();
       await page.evaluate(() => window.dispatchEvent(new CustomEvent("ui-fixture:scenario", { detail: "portfolio-mascot-worried" })));
       await page.locator('[data-mascot-mood="worried"]').waitFor();
       requireCondition(await page.getByLabel("Mute guide", { exact: true }).isChecked(), "server prop change lost mute preference");
       requireCondition(await page.locator("[data-mascot-bubble]").count() === 0, "server prop change revealed a muted bubble");
+      await assertMascotExpanded(page);
+      requireCondition(await page.evaluate(() => localStorage.getItem("portmanager:mascot:muted")) === "true", "prop transition lost persisted mute");
       await page.getByLabel("Mute guide", { exact: true }).uncheck();
       await assertMascot(page, "worried");
       requireCondition(await page.locator("[data-mascot-bubble]").isVisible(), "unmute did not expose the latest server message");
       await page.evaluate(() => window.dispatchEvent(new CustomEvent("ui-fixture:scenario", { detail: "portfolio-mascot-thinking" })));
       await page.locator('[data-mascot-mood="thinking"]').waitFor();
       requireCondition(/mapping cost basis/i.test(await page.locator("[data-mascot-bubble]").innerText()), "new mood retained a stale P&L message");
+      await assertMascotExpanded(page);
+      return "thinking → worried while muted: expanded controls retained, checkbox/aria-pressed/localStorage stay true, no bubble; unmute shows latest message";
+    });
+    await check(`${prefix} DOM new mood restarts a finite transient bubble without expanding`, async () => {
+      await page.locator("[data-mascot-toggle]").click();
+      await assertMascotResting(page);
+      await page.evaluate(() => window.dispatchEvent(new CustomEvent("ui-fixture:scenario", { detail: "portfolio-mascot-alert" })));
+      await page.locator('[data-mascot-mood="alert"]').waitFor();
+      await assertOpaqueMascotBubble(page);
+      requireCondition(await page.locator("[data-mascot-toggle]").getAttribute("aria-expanded") === "false" && !await page.locator(".mascot-controls").isVisible(), "new mood automatically expanded the panel");
+      await page.locator("[data-mascot-bubble]").waitFor({ state: "detached", timeout: 8_000 });
+      await page.evaluate(() => window.dispatchEvent(new CustomEvent("ui-fixture:scenario", { detail: "portfolio-mascot-alert" })));
+      await page.waitForTimeout(300);
+      return assertMascotResting(page);
+    });
+    await check(`${prefix} DOM changed message with the same mood restarts the bubble`, async () => {
+      await page.evaluate(() => window.dispatchEvent(new CustomEvent("ui-fixture:scenario", { detail: "portfolio-mascot-unreconciled" })));
+      await page.locator("[data-mascot-bubble]").waitFor();
+      await assertMascot(page, "alert");
+      requireCondition(/holdings are unreconciled/i.test(await page.locator("[data-mascot-bubble]").innerText()), "same-mood prop transition retained the old source message");
+      requireCondition(await page.locator("[data-mascot-toggle]").getAttribute("aria-expanded") === "false", "changed message automatically expanded the panel");
+      await assertOpaqueMascotBubble(page);
+      return "alert source message expired; alert unreconciled message is newly visible while controls remain hidden";
     });
     await check(`${prefix} reduced motion disables mascot animation and fade`, async () => {
       await page.emulateMedia({ reducedMotion: "reduce" });
+      await page.locator("[data-mascot-toggle]").click();
+      await assertMascotExpanded(page);
       const styles = await page.locator("[data-mascot-companion], [data-mascot-companion] *").evaluateAll((elements) => elements.map((element) => {
         const style = getComputedStyle(element);
         return { animation: style.animationName, transition: style.transitionDuration, property: style.transitionProperty };
       }));
-      requireCondition(styles.every((style) => style.animation === "none" && (style.property === "none"
+      requireCondition(styles.length > 0 && styles.every((style) => style.animation === "none" && (style.property === "none"
         || style.transition.split(",").every((duration) => parseFloat(duration) <= 0.00001))), "mascot still animates with reduced motion");
+      await page.locator("[data-mascot-toggle]").click();
+      await assertMascotResting(page);
+      return `${styles.length} expanded companion elements: animation-name=none, transition durations=0; collapse leaves compact chip`;
     });
     await check(`${prefix} console remains clean across every mood and prop transition`, async () => {
       requireCondition(browserErrors.length === 0, browserErrors.join(" | "));
@@ -1258,39 +1415,113 @@ async function auditMascotInteractions(browser, viewport) {
   const prefix = `${viewport.name} production mascot`;
   try {
     const ready = await check(`${prefix} interaction route loads`, async () => {
-      const response = await page.goto(`${baseUrl}/portfolio`, { waitUntil: "networkidle", timeout: 45_000 });
+      const response = await page.goto(`${baseUrl}/`, { waitUntil: "networkidle", timeout: 45_000 });
       requireCondition(response?.ok(), `HTTP ${response?.status() ?? "unavailable"}`);
       await assertMascot(page);
+      requireCondition(await page.locator("[data-mascot-toggle]").getAttribute("aria-expanded") === "false", "fresh production document defaults expanded");
       requireCondition(await page.locator("[data-mascot-bubble]").isVisible(), "fresh default bubble is not visible");
     });
     if (!ready) return;
-    await check(`${prefix} mute hides the bubble, retains the sprite and persists on reload`, async () => {
+    await check(`${prefix} DOM transient bubble is opaque white without alpha`, () => assertOpaqueMascotBubble(page));
+    await check(`${prefix} DOM resting chip has no visible bubble or controls after six seconds`, async () => {
+      // Observe the real production timer and its fading DOM mutation. The
+      // shell must stay opaque even while its own text is fading away.
+      const timing = await page.evaluate(() => new Promise((resolve, reject) => {
+        const companion = document.querySelector("[data-mascot-companion]");
+        const started = performance.now();
+        let fading;
+        const observer = new MutationObserver(() => {
+          const bubble = companion.querySelector("[data-mascot-bubble]");
+          if (bubble?.classList.contains("is-fading")) {
+            const opacities = [];
+            for (let element = bubble; element; element = element.parentElement) opacities.push(getComputedStyle(element).opacity);
+            fading = { background: getComputedStyle(bubble).backgroundColor, opacities };
+          }
+          if (!bubble) {
+            clearTimeout(timeout);
+            observer.disconnect();
+            resolve({ elapsed: performance.now() - started, fading });
+          }
+        });
+        const timeout = setTimeout(() => { observer.disconnect(); reject(new Error("initial bubble did not settle within eight seconds")); }, 8_000);
+        observer.observe(companion, { childList: true, attributes: true, subtree: true });
+      }));
+      requireCondition(timing.elapsed >= 4_000 && timing.elapsed <= 8_000, `transient bubble duration after initial DOM checks was ${Math.round(timing.elapsed)}ms, expected about six seconds`);
+      requireCondition(timing.fading?.background === "rgb(255, 255, 255)" && timing.fading.opacities.every((opacity) => Number(opacity) === 1), "bubble shell becomes translucent during its dismissal fade");
+      const resting = await assertMascotResting(page);
+      await page.waitForTimeout(300);
+      await assertMascotResting(page);
+      return `${resting} · settled in ${Math.round(timing.elapsed)}ms after initial DOM checks · opaque through fade · no repeat`;
+    });
+    await check(`${prefix} DOM resting occlusion leaves home hero as-of/status metadata visible and hittable`, async () => {
+      await assertMascotResting(page);
+      return assertHomeMascotOcclusion(page, ".pnl-hero-asof > .pnl-status, .pnl-hero-asof > small, .pnl-hero-asof > p", "hero as-of/status metadata");
+    });
+    await check(`${prefix} DOM resting occlusion leaves home class legend visible and hittable`, async () => {
+      await assertMascotResting(page);
+      requireCondition(await page.locator(".pnl-class-values [data-value-class]").count() === 4, "home class legend does not contain its four classes");
+      return assertHomeMascotOcclusion(page, ".pnl-class-values [data-value-class] > small, .pnl-class-values [data-value-class] > strong, .pnl-class-values [data-value-class] > span:not(.pnl-class-dot)", "four-class legend labels and USD/THB values");
+    });
+    await check(`${prefix} DOM click expands the current bubble and controls; panel stays expanded`, async () => {
+      await page.locator("[data-mascot-toggle]").click();
+      const detail = await assertMascotExpanded(page);
+      await assertOpaqueMascotBubble(page);
+      await assertMascotPlacement(page);
+      await page.waitForTimeout(6_300);
+      await assertMascotExpanded(page);
+      return `${detail} · bubble and controls remain visible beyond the transient deadline`;
+    });
+    await check(`${prefix} DOM second click collapses back to the resting chip`, async () => {
+      await page.locator("[data-mascot-toggle]").click();
+      return assertMascotResting(page);
+    });
+    await check(`${prefix} DOM keyboard expands; Escape from expanded controls collapses and restores chip focus`, async () => {
+      const toggle = page.locator("[data-mascot-toggle]");
+      await toggle.focus();
+      await page.keyboard.press("Enter");
+      await assertMascotExpanded(page);
+      await page.getByLabel("Mute guide", { exact: true }).focus();
+      await page.keyboard.press("Escape");
+      await assertMascotResting(page);
+      requireCondition(await toggle.evaluate((button) => document.activeElement === button), "Escape from mute did not restore chip focus");
+      await page.keyboard.press("Space");
+      await assertMascotExpanded(page);
+      await page.getByRole("button", { name: "Hide guide", exact: true }).focus();
+      await page.keyboard.press("Escape");
+      await assertMascotResting(page);
+      requireCondition(await toggle.evaluate((button) => document.activeElement === button), "Escape from hide did not restore chip focus");
+      return "Enter and Space expand; Escape from Mute guide and Hide guide collapses, aria-expanded=false, focus returns to chip";
+    });
+    await check(`${prefix} DOM mute hides the bubble, retains the sprite and persists on reload`, async () => {
+      await page.locator("[data-mascot-toggle]").click();
       const mute = page.getByLabel("Mute guide", { exact: true });
       await mute.check();
       requireCondition(await mute.isChecked() && await mute.getAttribute("aria-pressed") === "true", "mute does not expose its pressed state");
       requireCondition(await page.locator("[data-mascot-bubble]").count() === 0 && await page.locator("[data-mascot-companion] img").isVisible(), "mute hides the sprite or leaves a bubble");
       requireCondition(await page.evaluate(() => localStorage.getItem("portmanager:mascot:muted")) === "true", "mute is not stored client-side");
+      await assertMascotExpanded(page);
       await page.reload({ waitUntil: "networkidle" });
+      await assertMascotResting(page);
+      await page.locator("[data-mascot-toggle]").click();
       requireCondition(await mute.isChecked() && await mute.getAttribute("aria-pressed") === "true", "reload lost mute");
       requireCondition(await page.locator("[data-mascot-bubble]").count() === 0 && await page.locator("[data-mascot-companion] img").isVisible(), "reload reveals a muted bubble or loses the sprite");
       await mute.focus();
       await page.keyboard.press("Space");
       requireCondition(!await mute.isChecked() && await mute.getAttribute("aria-pressed") === "false", "keyboard unmute does not update state");
       requireCondition(await page.locator("[data-mascot-bubble]").isVisible(), "keyboard unmute does not restore bubble");
+      await mute.focus();
+      await page.keyboard.press("Enter");
+      requireCondition(await mute.isChecked() && !await page.locator("[data-mascot-bubble]").isVisible(), "Enter does not mute the guide");
+      await page.keyboard.press("Enter");
+      requireCondition(!await mute.isChecked() && await page.locator("[data-mascot-bubble]").isVisible(), "Enter does not unmute the guide");
+      return "mute checkbox/aria-pressed/localStorage agree · expanded sprite stays visible · reload rests silently · Space/Enter unmute restore current bubble";
     });
-    await check(`${prefix} bubble settles once into a status dot after six seconds`, async () => {
-      await page.locator("[data-mascot-bubble]").waitFor({ state: "detached", timeout: 8_000 });
-      requireCondition(await page.locator("[data-mascot-status]").isVisible(), "elapsed bubble does not leave a status dot");
-      requireCondition(await page.locator("[data-mascot-companion] img").isVisible(), "elapsed bubble hides the sprite");
-      await page.waitForTimeout(300);
-      requireCondition(await page.locator("[data-mascot-bubble]").count() === 0, "bubble animation loops");
-    });
-    await check(`${prefix} hide survives real client navigation and resets on reload`, async () => {
+    await check(`${prefix} DOM hide removes the companion, survives client navigation and resets on reload`, async () => {
       const documentToken = await page.evaluate(() => performance.timeOrigin);
       await page.getByRole("button", { name: "Hide guide", exact: true }).click();
       requireCondition(await page.locator("[data-mascot-companion]").count() === 0, "hide leaves the companion visible");
       requireCondition(await page.evaluate(() => localStorage.getItem("portmanager:mascot:hidden-document")) === String(documentToken), "hide is not persisted for this document");
-      for (const [name, route] of [["Asset List", "/asset-list"], ["Exchange Rate", "/exchange-rate"], ["Home", "/"]]) {
+      for (const [name, route] of [["Portfolio", "/portfolio"], ["Asset List", "/asset-list"], ["Exchange Rate", "/exchange-rate"], ["Home", "/"]]) {
         await page.locator(".nav-menu").getByRole("link", { name, exact: true }).click();
         await page.waitForURL(`${baseUrl}${route}`, { waitUntil: "networkidle", timeout: 45_000 });
         requireCondition(await page.evaluate(() => performance.timeOrigin) === documentToken, `${route} used a full document load instead of client navigation`);
@@ -1299,11 +1530,14 @@ async function auditMascotInteractions(browser, viewport) {
       await page.reload({ waitUntil: "networkidle" });
       requireCondition(await page.evaluate(() => performance.timeOrigin) !== documentToken, "reload did not create a new document");
       await assertMascot(page);
+      requireCondition(await page.locator("[data-mascot-toggle]").getAttribute("aria-expanded") === "false", "reload restored an expanded panel");
+      await page.locator("[data-mascot-toggle]").click();
       requireCondition(!await page.getByLabel("Mute guide", { exact: true }).isChecked(), "reload lost the separately persisted unmuted state");
-      return "hidden across all four pages in one document; visible after reload";
+      return "companion absent across all four pages in one document; collapsed chip restored after reload; independent mute preference retained";
     });
-    await check(`${prefix} interaction and hydration console stays clean`, async () => {
+    await check(`${prefix} DOM interaction and hydration console stays clean`, async () => {
       requireCondition(browserErrors.length === 0, browserErrors.join(" | "));
+      return "zero page errors, hydration errors or console errors";
     });
   } finally {
     await page.close();
@@ -1454,6 +1688,12 @@ try {
 const failures = results.filter((result) => !result.passed);
 const mascotResults = results.filter((result) => /mascot/i.test(result.label));
 const mascotFailures = mascotResults.filter((result) => !result.passed);
+const mascotDomResults = mascotResults.filter((result) => /\bDOM\b/.test(result.label));
+const mascotDomFailures = mascotDomResults.filter((result) => !result.passed);
+const mascotOcclusionResults = mascotDomResults.filter((result) => /resting.*(?:chip|occlusion)/i.test(result.label));
+const mascotOcclusionFailures = mascotOcclusionResults.filter((result) => !result.passed);
+process.stdout.write(`\n${mascotOcclusionFailures.length === 0 ? "PASS" : "FAIL"} | Mascot resting/occlusion summary — ${mascotOcclusionResults.length - mascotOcclusionFailures.length}/${mascotOcclusionResults.length} checks passed at 1440×1000 and 390×844\n`);
+process.stdout.write(`${mascotDomFailures.length === 0 ? "PASS" : "FAIL"} | Screenshot-free mascot DOM assertion summary — ${mascotDomResults.length - mascotDomFailures.length}/${mascotDomResults.length} checks passed (individual DOM assertions printed above)\n`);
 process.stdout.write(`\n${mascotFailures.length === 0 ? "PASS" : "FAIL"} | Mascot contract summary — ${mascotResults.length - mascotFailures.length}/${mascotResults.length} checks passed\n`);
 process.stdout.write(`\n${failures.length === 0 ? "PASS" : "FAIL"} | UI contract summary — ${results.length - failures.length}/${results.length} checks passed\n`);
 if (failures.length > 0) process.exitCode = 1;

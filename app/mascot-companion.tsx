@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { MascotState } from "@/lib/mascot";
 import "./mascot-companion.css";
 
@@ -74,40 +74,82 @@ function hideGuide() {
 }
 
 function CompanionView({ state, muted }: { state: MascotState; muted: boolean }) {
-  const [bubblePhase, setBubblePhase] = useState<"visible" | "fading" | "quiet">("visible");
+  const [expanded, setExpanded] = useState(false);
+  const chipRef = useRef<HTMLButtonElement>(null);
+  const [bubble, setBubble] = useState<{
+    mood: MascotState["mood"];
+    message: string;
+    muted: boolean;
+    phase: "visible" | "fading" | "quiet";
+  }>({ ...state, muted, phase: "visible" });
+
+  // Reset only the finite announcement when server copy or mute changes.
+  // Keep the panel and focused controls mounted across those updates.
+  if (bubble.mood !== state.mood || bubble.message !== state.message || bubble.muted !== muted) {
+    setBubble({ ...state, muted, phase: "visible" });
+  }
 
   useEffect(() => {
     if (muted) return;
-    const fade = window.setTimeout(() => setBubblePhase("fading"), 6000);
-    const settle = window.setTimeout(() => setBubblePhase("quiet"), 6160);
+    const fade = window.setTimeout(() => setBubble((current) => ({
+      ...current,
+      phase: current.phase === "quiet" || window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "quiet" : "fading",
+    })), 6000);
+    const settle = window.setTimeout(() => setBubble((current) => ({ ...current, phase: "quiet" })), 6160);
     return () => {
       window.clearTimeout(fade);
       window.clearTimeout(settle);
     };
-  }, [muted]);
+  }, [state.mood, state.message, muted]);
 
-  const showBubble = !muted && bubblePhase !== "quiet";
+  function collapse() {
+    setExpanded(false);
+    setBubble((current) => ({ ...current, phase: "quiet" }));
+    chipRef.current?.focus();
+  }
+
+  const showBubble = !muted && (expanded || bubble.phase !== "quiet");
+  const fading = !expanded && bubble.phase === "fading";
 
   return (
-    <aside className="mascot-companion" aria-label="PortManager guide" data-mascot-companion data-mascot-mood={state.mood}>
+    <aside
+      className={`mascot-companion${expanded ? " is-expanded" : ""}`}
+      aria-label="PortManager guide"
+      data-mascot-companion
+      data-mascot-mood={state.mood}
+      onKeyDown={(event) => {
+        if (event.key === "Escape" && expanded) {
+          event.preventDefault();
+          collapse();
+        }
+      }}
+    >
       {showBubble && (
         <p
-          className={`mascot-bubble${bubblePhase === "fading" ? " is-fading" : ""}`}
+          className={`mascot-bubble${fading ? " is-fading" : ""}`}
           data-mascot-bubble
           role="status"
-          aria-hidden={bubblePhase === "fading"}
+          aria-hidden={fading}
         >
-          {state.message}
+          <span>{state.message}</span>
         </p>
       )}
       <div className="mascot-card">
-        {(!showBubble || bubblePhase === "fading") && (
+        <button
+          ref={chipRef}
+          type="button"
+          className="mascot-chip"
+          data-mascot-toggle
+          aria-label="Toggle guide"
+          aria-expanded={expanded}
+          onClick={() => expanded ? collapse() : setExpanded(true)}
+        >
+          {/* The supplied sprites are already-sized image cards, not cutouts. */}
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src={`/mascot/mascot-${state.mood}.webp`} width={320} height={480} alt={`PortManager guide — ${state.mood}`} className="mascot-sprite" />
           <span className="mascot-status" data-mascot-status aria-label={`Guide status: ${state.mood}`} role="img" />
-        )}
-        {/* The supplied sprites are already-sized image cards, not cutouts. */}
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img src={`/mascot/mascot-${state.mood}.webp`} width={320} height={480} alt={`PortManager guide — ${state.mood}`} className="mascot-sprite" />
-        <div className="mascot-controls">
+        </button>
+        {expanded && <div className="mascot-controls">
           <label className="mascot-mute">
             <input
               type="checkbox"
@@ -125,8 +167,8 @@ function CompanionView({ state, muted }: { state: MascotState; muted: boolean })
             />
             <span>Mute guide</span>
           </label>
-          <button type="button" onClick={hideGuide}>Hide guide</button>
-        </div>
+          <button type="button" aria-label="Hide guide" onClick={hideGuide}>Hide guide</button>
+        </div>}
       </div>
     </aside>
   );
@@ -137,6 +179,5 @@ export default function MascotCompanion({ state }: { state: MascotState }) {
   if (storedPreferences & HIDDEN) return null;
   const muted = Boolean(storedPreferences & MUTED);
 
-  // A changed server message (or unmute) starts one fresh, finite bubble.
-  return <CompanionView key={`${state.mood}:${state.message}:${muted}`} state={state} muted={muted} />;
+  return <CompanionView state={state} muted={muted} />;
 }

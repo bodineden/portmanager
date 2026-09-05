@@ -54,40 +54,43 @@ Each page derives mood/message after its existing `getJoinedPortfolio()` call. `
 
 `lib/pnl-history.ts` adds `createSnapshotHistoryReader` and `readPortfolioSnapshotHistory`, returning `{ snapshots, available }`. A successful empty result is available; absent configuration, malformed/rejected records, query/construction failure or timeout report unavailable. Valid rows remain usable even if other records are rejected. Existing `createSnapshotReader`/`listPortfolioSnapshots` callers retain their array return values and fail-soft behavior. Home reuses its existing history read; the other three pages add one bounded SELECT. The recorder, SQL selection, normalization and two-second timeout behavior are preserved. This introduces no provider, API or database mutation.
 
-**Companion behavior**
+**Polish round — occlusion fix**
 
-`app/mascot-companion.tsx` and its dedicated CSS add a bottom-right image card using existing light tokens, Outfit, rounded borders and shadows. The original 320×480 WebP sprites retain explicit intrinsic dimensions and meaningful `PortManager guide — <mood>` alt text. Display width is 128px on desktop and 104px on mobile; backgrounds are displayed as supplied, without treating the art as transparent cutouts.
+This round starts from `d21b7db` on `feat/pnl-mascot` and implements `BRIEF-PNL-MASCOT-FIX.md`. The parent's production visual QA identified that the always-expanded card and controls obscured the home value hero's metadata and class legend. It also identified underlying text showing through the bubble. The earlier visual acceptance is superseded by this finding and the checks below.
 
-The server and first hydration render show the guide. `useSyncExternalStore` loads browser preferences after hydration. Bubbles remain for six seconds, fade once over 160ms, and become a small status dot. Reduced motion disables that transition; there is no looping animation or voice. Changed mood/message props or unmuting starts a fresh finite bubble.
+The change is restricted to `app/mascot-companion.tsx`, `app/mascot-companion.css`, mascot assertions in `scripts/ui-contract-check.mjs`, and this report. `lib/mascot.ts`, its mood/message contract, all page mounts, data/API/auth/proxy/package files, dependencies and supplied sprites remain unchanged.
 
-`Mute guide` is a labelled native checkbox exposed as a toggle button with `aria-pressed`, Space and Enter activation. Muting hides bubbles while preserving the sprite. `Hide guide` is a non-form `button type="button"`. The only new control labels are those two safe labels. Existing POST-only sidebar logout is untouched.
+**Final interaction model**
 
-Mute persists in `localStorage` under `portmanager:mascot:muted`. Hide stores the current document's `performance.timeOrigin` under `portmanager:mascot:hidden-document`: it survives client navigation but resets on reload, following the brief's explicit reload rule. Storage failure falls back to current-document memory so controls still work without browser errors. Mute changes synchronize between open documents.
+The companion starts collapsed. Its resting card is 64px wide and about 96px tall, with a 2:3 sprite, 12px corners, app border/shadow tokens and a tiny status dot. No bubble or controls remain once the initial announcement finishes. The sprite retains its intrinsic 320×480 dimensions and `PortManager guide — <mood>` alt text.
 
-The fixed wrapper has `pointer-events: none`; only the visible bubble/card receive pointer events. Blank bounds and a faded bubble pass clicks through. The sidebar remains above the guide. The guide's visible card necessarily overlays a small part of the content; Hide makes that area accessible. Existing page layout/styles are unchanged.
+Initial load, changed mood/message values and unmuting start a finite announcement. The bubble displays for six seconds, then its text fades for 160ms before the bubble is removed. Its white background and every ancestor remain fully opaque throughout: only the text fades, so underlying dashboard text cannot show through the surface. The bubble uses a 1px #DFE5F2 border, 10px corners, the standard shadow and Outfit. Reduced motion removes the text transition and settles directly after six seconds.
 
-**Verification and human review limits**
+The native `Toggle guide` button exposes `aria-expanded`. Clicking or keyboard activation expands the card to 128px with the current bubble and the labelled `Mute guide` checkbox and `Hide guide` button. An expanded bubble stays available until collapse or mute. Clicking the chip again or pressing Escape within the companion collapses it immediately to the resting chip and returns focus to the chip. A later mood/message change starts a new finite announcement without resetting expansion or remounting focused controls.
 
-`lib/mascot.test.ts` adds 56 tests covering all nine moods, each live/partial/unavailable source, total outage specialization, unreconciled priority, history evidence, basis priority, null/nonfinite/zero-eligible guards, exact excited threshold, complete coverage/exclusions, UTC boundaries, healthy empty books, immutable input and actual pure joined airdrop-free fixtures. `lib/mascot-history.test.ts` adds five offline tests for the availability boundary. All 112 existing tests remain unmodified.
+Mute hides bubbles while retaining the chip, exposes the checkbox state through `aria-pressed`, and supports Space and Enter. It persists across prop changes, navigation and reload under the existing `portmanager:mascot:muted` key. Hide preserves the existing `portmanager:mascot:hidden-document` token: dismissal survives client navigation within this document, and reload restores the collapsed companion. Browser storage failure retains the existing in-memory fallback; mute synchronization across documents is preserved.
 
-The browser harness extends the existing production-route and synthetic fixture checks. It verifies four logged-in mounts and login absence at 1440px and 390px; SSR markup; sprite loading, dimensions and alt text; fixture moods and qualitative copy constraints; mute, hide and persistence; finite bubble timing, reduced motion, safe control labels, pointer boundaries and sidebar access; clean browser console; and horizontal overflow of at most one pixel. Fixture data is synthetic and the fixture server remains outside the app routes.
+The fixed wrapper matches the compact or expanded card width and has `pointer-events: none`; only visible surfaces receive pointer events. The bubble is positioned above the card. Page layouts are unchanged, and the sidebar remains above the companion.
 
-Bubbles intentionally carry no monetary or percentage numbers: only the dashboard can display amounts with the relevant observation and eligibility context. Mood reflects a supplied observation, never a prediction, recommendation or statement about unrecorded holdings. Unknown value remains unknown, including during complete provider outages.
+**Verification**
 
-The human review should consider the documented priority/copy conflict resolutions, the additional bounded history read on three pages, the deliberately small floating card, and the brief's Hide-reset-on-reload behavior. Local production QA uses the existing temporary `/tmp/portmanager-pnl-offline.mjs` preload, which rejects external fetches and supplies no invented provider responses. Actual provider credentials and configured production authentication remain for the parent's live verification after merge; no auth/proxy settings were changed.
+The unchanged unit suite covers 112 existing tests, 56 pure mood/copy tests and five snapshot availability tests: **173/173 across 12 files**. The original harness baseline was 201 other UI checks plus 80 mascot checks (**281/281**). The final harness passes **297/297** checks: **201 other UI checks + 96 mascot checks**, including **26 screenshot-free DOM assertions** and **8 resting/occlusion checks**. This adds 16 mascot checks to the original baseline. The updated harness preserves those contracts while adapting controls, persistence and timers to the collapsed/expanded model, and adds explicit resting, opacity, keyboard and home occlusion assertions.
 
-**Printed self-QA**
+Production QA runs at **1440×1000** and **390×844**. It distinguishes first-view text hit tests at scroll position zero from any below-fold targets that need a separate scroll into view. It checks hero status/as-of/explanatory text and every class legend label/value, not only body overflow. Console, all nine mood sprites, login absence, source honesty and existing UI contracts remain part of the harness.
 
-All checks completed successfully. The production build passed twice: the first build ran the local production harness, and the final build checked the completed fixture-entry TypeScript as well. Full tests were repeated after the fixture changes settled; the final count remains 112 existing + 56 mood + 5 history-availability = **173**. Lint has only the allowed pre-existing proxy warning. The full harness passed its previous 201 checks plus **80 mascot checks**, for **281/281**.
+Local production QA uses the existing `/tmp/portmanager-pnl-offline.mjs` preload, which rejects external fetches without fabricating provider data. This exercises genuine unavailable-provider rendering; the existing separate browser fixture server supplies synthetic data for deterministic mood and prop-transition coverage. It does not change application authentication or proxy configuration. Standalone fixtures inherit the declared Arial fallback because they do not load Next’s root layout; the harness checks their inherited body font and strictly requires Outfit on the production origin.
+
+**Printed self-QA — polish round**
+
+All required commands completed successfully. Lint reports **0 errors** and the single pre-existing `proxy.ts` unused-function warning. The production build passes. Both viewports show a **64×95px** resting card with **3/3 hero metadata text targets and 12/12 class legend text targets visible and hit-testable in the first view**; none needed scrolling. No browser console, page or hydration errors were recorded.
 
 ```text
 npm test
-RUN v4.1.10 /home/user/projects/portmanager
-Test Files  12 passed (12)
+ Test Files  12 passed (12)
       Tests  173 passed (173)
-   Start at  09:16:33
-   Duration  1.94s (transform 946ms, setup 0ms, import 2.11s, tests 1.72s, environment 1ms)
+   Duration  2.60s (transform 1.39s, setup 0ms, import 2.80s, tests 2.08s, environment 1ms)
 
+npm run lint
 npm notice run portmanager@0.1.0 lint
 npm notice run eslint
 
@@ -96,12 +99,13 @@ npm notice run eslint
 
 ✖ 1 problem (0 errors, 1 warning)
 
+npm run build
 npm notice run portmanager@0.1.0 build
 npm notice run next build
 ▲ Next.js 16.2.6 (Turbopack)
 
   Creating an optimized production build ...
-✓ Compiled successfully in 4.0s
+✓ Compiled successfully in 5.2s
   Running TypeScript ...
   Finished TypeScript in 2.5s ...
   Collecting page data using 7 workers ...
@@ -109,7 +113,7 @@ npm notice run next build
   Generating static pages using 7 workers (1/5)
   Generating static pages using 7 workers (2/5)
   Generating static pages using 7 workers (3/5)
-✓ Generating static pages using 7 workers (5/5) in 90ms
+✓ Generating static pages using 7 workers (5/5) in 101ms
   Finalizing page optimization ...
 
 Route (app)
@@ -137,101 +141,47 @@ npm notice run next start --hostname 127.0.0.1 --port 8125
 ▲ Next.js 16.2.6
 - Local:         http://127.0.0.1:8125
 - Network:       http://127.0.0.1:8125
-✓ Ready in 60ms
+✓ Ready in 59ms
 
 node scripts/ui-contract-check.mjs
-PASS | desktop / mascot server HTML defaults visible only after login — visible sprite present before hydration
-PASS | desktop / mascot renders an accessible sprite and read-only controls — sad · matching WebP/alt · 320×480 · number-free copy · safe controls
-PASS | desktop / mascot preserves navigation, page hit targets and viewport bounds — 0px overflow · nav clickable · blank overlay passes through
-PASS | desktop /asset-list mascot server HTML defaults visible only after login — visible sprite present before hydration
-PASS | desktop /asset-list mascot renders an accessible sprite and read-only controls — sad · matching WebP/alt · 320×480 · number-free copy · safe controls
-PASS | desktop /asset-list mascot preserves navigation, page hit targets and viewport bounds — 0px overflow · nav clickable · blank overlay passes through
-PASS | desktop /portfolio mascot server HTML defaults visible only after login — visible sprite present before hydration
-PASS | desktop /portfolio mascot renders an accessible sprite and read-only controls — sad · matching WebP/alt · 320×480 · number-free copy · safe controls
-PASS | desktop /portfolio mascot preserves navigation, page hit targets and viewport bounds — 0px overflow · nav clickable · blank overlay passes through
-PASS | desktop /exchange-rate mascot server HTML defaults visible only after login — visible sprite present before hydration
-PASS | desktop /exchange-rate mascot renders an accessible sprite and read-only controls — sad · matching WebP/alt · 320×480 · number-free copy · safe controls
-PASS | desktop /exchange-rate mascot preserves navigation, page hit targets and viewport bounds — 0px overflow · nav clickable · blank overlay passes through
-PASS | desktop /asset-master mascot server HTML defaults visible only after login — visible sprite present before hydration
-PASS | desktop /asset-master mascot renders an accessible sprite and read-only controls — sad · matching WebP/alt · 320×480 · number-free copy · safe controls
-PASS | desktop /asset-master mascot preserves navigation, page hit targets and viewport bounds — 0px overflow · nav clickable · blank overlay passes through
-PASS | desktop /login mascot server HTML defaults visible only after login — absent from login HTML
-PASS | desktop /login mascot remains absent after hydration
-PASS | desktop production mascot interaction route loads
-PASS | desktop production mascot mute hides the bubble, retains the sprite and persists on reload
-PASS | desktop production mascot bubble settles once into a status dot after six seconds
-PASS | desktop production mascot hide survives real client navigation and resets on reload — hidden across all four pages in one document; visible after reload
-PASS | desktop production mascot interaction and hydration console stays clean
-PASS | mobile / mascot server HTML defaults visible only after login — visible sprite present before hydration
-PASS | mobile / mascot renders an accessible sprite and read-only controls — sad · matching WebP/alt · 320×480 · number-free copy · safe controls
-PASS | mobile / mascot preserves navigation, page hit targets and viewport bounds — 0px overflow · nav clickable · blank overlay passes through
-PASS | mobile /asset-list mascot server HTML defaults visible only after login — visible sprite present before hydration
-PASS | mobile /asset-list mascot renders an accessible sprite and read-only controls — sad · matching WebP/alt · 320×480 · number-free copy · safe controls
-PASS | mobile /asset-list mascot preserves navigation, page hit targets and viewport bounds — 0px overflow · nav clickable · blank overlay passes through
-PASS | mobile /portfolio mascot server HTML defaults visible only after login — visible sprite present before hydration
-PASS | mobile /portfolio mascot renders an accessible sprite and read-only controls — sad · matching WebP/alt · 320×480 · number-free copy · safe controls
-PASS | mobile /portfolio mascot preserves navigation, page hit targets and viewport bounds — 0px overflow · nav clickable · blank overlay passes through
-PASS | mobile /exchange-rate mascot server HTML defaults visible only after login — visible sprite present before hydration
-PASS | mobile /exchange-rate mascot renders an accessible sprite and read-only controls — sad · matching WebP/alt · 320×480 · number-free copy · safe controls
-PASS | mobile /exchange-rate mascot preserves navigation, page hit targets and viewport bounds — 0px overflow · nav clickable · blank overlay passes through
-PASS | mobile /asset-master mascot server HTML defaults visible only after login — visible sprite present before hydration
-PASS | mobile /asset-master mascot renders an accessible sprite and read-only controls — sad · matching WebP/alt · 320×480 · number-free copy · safe controls
-PASS | mobile /asset-master mascot preserves navigation, page hit targets and viewport bounds — 0px overflow · nav clickable · blank overlay passes through
-PASS | mobile /login mascot server HTML defaults visible only after login — absent from login HTML
-PASS | mobile /login mascot remains absent after hydration
-PASS | mobile production mascot interaction route loads
-PASS | mobile production mascot mute hides the bubble, retains the sprite and persists on reload
-PASS | mobile production mascot bubble settles once into a status dot after six seconds
-PASS | mobile production mascot hide survives real client navigation and resets on reload — hidden across all four pages in one document; visible after reload
-PASS | mobile production mascot interaction and hydration console stays clean
-PASS | desktop mascot fixture portfolio-live derives calm — Healthy empty joined holding set, no recorded gain or loss.
-PASS | desktop mascot fixture portfolio-unavailable derives sad — Every source offline and joined total unknown.
-PASS | desktop mascot fixture portfolio-mascot-thinking derives thinking — Sources all live; one holding has no acquisition basis.
-PASS | desktop mascot fixture portfolio-mascot-worried derives worried — Eligible recorded loss beats otherwise complete coverage.
-PASS | desktop mascot fixture portfolio-mascot-happy derives happy — Recorded gain below threshold; dust excluded, no missing basis.
-PASS | desktop mascot fixture portfolio-mascot-excited derives excited — Recorded gain with full basis coverage, even below threshold.
-PASS | desktop mascot fixture portfolio-mascot-proud derives proud — Flat recorded P&L and every holding eligible.
-PASS | desktop mascot fixture portfolio-mascot-sleepy derives sleepy — Healthy flat eligible subset with dust; no higher priority state.
-PASS | desktop mascot fixture portfolio-mascot-alert derives alert — One partial source outranks a recorded gain.
-PASS | desktop mascot fixture portfolio-mascot-history-unavailable derives alert — All sources live but snapshot history unavailable.
-PASS | desktop mascot fixture portfolio-mascot-unreconciled derives alert — An unreconciled holding outranks missing acquisition basis.
-PASS | desktop mascot fixture portfolio-mascot-excited-partial derives excited — Threshold reached with excluded dust, without claiming full coverage.
-PASS | desktop mascot fixture portfolio-mascot-airdrop derives happy — Verified free acquisition has positive recorded P&L and no percentage; dust keeps coverage partial.
-PASS | desktop mascot fixture portfolio-mascot-null-pnl derives calm — Only excluded dust; unknown P&L never implies a gain or loss.
+PASS | desktop production mascot DOM transient bubble is opaque white without alpha — computed background rgb(255, 255, 255) · opacity 1 through every ancestor · #DFE5F2 border · 10px radius · app body font Outfit, Arial, sans-serif, Arial, sans-serif
+PASS | desktop production mascot DOM resting chip has no visible bubble or controls after six seconds — 64×95px chip · 2:3 sprite · tiny status dot · no visible bubble or controls · settled in 5523ms after initial DOM checks · opaque through fade · no repeat
+PASS | desktop production mascot DOM resting occlusion leaves home hero as-of/status metadata visible and hittable — hero as-of/status metadata: 3/3 text targets intersect first view and are unoccluded/hittable; 0 outside/partial first-view targets separately scrolled fully into view and hit-tested
+PASS | desktop production mascot DOM resting occlusion leaves home class legend visible and hittable — four-class legend labels and USD/THB values: 12/12 text targets intersect first view and are unoccluded/hittable; 0 outside/partial first-view targets separately scrolled fully into view and hit-tested
+PASS | desktop production mascot DOM click expands the current bubble and controls; panel stays expanded — 128px panel · aria-expanded=true · visible safe controls · current bubble visible · bubble and controls remain visible beyond the transient deadline
+PASS | desktop production mascot DOM second click collapses back to the resting chip — 64×95px chip · 2:3 sprite · tiny status dot · no visible bubble or controls
+PASS | desktop production mascot DOM keyboard expands; Escape from expanded controls collapses and restores chip focus — Enter and Space expand; Escape from Mute guide and Hide guide collapses, aria-expanded=false, focus returns to chip
+PASS | desktop production mascot DOM mute hides the bubble, retains the sprite and persists on reload — mute checkbox/aria-pressed/localStorage agree · expanded sprite stays visible · reload rests silently · Space/Enter unmute restore current bubble
+PASS | desktop production mascot DOM hide removes the companion, survives client navigation and resets on reload — companion absent across all four pages in one document; collapsed chip restored after reload; independent mute preference retained
+PASS | desktop production mascot DOM interaction and hydration console stays clean — zero page errors, hydration errors or console errors
+PASS | mobile production mascot DOM transient bubble is opaque white without alpha — computed background rgb(255, 255, 255) · opacity 1 through every ancestor · #DFE5F2 border · 10px radius · app body font Outfit, Arial, sans-serif, Arial, sans-serif
+PASS | mobile production mascot DOM resting chip has no visible bubble or controls after six seconds — 64×95px chip · 2:3 sprite · tiny status dot · no visible bubble or controls · settled in 5505ms after initial DOM checks · opaque through fade · no repeat
+PASS | mobile production mascot DOM resting occlusion leaves home hero as-of/status metadata visible and hittable — hero as-of/status metadata: 3/3 text targets intersect first view and are unoccluded/hittable; 0 outside/partial first-view targets separately scrolled fully into view and hit-tested
+PASS | mobile production mascot DOM resting occlusion leaves home class legend visible and hittable — four-class legend labels and USD/THB values: 12/12 text targets intersect first view and are unoccluded/hittable; 0 outside/partial first-view targets separately scrolled fully into view and hit-tested
+PASS | mobile production mascot DOM click expands the current bubble and controls; panel stays expanded — 128px panel · aria-expanded=true · visible safe controls · current bubble visible · bubble and controls remain visible beyond the transient deadline
+PASS | mobile production mascot DOM second click collapses back to the resting chip — 64×95px chip · 2:3 sprite · tiny status dot · no visible bubble or controls
+PASS | mobile production mascot DOM keyboard expands; Escape from expanded controls collapses and restores chip focus — Enter and Space expand; Escape from Mute guide and Hide guide collapses, aria-expanded=false, focus returns to chip
+PASS | mobile production mascot DOM mute hides the bubble, retains the sprite and persists on reload — mute checkbox/aria-pressed/localStorage agree · expanded sprite stays visible · reload rests silently · Space/Enter unmute restore current bubble
+PASS | mobile production mascot DOM hide removes the companion, survives client navigation and resets on reload — companion absent across all four pages in one document; collapsed chip restored after reload; independent mute preference retained
+PASS | mobile production mascot DOM interaction and hydration console stays clean — zero page errors, hydration errors or console errors
 PASS | desktop mascot fixture covers all nine distinct mood sprites — 9 mood sprites loaded with intrinsic dimensions and meaningful alt text
-PASS | desktop mascot fixture new server props refresh mood and preserve mute
-PASS | desktop mascot fixture reduced motion disables mascot animation and fade
-PASS | desktop mascot fixture console remains clean across every mood and prop transition
-PASS | mobile mascot fixture portfolio-live derives calm — Healthy empty joined holding set, no recorded gain or loss.
-PASS | mobile mascot fixture portfolio-unavailable derives sad — Every source offline and joined total unknown.
-PASS | mobile mascot fixture portfolio-mascot-thinking derives thinking — Sources all live; one holding has no acquisition basis.
-PASS | mobile mascot fixture portfolio-mascot-worried derives worried — Eligible recorded loss beats otherwise complete coverage.
-PASS | mobile mascot fixture portfolio-mascot-happy derives happy — Recorded gain below threshold; dust excluded, no missing basis.
-PASS | mobile mascot fixture portfolio-mascot-excited derives excited — Recorded gain with full basis coverage, even below threshold.
-PASS | mobile mascot fixture portfolio-mascot-proud derives proud — Flat recorded P&L and every holding eligible.
-PASS | mobile mascot fixture portfolio-mascot-sleepy derives sleepy — Healthy flat eligible subset with dust; no higher priority state.
-PASS | mobile mascot fixture portfolio-mascot-alert derives alert — One partial source outranks a recorded gain.
-PASS | mobile mascot fixture portfolio-mascot-history-unavailable derives alert — All sources live but snapshot history unavailable.
-PASS | mobile mascot fixture portfolio-mascot-unreconciled derives alert — An unreconciled holding outranks missing acquisition basis.
-PASS | mobile mascot fixture portfolio-mascot-excited-partial derives excited — Threshold reached with excluded dust, without claiming full coverage.
-PASS | mobile mascot fixture portfolio-mascot-airdrop derives happy — Verified free acquisition has positive recorded P&L and no percentage; dust keeps coverage partial.
-PASS | mobile mascot fixture portfolio-mascot-null-pnl derives calm — Only excluded dust; unknown P&L never implies a gain or loss.
+PASS | desktop mascot fixture DOM new server props refresh mood and preserve expanded mute — thinking → worried while muted: expanded controls retained, checkbox/aria-pressed/localStorage stay true, no bubble; unmute shows latest message
+PASS | desktop mascot fixture DOM new mood restarts a finite transient bubble without expanding — 64×95px chip · 2:3 sprite · tiny status dot · no visible bubble or controls
+PASS | desktop mascot fixture DOM changed message with the same mood restarts the bubble — alert source message expired; alert unreconciled message is newly visible while controls remain hidden
+PASS | desktop mascot fixture reduced motion disables mascot animation and fade — 12 expanded companion elements: animation-name=none, transition durations=0; collapse leaves compact chip
 PASS | mobile mascot fixture covers all nine distinct mood sprites — 9 mood sprites loaded with intrinsic dimensions and meaningful alt text
-PASS | mobile mascot fixture new server props refresh mood and preserve mute
-PASS | mobile mascot fixture reduced motion disables mascot animation and fade
-PASS | mobile mascot fixture console remains clean across every mood and prop transition
-PASS | Mascot contract summary — 80/80 checks passed
-PASS | UI contract summary — 281/281 checks passed
-
-Grep anchors and protected-file checks
-PASS | mascot-companion mounts = 4 pages (app/portfolio/page.tsx, app/asset-list/page.tsx, app/page.tsx, app/exchange-rate/page.tsx); login = 0
-PASS | meaningful mood alt text + explicit 320×480 dimensions; 9 committed sprites
-PASS | new control labels: Mute guide / Hide guide; banned words = 0
-PASS | bp6-dark in app/ = 0
-PASS | protected auth/data/config/package/page design files unchanged
-PASS | companion has no live-data import, provider access or voice
+PASS | mobile mascot fixture DOM new server props refresh mood and preserve expanded mute — thinking → worried while muted: expanded controls retained, checkbox/aria-pressed/localStorage stay true, no bubble; unmute shows latest message
+PASS | mobile mascot fixture DOM new mood restarts a finite transient bubble without expanding — 64×95px chip · 2:3 sprite · tiny status dot · no visible bubble or controls
+PASS | mobile mascot fixture DOM changed message with the same mood restarts the bubble — alert source message expired; alert unreconciled message is newly visible while controls remain hidden
+PASS | mobile mascot fixture reduced motion disables mascot animation and fade — 12 expanded companion elements: animation-name=none, transition durations=0; collapse leaves compact chip
+PASS | Mascot resting/occlusion summary — 8/8 checks passed at 1440×1000 and 390×844
+PASS | Screenshot-free mascot DOM assertion summary — 26/26 checks passed (individual DOM assertions printed above)
+PASS | Mascot contract summary — 96/96 checks passed
+PASS | UI contract summary — 297/297 checks passed
 ```
 
-The production checks recorded zero horizontal overflow at both viewport widths, and no browser errors. Visual inspection of the local desktop/mobile screenshots confirmed the rounded full-body sprite, readable bubble and accessible navigation. Screenshots and raw command logs remain in `/tmp/portmanager-pnl-mascot-qa/` rather than the commit. The local production server was stopped after QA.
+These DOM assertions prove the complete interaction sequence without screenshots: quiet chip without bubble/controls; click expansion with both visible; opaque white bubble through dismissal; persistent mute across server prop changes and reload; document-scoped hide across all four companion pages; Escape collapse with focus restoration; and clean consoles. Separate checks retain all nine moods, same-mood message refresh, finite announcements, unchanged-prop quiet state and reduced motion.
 
-Independent read-only review found no additional implementation defects; it specifically confirmed the four additive mounts, legacy history-reader compatibility, protected-file preservation and the documented copy/priority decisions. `git diff --check` passed. Only the fifteen implementation/test/harness/report paths belong to this change; pre-existing briefs, reports, backups and screenshots are excluded. Delivery is restricted to `feat/pnl-mascot`; main and deployment are reserved for the parent. The existing rollback tag is `pre-pnl-mascot-2026-09-05`, with the supplied `backups/site-pre-pnl-mascot-2026-09-05/` snapshot untouched.
+Independent read-only implementation and production DOM reviews found no further defects. `git diff --check` passes. Raw command output remains in `/tmp/portmanager-mascot-fix-{test,lint,build,start,harness}.log`; the first harness run exposed a fixture-font assertion assumption, which was corrected before the complete passing run. No screenshots were required for this polish QA. The local production server was stopped after verification.
+
+Only the four scoped files are included in this polish commit. Pre-existing untracked briefs, reports, backups and screenshots remain excluded. Delivery is restricted to `feat/pnl-mascot`; main and deployment are untouched. The existing rollback tag `pre-pnl-mascot-2026-09-05` and supplied backup are unchanged.

@@ -6,45 +6,66 @@
   bottom: max(20px, env(safe-area-inset-bottom));
   z-index: 20;
   display: flex;
-  width: min(252px, calc(100vw - 40px));
+  width: 64px;
   flex-direction: column;
   align-items: flex-end;
   gap: 10px;
+  font-family: var(--font-body);
   pointer-events: none;
 }
 
+.mascot-companion.is-expanded { width: 128px; }
+
 .mascot-companion .mascot-bubble {
-  width: 100%;
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 10px);
+  width: min(252px, calc(100vw - 40px));
   margin: 0;
   padding: 13px 15px;
   color: var(--text-strong);
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
+  background: #FFFFFF;
+  border: 1px solid #DFE5F2;
+  border-radius: 10px;
   box-shadow: var(--shadow);
   font-size: 12px;
   line-height: 1.5;
   overflow-wrap: anywhere;
   opacity: 1;
-  transition: opacity 160ms ease;
   pointer-events: auto;
 }
 
-.mascot-companion .mascot-bubble.is-fading {
-  opacity: 0;
-  pointer-events: none;
+.mascot-bubble > span {
+  opacity: 1;
+  transition: opacity 160ms ease;
 }
+
+/* Fade the copy only: the white surface stays opaque until it is removed. */
+.mascot-bubble.is-fading > span { opacity: 0; }
 
 .mascot-card {
   position: relative;
-  width: 128px;
-  overflow: hidden;
+  width: 100%;
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border-radius: 12px;
   box-shadow: var(--shadow);
   pointer-events: auto;
 }
+
+.mascot-chip {
+  position: relative;
+  display: block;
+  width: 100%;
+  padding: 0;
+  overflow: hidden;
+  background: var(--panel);
+  border: 0;
+  border-radius: 11px;
+  cursor: pointer;
+}
+
+.is-expanded .mascot-chip { border-radius: 11px 11px 0 0; }
 
 .mascot-sprite {
   display: block;
@@ -55,10 +76,10 @@
 
 .mascot-status {
   position: absolute;
-  top: 8px;
-  right: 8px;
-  width: 10px;
-  height: 10px;
+  top: 5px;
+  right: 5px;
+  width: 8px;
+  height: 8px;
   background: var(--accent);
   border: 2px solid var(--panel);
   border-radius: 50%;
@@ -69,6 +90,7 @@
   padding: 4px;
   gap: 2px;
   border-top: 1px solid var(--border);
+  border-radius: 0 0 11px 11px;
 }
 
 .mascot-mute,
@@ -107,14 +129,16 @@
   .mascot-companion {
     right: max(12px, env(safe-area-inset-right));
     bottom: max(12px, env(safe-area-inset-bottom));
-    width: min(228px, calc(100vw - 24px));
     gap: 8px;
   }
 
-  .mascot-card { width: 104px; }
-  .mascot-companion .mascot-bubble { padding: 11px 13px; }
+  .mascot-companion .mascot-bubble {
+    bottom: calc(100% + 8px);
+    width: min(228px, calc(100vw - 24px));
+    padding: 11px 13px;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .mascot-companion .mascot-bubble { transition: none; }
+  .mascot-bubble > span { transition: none; }
 }
