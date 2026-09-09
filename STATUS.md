@@ -1,6 +1,21 @@
 # PortManager — Status
 
-As of: 2026-09-05 (UTC)
+As of: 2026-09-09 (UTC)
+
+## 2026-09-09: Run 2 — 3D mascot runtime viewer (Sol gpt-6-astra ultra; assets c7663fa + feat 2644ab9, ff-merge 2644ab9 → main → live)
+- Bodin approved continuing past the V4B motion-proof asset run: live 3D mascot in the click-to-expand companion panel (STATUS Run-4 Option A), MP4s staged as reference. Assets staged by parent on `feat/mascot-motion-run2`: `public/mascot/mascot-3d.glb` (SHA256 d2d16903…, V4B c1b62e9, 4,475,420 B) + `motion-idle/happy-clap/excited-bounce.mp4` (V4B 510f72e hashes) — the 9 existing 2D sprites untouched. Revert: tag `pre-mascot-motion-run2-2026-09-08` @ c016c83 + snapshot `backups/site-pre-mascot-motion-run2-2026-09-08/` (diff-clean).
+- Sol (codex exec ultra, ~1 h 15 m incl. extra harness hardening) shipped `2644ab9`: three.js **0.186.0** (only new dep), lazy client-only viewer `app/mascot-3d-viewer.jsx`, pure mood→clip `lib/mascot-motion.ts` + tests (excited→excited_bounce; happy/proud→happy_clap; the other 6 moods→idle), companion CSS/TSX wiring, harness +279 lines. Cached single GLB fetch, disposable scene per mount, DPR cap 2, hidden-document pause, 0.3 s clip crossfade; reduced-motion / no-WebGL2 / GLB-error → deterministic 2D fallback (`data-mascot-3d` off|on|error).
+- Parent independent QA: npm test 183/183 (13 files) ✓, lint 0 errors (1 pre-existing proxy warning) ✓, build ✓, UI contracts **305/305** (mascot 104/104, 3D/fallback 14/14 states error/off/on, resting/occlusion 8/8 at 1440×1000 + 390×844), live local render vision-QA desktop PASS (upright full figure, clean lighting, ~2:3 canvas, no artifacts); mobile expanded overlay covers dashboard content while open — by-design floating panel (same box as 2D version, user-dismissable), resting occlusion green.
+- Merged ff-only 2644ab9 → main → pushed → Vercel live: /login 200, / 307 auth gate, /mascot/mascot-3d.glb 307 pre-auth (existing allowlist behavior — proxy.ts untouched), new x-vercel-id serving. Bodin view: log in, click the mascot chip.
+- Known limits: real-time three.js lighting ≠ Cycles renders; headless WebGL QA via SwiftShader (hardware GPU is device-dependent); MP4s staged but not consumed by UI this run; 4.48 MB GLB parses on each expand (cached fetch, disposable scene).
+
+## 2026-09-06: Run 4 — 3D mascot pilot (Option A) — ASSET RUN IN FLIGHT
+- Bodin approved pilot A: 3D mascot inside the click-to-expand companion panel; 2D emotion chip stays. Astra 3D claim verified grounded (OpenAI release BenchCAD 95.9% vs Sol 83.3% / Claude Fable 5.1.5 84.3%; independent agentic-Blender hands-ons: modeling/rig/keyframes).
+- Run 1 (ASSET ONLY, dispatched to Sol gpt-6-astra ultra 2026-09-06, delegation deleg_4733dba0): headless Blender 5.2.1 installed at /home/user/opt (glTF export smoke-verified) → build base 3D model + minimal rig (natural standing bind pose) + subtle 6–8s idle clip → mascot-3d.glb + 5 preview renders (front/3-4/side/back/face) + MODEL_REPORT.md + re-runnable scripts in ~/projects/portmanager-mascot-assets/3d/. ZERO website repo writes this run.
+- Known limits (recorded in brief): 2D art is an expression sheet — no clean side/rear views — so the model is a recognized 3D interpretation; side/back inferred + documented in MODEL_REPORT.md. Blind-build caveat: child has no vision; preview renders exist for parent vision-QA gate BEFORE Run 2 integration.
+- Revert/state: repo untouched at HEAD c016c83; tag `pre-3d-mascot-2026-09-06` + snapshot `backups/site-pre-3d-mascot-2026-09-06/` (rsync done, diff-clean).
+- Next: parent vision-QA on previews vs the 2D art → refine loop if needed → Run 2 integration brief (3D runtime in expand panel: model-viewer or three.js decision, WebGL/reduced-motion fallback to 2D, occlusion + perf QA at 1440×1000 and 390×844, UI-contract additions).
+
 
 ## 2026-09-05: Run 3 — mascot guide (Sol gpt-6-astra ultra; commits 04a1784 assets + d21b7db feat + 23ecdce fix, merge 23ecdce)
 - Bodin approved Run 3 after topping up the ChatGPT usage cap (first dispatch was cut at 42.9k tokens by the cap; re-dispatch completed at ~117k + 159k tokens).

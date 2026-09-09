@@ -185,3 +185,53 @@ These DOM assertions prove the complete interaction sequence without screenshots
 Independent read-only implementation and production DOM reviews found no further defects. `git diff --check` passes. Raw command output remains in `/tmp/portmanager-mascot-fix-{test,lint,build,start,harness}.log`; the first harness run exposed a fixture-font assertion assumption, which was corrected before the complete passing run. No screenshots were required for this polish QA. The local production server was stopped after verification.
 
 Only the four scoped files are included in this polish commit. Pre-existing untracked briefs, reports, backups and screenshots remain excluded. Delivery is restricted to `feat/pnl-mascot`; main and deployment are untouched. The existing rollback tag `pre-pnl-mascot-2026-09-05` and supplied backup are unchanged.
+
+## Run 2 runtime viewer — 2026-09-09
+
+Branch `feat/mascot-motion-run2` adds the live expanded-panel viewer from `BRIEF-MASCOT-MOTION-RUN2.md`. The only new package is runtime dependency `three` **0.186.0** (exactly pinned in `package.json`, with the resolved tarball/integrity recorded in `package-lock.json`). No React Three Fiber, model-viewer, decoder, texture, API or route dependency was added.
+
+The existing collapsed state remains the 64×95px 2D chip with status dot and no canvas or controls after its finite announcement. Explicit expansion conditionally mounts a top-level `next/dynamic` client-only viewer; Three.js is excluded from server execution. The viewer fetches the committed GLB into a module-level singleton `ArrayBuffer`, then parses a fresh disposable scene per mount. Re-expansion therefore makes no second network request while still allowing skeletons, geometry, materials, textures, animation mixer, renderer, observers and animation frame to be cleaned up on collapse/hide. The loop pauses when the document is hidden. Rendering uses a transparent WebGL2 canvas, a computed `Box3` camera fit, capped DPR `min(devicePixelRatio, 2)`, neutral tone mapping, hemisphere/key/fill/rim lighting, and the authored PBR materials.
+
+The loaded `gltf.animations.map(a => a.name)` logged exactly `idle`, `happy_clap`, `excited_bounce`. The runtime mapping is isolated in pure `lib/mascot-motion.ts` and is exhaustively tested:
+
+| Mood | Clip |
+|---|---|
+| calm | `idle` |
+| happy | `happy_clap` |
+| excited | `excited_bounce` |
+| thinking | `idle` |
+| worried | `idle` |
+| sad | `idle` |
+| sleepy | `idle` |
+| proud | `happy_clap` |
+| alert | `idle` |
+
+Motion actions loop indefinitely and crossfade for 0.3 seconds when the mapped clip changes. The original WebP remains in the DOM with its mood alt text and intrinsic dimensions; it is the visible fallback while loading and for `data-mascot-3d="off"`/`"error"`. Reduced motion never mounts the viewer. A missing WebGL2 context reports `off` without requesting the GLB; fetch/parse timeout or failure reports `error`. The decorative canvas is `aria-hidden` and carries `data-mascot-canvas` for the contract harness.
+
+Final self-QA:
+
+```text
+npm test
+ Test Files  13 passed (13)
+      Tests  183 passed (183)
+
+npm run lint
+ 0 errors
+ 1 pre-existing proxy.ts warning: b64urlEncode is defined but never used
+
+npm run build
+ Next.js 16.2.6 (Turbopack)
+ Compiled successfully; TypeScript and static-page generation completed cleanly
+
+npm run start -- --hostname 127.0.0.1 --port 8125
+node scripts/ui-contract-check.mjs
+ PASS | Mascot resting/occlusion summary — 8/8
+ PASS | Screenshot-free mascot DOM assertion summary — 34/34
+ PASS | Mascot 3D/fallback summary — 14/14 · data-mascot-3d states observed: error/off/on
+ PASS | Mascot contract summary — 104/104
+ PASS | UI contract summary — 305/305
+```
+
+The browser contracts verify the unchanged 126×189px expanded display box inside the 128×262px card at both 1440×1000 and 390×844, exact clip names, all nine mood-to-motion transitions, one GLB request across re-expansion/prop changes, initial and live-toggled reduced-motion plus disabled-WebGL `off` fallback, malformed-GLB `error` fallback, no resting canvas, retained accessible sprite, and zero application/page/Three/WebGL warnings or errors. All 13 committed mascot assets remain unmodified. The three MP4 references are not consumed by UI code.
+
+Known limits: real-time Three.js lighting/tone mapping approximates the light-theme reference and is not a Blender Cycles render; WebGL2 availability and device/GPU performance vary, with deterministic 2D fallback; parsing the cached 4.48 MB GLB occurs again after each remount so resources can be disposed rather than retained for the document lifetime; automated headless WebGL coverage uses Chromium's SwiftShader ANGLE backend, so hardware-driver rendering remains device-dependent manual QA.
