@@ -109,6 +109,12 @@ export async function startUiFixtureServer() {
           response.end(contents);
           return;
         }
+        if (pathname === "/mascot/mascot-3d.glb") {
+          const contents = await readFile(path.join(projectRoot, "public", pathname.slice(1)));
+          response.setHeader("Content-Type", "model/gltf-binary");
+          response.end(contents);
+          return;
+        }
         const relativePath = pathname === "/" ? "index.html" : decodeURIComponent(pathname).slice(1);
         const requestedFile = path.resolve(outputRoot, relativePath);
         if (!requestedFile.startsWith(`${outputRoot}${path.sep}`)) { response.writeHead(404).end(); return; }

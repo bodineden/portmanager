@@ -1,8 +1,15 @@
 "use client";
 
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import dynamic from "next/dynamic";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { MascotState } from "@/lib/mascot";
+import { mascotMotionForMood } from "@/lib/mascot-motion";
 import "./mascot-companion.css";
+
+const Mascot3dViewer = dynamic(() => import("./mascot-3d-viewer"), {
+  loading: () => null,
+  ssr: false,
+});
 
 const MUTE_KEY = "portmanager:mascot:muted";
 const HIDE_KEY = "portmanager:mascot:hidden-document";
@@ -23,6 +30,20 @@ function readPreferences() {
 function serverPreferences() {
   // The same visible, unmuted preview is used for SSR and initial hydration.
   return 0;
+}
+
+function subscribeReducedMotion(listener: () => void) {
+  const query = window.matchMedia("(prefers-reduced-motion: reduce)");
+  query.addEventListener("change", listener);
+  return () => query.removeEventListener("change", listener);
+}
+
+function readReducedMotion() {
+  return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
+
+function serverReducedMotion() {
+  return false;
 }
 
 function subscribePreferences(listener: () => void) {
@@ -75,7 +96,10 @@ function hideGuide() {
 
 function CompanionView({ state, muted }: { state: MascotState; muted: boolean }) {
   const [expanded, setExpanded] = useState(false);
+  const [viewerMounted, setViewerMounted] = useState(false);
+  const [viewerState, setViewerState] = useState<"off" | "on" | "error">("off");
   const chipRef = useRef<HTMLButtonElement>(null);
+  const reducedMotion = useSyncExternalStore(subscribeReducedMotion, readReducedMotion, serverReducedMotion);
   const [bubble, setBubble] = useState<{
     mood: MascotState["mood"];
     message: string;
@@ -102,10 +126,34 @@ function CompanionView({ state, muted }: { state: MascotState; muted: boolean })
     };
   }, [state.mood, state.message, muted]);
 
+  const handleViewerState = useCallback((nextState: "off" | "on" | "error") => {
+    setViewerState(nextState);
+    if (nextState !== "on") setViewerMounted(false);
+  }, []);
+
+  useEffect(() => {
+    if (!expanded) return;
+    const query = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const handleChange = (event: MediaQueryListEvent) => {
+      setViewerState("off");
+      setViewerMounted(!event.matches);
+    };
+    query.addEventListener("change", handleChange);
+    return () => query.removeEventListener("change", handleChange);
+  }, [expanded]);
+
   function collapse() {
     setExpanded(false);
+    setViewerMounted(false);
+    setViewerState("off");
     setBubble((current) => ({ ...current, phase: "quiet" }));
     chipRef.current?.focus();
+  }
+
+  function expand() {
+    setViewerState("off");
+    setViewerMounted(true);
+    setExpanded(true);
   }
 
   const showBubble = !muted && (expanded || bubble.phase !== "quiet");
@@ -117,6 +165,7 @@ function CompanionView({ state, muted }: { state: MascotState; muted: boolean })
       aria-label="PortManager guide"
       data-mascot-companion
       data-mascot-mood={state.mood}
+      data-mascot-3d={expanded ? (reducedMotion ? "off" : viewerState) : undefined}
       onKeyDown={(event) => {
         if (event.key === "Escape" && expanded) {
           event.preventDefault();
@@ -142,11 +191,14 @@ function CompanionView({ state, muted }: { state: MascotState; muted: boolean })
           data-mascot-toggle
           aria-label="Toggle guide"
           aria-expanded={expanded}
-          onClick={() => expanded ? collapse() : setExpanded(true)}
+          onClick={() => expanded ? collapse() : expand()}
         >
           {/* The supplied sprites are already-sized image cards, not cutouts. */}
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img src={`/mascot/mascot-${state.mood}.webp`} width={320} height={480} alt={`PortManager guide — ${state.mood}`} className="mascot-sprite" />
+          {expanded && viewerMounted && !reducedMotion && (
+            <Mascot3dViewer clip={mascotMotionForMood(state.mood)} onStateChange={handleViewerState} />
+          )}
           <span className="mascot-status" data-mascot-status aria-label={`Guide status: ${state.mood}`} role="img" />
         </button>
         {expanded && <div className="mascot-controls">

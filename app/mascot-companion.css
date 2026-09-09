@@ -74,6 +74,18 @@
   aspect-ratio: 2 / 3;
 }
 
+.mascot-companion[data-mascot-3d="on"] .mascot-sprite { opacity: 0; }
+
+.mascot-chip [data-mascot-canvas] {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: block;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
 .mascot-status {
   position: absolute;
   top: 5px;
@@ -83,6 +95,7 @@
   background: var(--accent);
   border: 2px solid var(--panel);
   border-radius: 50%;
+  z-index: 2;
 }
 
 .mascot-controls {
