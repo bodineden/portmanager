@@ -882,14 +882,13 @@ async function assertMascot(page, expectedMood) {
   return `${mood} · matching WebP/alt · 320×480 intrinsic · focusable ${expanded === "true" ? "expanded" : "collapsed"} chip · safe controls`;
 }
 
-async function assertMascotResting(page) {
+async function assertMascotResting(page, expectedState) {
   await assertMascot(page);
   requireCondition(await page.locator("[data-mascot-toggle]").getAttribute("aria-expanded") === "false", "resting mascot is expanded");
   requireCondition(!await page.locator(".mascot-bubble").isVisible(), "resting mascot has a visible bubble");
   requireCondition(!await page.locator(".mascot-controls").isVisible(), "resting mascot has a visible controls row");
-  requireCondition(await page.locator("[data-mascot-canvas]").count() === 0, "resting mascot keeps a canvas mounted");
-  const viewerState = await page.locator("[data-mascot-companion]").getAttribute("data-mascot-3d");
-  requireCondition(viewerState === null || viewerState === "off", `resting mascot exposes data-mascot-3d=${viewerState}`);
+  const reducedMotion = await page.evaluate(() => matchMedia("(prefers-reduced-motion: reduce)").matches);
+  const viewerDetail = await assertMascot3dState(page, expectedState ?? (reducedMotion ? "off" : "on"));
   await page.waitForFunction(() => {
     const card = document.querySelector(".mascot-card")?.getBoundingClientRect();
     return Boolean(card && card.width <= 65 && card.height <= 99);
@@ -908,7 +907,7 @@ async function assertMascotResting(page) {
   requireCondition(geometry.radius === "12px", `compact card radius is ${geometry.radius}, expected 12px`);
   requireCondition(geometry.border === "rgb(223, 229, 242)" && geometry.borderWidth === "1px" && /rgba\(21, 35, 72, 0\.07\) 0px 14px 35px(?: 0px)?/.test(geometry.shadow), "compact card lacks the app border/shadow tokens");
   requireCondition(geometry.dotWidth > 0 && geometry.dotWidth <= 10 && geometry.dotHeight <= 10, "resting status dot is absent or not tiny");
-  return `${geometry.width}×${geometry.height}px chip · 2:3 sprite · tiny status dot · no canvas, visible bubble or controls · data-mascot-3d=${viewerState ?? "absent"}`;
+  return `${geometry.width}×${geometry.height}px chip · 2:3 sprite · tiny status dot · no visible bubble or controls · ${viewerDetail}`;
 }
 
 async function assertMascot3dState(page, expectedState) {
@@ -916,9 +915,17 @@ async function assertMascot3dState(page, expectedState) {
     const companion = document.querySelector("[data-mascot-companion]");
     const canvasCount = companion?.querySelectorAll("[data-mascot-canvas]").length ?? 0;
     const sprite = companion?.querySelector(".mascot-sprite");
-    return companion?.getAttribute("data-mascot-3d") === state
+    const canvas = companion?.querySelector("[data-mascot-canvas]");
+    const expanded = companion?.querySelector("[data-mascot-toggle]")?.getAttribute("aria-expanded") === "true";
+    const mood = companion?.getAttribute("data-mascot-mood");
+    const motion = !expanded ? "idle" : ["happy", "proud"].includes(mood) ? "happy_clap" : mood === "excited" ? "excited_bounce" : "idle";
+    const ratio = Number(canvas?.getAttribute("data-mascot-pixel-ratio"));
+    return sprite && companion?.getAttribute("data-mascot-3d") === state
       && (state === "on" ? canvasCount === 1 : canvasCount === 0)
-      && getComputedStyle(sprite).opacity === (state === "on" ? "0" : "1");
+      && getComputedStyle(sprite).opacity === (state === "on" ? "0" : "1")
+      && (state !== "on" || (canvas?.getAttribute("data-mascot-motion") === motion
+        && Math.abs(canvas.width - canvas.clientWidth * ratio) <= 1
+        && Math.abs(canvas.height - canvas.clientHeight * ratio) <= 1));
   }, expectedState, { timeout: 20_000 });
 
   const detail = await page.locator("[data-mascot-companion]").evaluate((companion, state) => {
@@ -934,7 +941,11 @@ async function assertMascot3dState(page, expectedState) {
       rootState: companion.getAttribute("data-mascot-3d"),
       spriteOpacity: sprite ? getComputedStyle(sprite).opacity : null,
       spriteVisible: Boolean(spriteRect?.width && spriteRect?.height && getComputedStyle(sprite).visibility === "visible"),
-      canvasCount: canvas ? 1 : 0,
+      canvasCount: companion.querySelectorAll("[data-mascot-canvas]").length,
+      expanded: chip?.getAttribute("aria-expanded") === "true",
+      canvasPointerEvents: canvas ? getComputedStyle(canvas).pointerEvents : null,
+      canvasRadius: canvas ? getComputedStyle(canvas).borderRadius : null,
+      chipRadius: chip ? getComputedStyle(chip).borderRadius : null,
       canvasAriaHidden: canvas?.getAttribute("aria-hidden") ?? null,
       animations: canvas?.getAttribute("data-mascot-animations") ?? null,
       motion: canvas?.getAttribute("data-mascot-motion") ?? null,
@@ -956,14 +967,19 @@ async function assertMascot3dState(page, expectedState) {
     const mood = await page.locator("[data-mascot-companion]").getAttribute("data-mascot-mood");
     requireCondition(detail.canvasCount === 1 && detail.canvasAriaHidden === "true", "live mascot canvas is missing or exposed to assistive technology");
     requireCondition(detail.animations === "idle,happy_clap,excited_bounce", `unexpected GLB clips ${detail.animations}`);
-    requireCondition(detail.motion === mascotMotions[mood], `mood ${mood} plays ${detail.motion}, expected ${mascotMotions[mood]}`);
+    const expectedMotion = detail.expanded ? mascotMotions[mood] : "idle";
+    requireCondition(detail.motion === expectedMotion, `mood ${mood} (${detail.expanded ? "expanded" : "resting"}) plays ${detail.motion}, expected ${expectedMotion}`);
+    requireCondition(detail.canvasPointerEvents === "none", "decorative canvas intercepts the chip hit target");
+    requireCondition(detail.canvasRadius === detail.chipRadius, "canvas does not inherit the chip border radius");
     requireCondition(detail.spriteOpacity === "0", `live canvas leaves the 2D underlay visually doubled at opacity ${detail.spriteOpacity}`);
     requireCondition(detail.pixelRatio > 0 && detail.pixelRatio <= 2, `renderer pixel ratio is ${detail.pixelRatio}`);
     requireCondition(detail.spriteRect && detail.canvasRect && detail.chipRect && detail.cardRect, "viewer display geometry is incomplete");
-    requireCondition(Math.abs(detail.chipRect.width - 126) <= 2 && Math.abs(detail.chipRect.height - 189) <= 3,
-      `expanded display box is ${detail.chipRect.width}×${detail.chipRect.height}, expected about 126×189`);
-    requireCondition(Math.abs(detail.cardRect.width - 128) <= 1 && Math.abs(detail.cardRect.height - 262) <= 4,
-      `expanded card is ${detail.cardRect.width}×${detail.cardRect.height}, expected about 128×262`);
+    const box = detail.expanded ? { width: 126, height: 189, cardWidth: 128, cardHeight: 262 }
+      : { width: 62, height: 93, cardWidth: 64, cardHeight: 95 };
+    requireCondition(Math.abs(detail.chipRect.width - box.width) <= 1 && Math.abs(detail.chipRect.height - box.height) <= 3,
+      `display box is ${detail.chipRect.width}×${detail.chipRect.height}, expected about ${box.width}×${box.height}`);
+    requireCondition(Math.abs(detail.cardRect.width - box.cardWidth) <= 1 && Math.abs(detail.cardRect.height - box.cardHeight) <= 4,
+      `card is ${detail.cardRect.width}×${detail.cardRect.height}, expected about ${box.cardWidth}×${box.cardHeight}`);
     for (const dimension of ["width", "height", "left", "top"]) {
       requireCondition(Math.abs(detail.spriteRect[dimension] - detail.canvasRect[dimension]) <= 1,
         `canvas ${dimension} differs from the existing sprite box`);
@@ -1110,7 +1126,7 @@ async function checkMascotRoute(page, route, viewport, response) {
     requireCondition(serverMarkup.count === (route.name === "login" ? 0 : 1), `server HTML has ${serverMarkup.count} companions`);
     if (route.name !== "login") {
       requireCondition(serverMarkup.visible && serverMarkup.sprites === 1 && serverMarkup.collapsed, "server HTML omits the collapsed default sprite or exposes expanded controls");
-      requireCondition(serverMarkup.canvases === 0 && serverMarkup.viewerStates.every((state) => state === null || state === "off"),
+      requireCondition(serverMarkup.canvases === 0 && serverMarkup.viewerStates.every((state) => state === "off"),
         "server HTML renders the client-only mascot canvas or an active 3D state");
     }
     return route.name === "login" ? "absent from login HTML" : "collapsed sprite present before hydration; no canvas or controls row";
@@ -1458,7 +1474,6 @@ async function auditMascotFixtures(browser, fixtureUrl, viewport) {
       return `${coveredMoods.size} mood sprites loaded with intrinsic dimensions and meaningful alt text`;
     });
 
-    await page.emulateMedia({ reducedMotion: "no-preference" });
     await check(`${prefix} DOM WebGL 3D switches all nine mapped mood motions without re-downloading`, async () => {
       const requestsBefore = glbRequests;
       const fixtureByMood = new Map(browserFixture.mascotScenarios.map((fixture) => [fixture.mood, fixture]));
@@ -1468,6 +1483,7 @@ async function auditMascotFixtures(browser, fixtureUrl, viewport) {
       await page.clock.setFixedTime(initialClock);
       const response = await page.goto(`${fixtureUrl}/?scenario=${happyFixture.scenario}`, { waitUntil: "networkidle", timeout: 15_000 });
       requireCondition(response?.ok(), `fixture HTTP ${response?.status() ?? "unavailable"}`);
+      await page.emulateMedia({ reducedMotion: "no-preference" });
       await page.locator("[data-mascot-toggle]").click();
       await assertMascot3dState(page, "on");
       for (const mood of mascotMoods) {
@@ -1551,14 +1567,187 @@ async function auditMascotFixtures(browser, fixtureUrl, viewport) {
         const style = getComputedStyle(element);
         return { animation: style.animationName, transition: style.transitionDuration, property: style.transitionProperty };
       }));
-      requireCondition(styles.length > 0 && styles.every((style) => style.animation === "none" && (style.property === "none"
-        || style.transition.split(",").every((duration) => parseFloat(duration) <= 0.00001))), "mascot still animates with reduced motion");
+      requireCondition(styles.length > 0 && styles.every((style) => style.animation === "none"
+        && style.transition.split(",").every((duration) => parseFloat(duration) === 0)), "mascot still animates with reduced motion");
       await page.locator("[data-mascot-toggle]").click();
       await assertMascotResting(page);
       return `${fallback} · ${styles.length} expanded companion elements: animation-name=none, transition durations=0; collapse leaves compact chip`;
     });
     await check(`${prefix} console remains clean across every mood and prop transition`, async () => {
       requireCondition(browserErrors.length === 0, browserErrors.join(" | "));
+    });
+  } finally {
+    await page.close();
+  }
+}
+
+async function auditMascotRestingIdle(browser, fixtureUrl, viewport) {
+  const page = await browser.newPage({ viewport: { width: viewport.width, height: viewport.height }, reducedMotion: "no-preference" });
+  const browserErrors = [];
+  let glbRequests = 0;
+  let restingCanvas;
+  page.on("pageerror", (error) => browserErrors.push(`page: ${error.message}`));
+  page.on("console", (message) => captureBrowserConsole(browserErrors, message));
+  page.on("request", (request) => {
+    if (new URL(request.url()).pathname === "/mascot/mascot-3d.glb") glbRequests++;
+  });
+  await page.addInitScript(() => {
+    window.mascotWebglProbes = 0;
+    const getContext = HTMLCanvasElement.prototype.getContext;
+    HTMLCanvasElement.prototype.getContext = function countedWebgl(type, ...args) {
+      if (type === "webgl2") window.mascotWebglProbes++;
+      return Reflect.apply(getContext, this, [type, ...args]);
+    };
+  });
+  const prefix = `${viewport.name} mascot fixture`;
+  const assertSameCanvas = async () => {
+    requireCondition(restingCanvas && await restingCanvas.evaluate((canvas) => canvas.isConnected
+      && canvas === document.querySelector("[data-mascot-canvas]")), "expansion/collapse replaced the resting canvas");
+    requireCondition(await page.evaluate(() => window.mascotWebglProbes) === 1, "expansion/collapse reinitialised WebGL");
+    requireCondition(glbRequests === 1, `page made ${glbRequests} GLB requests instead of one`);
+  };
+  try {
+    await check(`${prefix} DOM WebGL resting chip plays idle without a click`, async () => {
+      const response = await page.goto(`${fixtureUrl}/?scenario=portfolio-mascot-excited`, { waitUntil: "networkidle", timeout: 15_000 });
+      requireCondition(response?.ok(), `fixture HTTP ${response?.status() ?? "unavailable"}`);
+      await assertMascot(page, "excited");
+      await assertMascot3dState(page, "on");
+      requireCondition(await page.locator("[data-mascot-toggle]").getAttribute("aria-expanded") === "false", "idle motion needed expansion");
+      restingCanvas = await page.locator("[data-mascot-canvas]").elementHandle();
+      await assertSameCanvas();
+      await page.locator("[data-mascot-bubble]").waitFor({ state: "detached", timeout: 8_000 });
+      return `${await assertMascotResting(page)} · no click · one GLB request`;
+    });
+    await check(`${prefix} WebGL resting idle changes rendered frames continuously`, async () => {
+      const frames = [];
+      for (let index = 0; index < 3; index++) {
+        frames.push(await page.locator("[data-mascot-canvas]").evaluate((canvas) => new Promise((resolve) => {
+          requestAnimationFrame(() => resolve(canvas.toDataURL()));
+        })));
+        await page.waitForTimeout(900);
+      }
+      requireCondition(new Set(frames).size === frames.length, "resting idle renders identical frames instead of moving");
+      await assertSameCanvas();
+      await assertMascotResting(page);
+      return `${new Set(frames).size}/${frames.length} distinct rendered frames · idle still live after announcement · same canvas`;
+    });
+    await check(`${prefix} DOM WebGL expand/collapse preserves canvas and switches idle to excited_bounce`, async () => {
+      const toggle = page.locator("[data-mascot-toggle]");
+      for (let cycle = 0; cycle < 2; cycle++) {
+        await toggle.click();
+        await assertMascotExpanded(page);
+        await assertMascot3dState(page, "on");
+        requireCondition(await page.locator("[data-mascot-canvas]").getAttribute("data-mascot-motion") === "excited_bounce", "expanded excited fixture lost its mood clip");
+        await assertSameCanvas();
+        if (cycle === 0) await toggle.click();
+        else {
+          await page.getByLabel("Mute guide", { exact: true }).focus();
+          await page.keyboard.press("Escape");
+          requireCondition(await toggle.evaluate((button) => document.activeElement === button), "Escape did not return focus to chip");
+        }
+        await assertMascotResting(page);
+        await assertSameCanvas();
+      }
+      return `idle → excited_bounce → idle twice (click + Escape) · same canvas/WebGL context · 126×189px expanded box / 128×262px card · ${glbRequests} total GLB request`;
+    });
+    await check(`${prefix} DOM WebGL collapsed mood updates retain idle and the mounted canvas`, async () => {
+      await page.evaluate(() => window.dispatchEvent(new CustomEvent("ui-fixture:scenario", { detail: "portfolio-mascot-happy" })));
+      await page.locator('[data-mascot-mood="happy"]').waitFor();
+      await assertMascot(page, "happy");
+      await assertMascot3dState(page, "on");
+      requireCondition(await page.locator("[data-mascot-toggle]").getAttribute("aria-expanded") === "false", "mood update expanded resting chip");
+      await assertSameCanvas();
+      return "excited → happy server props · still collapsed/idle · same canvas · one GLB request";
+    });
+    await check(`${prefix} DOM WebGL resting reduced-motion toggle removes and restores idle`, async () => {
+      await page.emulateMedia({ reducedMotion: "reduce" });
+      await assertMascot3dState(page, "off");
+      requireCondition(await page.locator(".mascot-3d-host").count() === 0, "reduced motion retains the viewer host");
+      requireCondition(await restingCanvas.evaluate((canvas) => !canvas.isConnected), "reduced motion did not remove live canvas");
+      await page.emulateMedia({ reducedMotion: "no-preference" });
+      const restored = await assertMascot3dState(page, "on");
+      requireCondition(await page.locator("[data-mascot-toggle]").getAttribute("aria-expanded") === "false", "restored idle needed expansion");
+      requireCondition(glbRequests === 1, `restoring idle made ${glbRequests} GLB requests`);
+      return `on → off → on while collapsed · ${restored} · cached GLB`;
+    });
+    await check(`${prefix} WebGL resting idle and transition console stays clean`, async () => {
+      requireCondition(browserErrors.length === 0, browserErrors.join(" | "));
+      return "zero page/console errors or Three/WebGL warnings";
+    });
+  } finally {
+    await restingCanvas?.dispose();
+    await page.close();
+  }
+}
+
+async function auditMascotLoading(browser, fixtureUrl, viewport) {
+  const page = await browser.newPage({ viewport: { width: viewport.width, height: viewport.height }, reducedMotion: "no-preference" });
+  let releaseModel;
+  const modelGate = new Promise((resolve) => { releaseModel = resolve; });
+  let glbRequests = 0;
+  await page.route("**/mascot/mascot-3d.glb", async (route) => {
+    glbRequests++;
+    await modelGate;
+    await route.continue();
+  });
+  try {
+    await check(`${viewport.name} mascot fixture DOM WebGL loading keeps a visible sprite and no canvas`, async () => {
+      const requested = page.waitForRequest("**/mascot/mascot-3d.glb");
+      await page.goto(`${fixtureUrl}/?scenario=portfolio-mascot-excited`, { waitUntil: "domcontentloaded" });
+      await requested;
+      await assertMascot(page, "excited");
+      requireCondition(await page.locator("[data-mascot-canvas]").count() === 0, "loading GLB exposes a canvas before it is ready");
+      const before = await page.locator(".mascot-card").boundingBox();
+      await assertMascot3dState(page, "off");
+      releaseModel();
+      await assertMascot3dState(page, "on");
+      const after = await page.locator(".mascot-card").boundingBox();
+      requireCondition(JSON.stringify(before) === JSON.stringify(after), `loading shifted resting card: ${JSON.stringify({ before, after })}`);
+      requireCondition(glbRequests === 1, `loading made ${glbRequests} GLB requests`);
+      return `off → on · visible sprite/no canvas until ready · ${after.width}×${after.height}px card unchanged · one GLB request`;
+    });
+  } finally {
+    releaseModel();
+    await page.close();
+  }
+}
+
+async function auditMascotReducedMotion(browser, url, viewport, originLabel) {
+  const page = await browser.newPage({ viewport: { width: viewport.width, height: viewport.height }, reducedMotion: "reduce" });
+  const browserErrors = [];
+  let glbRequests = 0;
+  page.on("pageerror", (error) => browserErrors.push(`page: ${error.message}`));
+  page.on("console", (message) => captureBrowserConsole(browserErrors, message));
+  page.on("request", (request) => {
+    if (new URL(request.url()).pathname === "/mascot/mascot-3d.glb") glbRequests++;
+  });
+  await page.addInitScript(() => {
+    window.mascotWebglProbes = 0;
+    const getContext = HTMLCanvasElement.prototype.getContext;
+    HTMLCanvasElement.prototype.getContext = function countedWebgl(type, ...args) {
+      if (type === "webgl2") window.mascotWebglProbes++;
+      return Reflect.apply(getContext, this, [type, ...args]);
+    };
+  });
+  try {
+    await check(`${viewport.name} ${originLabel} mascot DOM initial reduced motion never mounts 3D at rest`, async () => {
+      const response = await page.goto(url, { waitUntil: "networkidle", timeout: 45_000 });
+      requireCondition(response?.ok(), `HTTP ${response?.status() ?? "unavailable"}`);
+      await assertMascot(page);
+      await assertMascot3dState(page, "off");
+      requireCondition(await page.locator("[data-mascot-toggle]").getAttribute("aria-expanded") === "false", "reduced-motion page starts expanded");
+      requireCondition(await page.locator(".mascot-3d-host").count() === 0, "reduced motion mounts the viewer");
+      const styles = await page.locator("[data-mascot-companion], [data-mascot-companion] *").evaluateAll((elements) => elements.map((element) => {
+        const style = getComputedStyle(element);
+        return { animation: style.animationName, transition: style.transitionDuration, property: style.transitionProperty };
+      }));
+      requireCondition(styles.every((style) => style.animation === "none"
+        && style.transition.split(",").every((duration) => parseFloat(duration) === 0)), "reduced-motion resting chip animates or fades");
+      await page.locator("[data-mascot-bubble]").waitFor({ state: "detached", timeout: 8_000 });
+      const detail = await assertMascotResting(page);
+      requireCondition(await page.evaluate(() => window.mascotWebglProbes) === 0 && glbRequests === 0, "reduced-motion startup attempted WebGL or fetched the GLB");
+      requireCondition(browserErrors.length === 0, browserErrors.join(" | "));
+      return `${detail} · zero WebGL probes/GLB requests · no animation/fade · clean console`;
     });
   } finally {
     await page.close();
@@ -1587,14 +1776,15 @@ async function auditMascotNoWebgl(browser, fixtureUrl, viewport) {
       const response = await page.goto(`${fixtureUrl}/?scenario=portfolio-mascot-happy`, { waitUntil: "networkidle", timeout: 15_000 });
       requireCondition(response?.ok(), `fixture HTTP ${response?.status() ?? "unavailable"}`);
       await assertMascot(page, "happy");
-      requireCondition(await page.locator("[data-mascot-canvas]").count() === 0, "collapsed WebGL-disabled fixture mounts a canvas");
-      const restingState = await page.locator("[data-mascot-companion]").getAttribute("data-mascot-3d");
-      requireCondition(restingState === null || restingState === "off", `collapsed fixture starts data-mascot-3d=${restingState}`);
+      await assertMascot3dState(page, "off");
+      requireCondition(await page.locator("[data-mascot-toggle]").getAttribute("aria-expanded") === "false", "WebGL-disabled fixture starts expanded");
       await page.locator("[data-mascot-toggle]").click();
       await assertMascotExpanded(page);
       const detail = await assertMascot3dState(page, "off");
       requireCondition(glbRequests === 0, `WebGL-disabled fallback requested the GLB ${glbRequests} times`);
-      return `${detail} · zero GLB requests`;
+      await page.locator("[data-mascot-toggle]").click();
+      const resting = await assertMascotResting(page, "off");
+      return `${detail} · ${resting} · zero GLB requests`;
     });
     await check(`${prefix} WebGL-disabled mascot fallback console is clean`, async () => {
       await page.waitForTimeout(200);
@@ -1618,12 +1808,17 @@ async function auditMascotLoadError(browser, fixtureUrl, viewport) {
   page.on("console", (message) => captureBrowserConsole(browserErrors, message));
   const prefix = `${viewport.name} mascot fixture`;
   try {
-    await check(`${prefix} DOM WebGL 3D malformed GLB reports error with its 2D fallback`, async () => {
+    await check(`${prefix} DOM WebGL 3D malformed GLB reports error at rest and after expansion`, async () => {
       const response = await page.goto(`${fixtureUrl}/?scenario=portfolio-mascot-happy`, { waitUntil: "networkidle", timeout: 15_000 });
       requireCondition(response?.ok(), `fixture HTTP ${response?.status() ?? "unavailable"}`);
+      await assertMascot(page, "happy");
+      await assertMascot3dState(page, "error");
+      requireCondition(await page.locator("[data-mascot-toggle]").getAttribute("aria-expanded") === "false", "malformed-GLB fallback needed expansion");
       await page.locator("[data-mascot-toggle]").click();
       await assertMascotExpanded(page);
       const detail = await assertMascot3dState(page, "error");
+      await page.locator("[data-mascot-toggle]").click();
+      await assertMascotResting(page, "error");
       await page.waitForTimeout(200);
       requireCondition(glbRequests === 1, `malformed-GLB fallback made ${glbRequests} model requests`);
       requireCondition(browserErrors.length === 0, browserErrors.join(" | "));
@@ -1697,11 +1892,11 @@ async function auditMascotInteractions(browser, viewport) {
       requireCondition(await page.locator(".pnl-class-values [data-value-class]").count() === 4, "home class legend does not contain its four classes");
       return assertHomeMascotOcclusion(page, ".pnl-class-values [data-value-class] > small, .pnl-class-values [data-value-class] > strong, .pnl-class-values [data-value-class] > span:not(.pnl-class-dot)", "four-class legend labels and USD/THB values");
     });
-    await check(`${prefix} DOM WebGL 3D click mounts the live viewer; panel stays expanded`, async () => {
+    await check(`${prefix} DOM WebGL 3D click expands the live viewer; panel stays expanded`, async () => {
       await page.locator("[data-mascot-toggle]").click();
       const detail = await assertMascotExpanded(page);
       const viewerDetail = await assertMascot3dState(page, "on");
-      requireCondition(glbRequests === 1, `initial expansion requested the GLB ${glbRequests} times`);
+      requireCondition(glbRequests === 1, `resting/expansion requested the GLB ${glbRequests} times`);
       requireCondition(mascotInfo.includes('[mascot-3d] gltf.animations ["idle","happy_clap","excited_bounce"]'),
         `exact gltf.animations log is missing: ${mascotInfo.join(" | ")}`);
       await assertOpaqueMascotBubble(page);
@@ -1758,7 +1953,7 @@ async function auditMascotInteractions(browser, viewport) {
       requireCondition(await mute.isChecked() && !await page.locator("[data-mascot-bubble]").isVisible(), "Enter does not mute the guide");
       await page.keyboard.press("Enter");
       requireCondition(!await mute.isChecked() && await page.locator("[data-mascot-bubble]").isVisible(), "Enter does not unmute the guide");
-      return "mute checkbox/aria-pressed/localStorage agree · expanded sprite stays visible · reload rests silently · Space/Enter unmute restore current bubble";
+      return "mute checkbox/aria-pressed/localStorage agree · accessible sprite retained beneath live canvas · reload rests silently · Space/Enter unmute restore current bubble";
     });
     await check(`${prefix} DOM hide removes the companion, survives client navigation and resets on reload`, async () => {
       const documentToken = await page.evaluate(() => performance.timeOrigin);
@@ -1909,6 +2104,7 @@ try {
       await auditRoute(browser, route, viewport);
     }
     await auditMascotInteractions(browser, viewport);
+    await auditMascotReducedMotion(browser, `${baseUrl}/`, viewport, "production");
   }
   let fixtureServer;
   try {
@@ -1920,6 +2116,9 @@ try {
       for (const viewport of viewports) {
         await auditPopulatedFixtures(browser, fixtureServer.url, viewport);
         await auditMascotFixtures(browser, fixtureServer.url, viewport);
+        await auditMascotReducedMotion(browser, `${fixtureServer.url}/?scenario=portfolio-mascot-excited`, viewport, "fixture");
+        await auditMascotLoading(browser, fixtureServer.url, viewport);
+        await auditMascotRestingIdle(browser, fixtureServer.url, viewport);
         await auditMascotNoWebgl(browser, fixtureServer.url, viewport);
         await auditMascotLoadError(browser, fixtureServer.url, viewport);
       }

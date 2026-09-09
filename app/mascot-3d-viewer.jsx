@@ -80,13 +80,17 @@ function frameModel(camera, model, width, height) {
 }
 
 export default function Mascot3dViewer({ clip, onStateChange }) {
-  const canvasRef = useRef(null);
+  const hostRef = useRef(null);
   const runtimeRef = useRef(null);
   const requestedClipRef = useRef(clip);
 
   useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
+    const host = hostRef.current;
+    if (!host) return;
+    // Probe/load off-DOM so the sprite is the only surface until ready.
+    const canvas = document.createElement("canvas");
+    canvas.setAttribute("data-mascot-canvas", "");
+    canvas.setAttribute("aria-hidden", "true");
 
     let stopped = false;
     let frameId = 0;
@@ -228,6 +232,7 @@ export default function Mascot3dViewer({ clip, onStateChange }) {
 
         runtimeRef.current = { activeClip: null, currentAction: null, switchClip };
         switchClip(requestedClipRef.current);
+        host.appendChild(canvas);
         resizeObserver = new ResizeObserver(resize);
         resizeObserver.observe(canvas);
         resize();
@@ -258,6 +263,7 @@ export default function Mascot3dViewer({ clip, onStateChange }) {
       }
       renderer?.renderLists.dispose();
       renderer?.dispose();
+      canvas.remove();
     };
   }, [onStateChange]);
 
@@ -266,5 +272,5 @@ export default function Mascot3dViewer({ clip, onStateChange }) {
     runtimeRef.current?.switchClip(clip);
   }, [clip]);
 
-  return <canvas ref={canvasRef} data-mascot-canvas aria-hidden="true" />;
+  return <span ref={hostRef} className="mascot-3d-host" aria-hidden="true" />;
 }

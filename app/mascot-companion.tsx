@@ -43,7 +43,8 @@ function readReducedMotion() {
 }
 
 function serverReducedMotion() {
-  return false;
+  // Keep SSR/hydration static until the browser preference is known.
+  return true;
 }
 
 function subscribePreferences(listener: () => void) {
@@ -96,7 +97,7 @@ function hideGuide() {
 
 function CompanionView({ state, muted }: { state: MascotState; muted: boolean }) {
   const [expanded, setExpanded] = useState(false);
-  const [viewerMounted, setViewerMounted] = useState(false);
+  const [viewerMounted, setViewerMounted] = useState(true);
   const [viewerState, setViewerState] = useState<"off" | "on" | "error">("off");
   const chipRef = useRef<HTMLButtonElement>(null);
   const reducedMotion = useSyncExternalStore(subscribeReducedMotion, readReducedMotion, serverReducedMotion);
@@ -132,7 +133,6 @@ function CompanionView({ state, muted }: { state: MascotState; muted: boolean })
   }, []);
 
   useEffect(() => {
-    if (!expanded) return;
     const query = window.matchMedia("(prefers-reduced-motion: reduce)");
     const handleChange = (event: MediaQueryListEvent) => {
       setViewerState("off");
@@ -140,19 +140,15 @@ function CompanionView({ state, muted }: { state: MascotState; muted: boolean })
     };
     query.addEventListener("change", handleChange);
     return () => query.removeEventListener("change", handleChange);
-  }, [expanded]);
+  }, []);
 
   function collapse() {
     setExpanded(false);
-    setViewerMounted(false);
-    setViewerState("off");
     setBubble((current) => ({ ...current, phase: "quiet" }));
     chipRef.current?.focus();
   }
 
   function expand() {
-    setViewerState("off");
-    setViewerMounted(true);
     setExpanded(true);
   }
 
@@ -165,7 +161,7 @@ function CompanionView({ state, muted }: { state: MascotState; muted: boolean })
       aria-label="PortManager guide"
       data-mascot-companion
       data-mascot-mood={state.mood}
-      data-mascot-3d={expanded ? (reducedMotion ? "off" : viewerState) : undefined}
+      data-mascot-3d={reducedMotion ? "off" : viewerState}
       onKeyDown={(event) => {
         if (event.key === "Escape" && expanded) {
           event.preventDefault();
@@ -196,8 +192,8 @@ function CompanionView({ state, muted }: { state: MascotState; muted: boolean })
           {/* The supplied sprites are already-sized image cards, not cutouts. */}
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img src={`/mascot/mascot-${state.mood}.webp`} width={320} height={480} alt={`PortManager guide — ${state.mood}`} className="mascot-sprite" />
-          {expanded && viewerMounted && !reducedMotion && (
-            <Mascot3dViewer clip={mascotMotionForMood(state.mood)} onStateChange={handleViewerState} />
+          {viewerMounted && !reducedMotion && (
+            <Mascot3dViewer clip={expanded ? mascotMotionForMood(state.mood) : "idle"} onStateChange={handleViewerState} />
           )}
           <span className="mascot-status" data-mascot-status aria-label={`Guide status: ${state.mood}`} role="img" />
         </button>
