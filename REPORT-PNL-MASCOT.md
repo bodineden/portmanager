@@ -235,3 +235,101 @@ node scripts/ui-contract-check.mjs
 The browser contracts verify the unchanged 126×189px expanded display box inside the 128×262px card at both 1440×1000 and 390×844, exact clip names, all nine mood-to-motion transitions, one GLB request across re-expansion/prop changes, initial and live-toggled reduced-motion plus disabled-WebGL `off` fallback, malformed-GLB `error` fallback, no resting canvas, retained accessible sprite, and zero application/page/Three/WebGL warnings or errors. All 13 committed mascot assets remain unmodified. The three MP4 references are not consumed by UI code.
 
 Known limits: real-time Three.js lighting/tone mapping approximates the light-theme reference and is not a Blender Cycles render; WebGL2 availability and device/GPU performance vary, with deterministic 2D fallback; parsing the cached 4.48 MB GLB occurs again after each remount so resources can be disposed rather than retained for the document lifetime; automated headless WebGL coverage uses Chromium's SwiftShader ANGLE backend, so hardware-driver rendering remains device-dependent manual QA.
+
+## Never-static animated fallback — 2026-09-09
+
+Branch `feat/mascot-animated-fallback` implements `BRIEF-MASCOT-ANIMATED-FALLBACK.md` in implementation commit `195f659` on parent asset commit `827e0c1`. Once hydration begins in a codec-capable browser, the visible chip surface is always motion: the existing live Three.js canvas when WebGL2 and the GLB contract are available without reduced motion, otherwise a native pre-rendered video loop. The static WebP remains the meaningful-alt a11y underlay and is visible only during SSR/pre-hydration or after an actual video load/decode/autoplay failure when no live surface exists.
+
+The chosen root attribute contract is:
+
+| `data-mascot-3d` | Meaning |
+|---|---|
+| unset | SSR/first hydration render; static sprite is the allowed pre-JS paint and no client motion surface is claimed. |
+| `on` | One live canvas is attached and playing; no video remains; sprite opacity is 0. |
+| `video` | One native fallback video owns the motion surface; no canvas is attached; sprite opacity is 0. This covers live-viewer loading, reduced motion, no WebGL2, GLB failure and context loss. |
+| `off` | Last-resort static sprite after the current clip's video is unavailable and no live canvas exists. It was never observed in codec-capable post-hydration QA. |
+
+Both canvas and video carry `data-mascot-motion=<idle|happy_clap|excited_bounce>`; video also carries `data-mascot-video`. One `currentClip` drives both renderers: collapsed always selects `idle`, while expanded selects the unchanged nine-mood mapping. Video source changes remount the element and restart near zero; the live viewer retains its existing 0.3-second action crossfade.
+
+`data-mascot-hydrated` is absent from SSR and appears with the first client-owned surface state. It gives the transition audit an explicit boundary: from that mutation onward it records the actual root states, surface visibility/counts and hidden-sprite condition, and pairs every observed video path with an advancing-`currentTime` proof.
+
+### OLD → NEW assertion mapping
+
+| Previous assertion/wording | Replacement assertion |
+|---|---|
+| SSR companion claimed `data-mascot-3d="off"`. | SSR has the attribute unset, with one static sprite and zero canvas/video surfaces. |
+| `assertMascot3dState`: `on` meant canvas; every `off`/`error` case meant no canvas plus sprite opacity 1. | `assertMascotSurfaceState`: `on` is exactly one canvas/no video; `video` is exactly one video/no canvas; only `off` is no motion surface plus sprite opacity 1. |
+| Any state other than `on` kept the 2D sprite visible. | Sprite remains in the DOM and keeps its alt text, but opacity is 0 for both `on` and `video`; it is visible only for unset/`off`. |
+| “No canvas” implied the static fallback. | A no-canvas state must be a real playing video with exact motion/source/attributes/geometry, unless it is the explicitly tested last resort. |
+| Compact-chip geometry was described and checked as a 2:3 sprite. | The unchanged 2:3 chip is checked as a motion surface, with the sprite retained as the a11y underlay. |
+| Viewer loading asserted `off → on`, visible sprite, and no canvas. | Loading asserts a playing `video → on` handoff, then proves the detached video is paused and removed, the sprite stays hidden, and exactly one GLB was requested. |
+| Initial and toggled reduced motion asserted `off`, static sprite, no animation. | Reduced motion asserts `video`, real WebM playback and changing pixels, zero WebGL probes/GLB requests, plus CSS animation/transition suppression while native video continues. |
+| WebGL-disabled asserted `off` with a visible 2D fallback. | WebGL-disabled asserts playing `video`, no canvas/visible sprite, zero GLB requests, and `idle → happy_clap → idle` source restarts. |
+| Malformed GLB asserted `error` with a visible static sprite. | Malformed GLB asserts the video remains playing at rest and expanded, with no canvas and no media/console error. |
+| Reduced-motion live toggle asserted removal/restoration of idle. | It asserts `on → video → on`, with the cached GLB and exactly one visible motion surface after settling. |
+| Context-loss/static behavior was implicit. | A synthetic WebGL context loss explicitly asserts `on → video`, canvas removal, advancing playback, and no second GLB request. |
+| Mood coverage counted distinct sprites; mute wording called the sprite the visible fallback. | Mood coverage validates all nine mappings in both motion renderers; mute validates the accessible sprite DOM underlay beneath the active surface. |
+| Summary expected `error/off/on` and reported “3D/fallback”. | Summary reports `on/video`, all three selected VP9 sources, and fails if `off`, unset, or a missing surface appears after motion begins. |
+
+### Files changed
+
+- `app/mascot-companion.tsx` — hydration-safe surface state, shared current clip, native dual-source video fallback, playback watchdog, visibility pause/resume, clip restart and live handoff.
+- `app/mascot-companion.css` — hides the sprite for either motion surface, gives video the canvas box and cover fit, and corrects the reduced-motion comment.
+- `app/mascot-3d-viewer.jsx` — corrects the loading-surface comment; live mechanics remain unchanged.
+- `lib/mascot-motion.ts` — exhaustive clip-to-WebM/MP4 mapping beside the unchanged mood mapping.
+- `lib/mascot-motion.test.ts` — exhaustive media mapping tests.
+- `scripts/ui-contract-check.mjs` — real playback, source, lifecycle, pixel-motion, transition, geometry, request and summary contracts.
+- `scripts/ui-fixture-server.mjs` — correct video MIME types and HTTP byte-range serving for local QA.
+- `REPORT-PNL-MASCOT.md` — this section only; deliberately not staged with the implementation commit.
+
+`scripts/ui-fixture-entry.tsx`, `lib/mascot.ts`, all pages/data/auth/proxy code and every mascot asset remain unchanged in this run. The three WebM files already belong to parent commit `827e0c1`.
+
+### Motion media
+
+All six files are silent, seamless 7.00-second, 24 fps, 720×720 renders with the accepted baked `#C5CEDF` background.
+
+| Clip | VP9 WebM, first source | H.264 MP4, second source |
+|---|---:|---:|
+| `idle` | `/mascot/motion-idle.webm` — 45,053 B | `/mascot/motion-idle.mp4` — 181,855 B |
+| `happy_clap` | `/mascot/motion-happy-clap.webm` — 102,419 B | `/mascot/motion-happy-clap.mp4` — 261,304 B |
+| `excited_bounce` | `/mascot/motion-excited-bounce.webm` — 99,833 B | `/mascot/motion-excited-bounce.mp4` — 297,092 B |
+
+The source order is deliberate. This host's Playwright Chromium advertises H.264 but fails real H.264 decode; VP9 WebM reaches `readyState=4`, 720×720 and advancing `currentTime` for every clip. WebM therefore makes automated playback proof real, while MP4 remains the shipped fallback for browsers without VP9.
+
+### Final self-QA
+
+```text
+npm test
+ Test Files  13 passed (13)
+      Tests  186 passed (186)
+
+npm run lint
+ 0 errors
+ 1 pre-existing proxy.ts warning: b64urlEncode is defined but never used
+
+node --check scripts/ui-contract-check.mjs
+node --check scripts/ui-fixture-server.mjs
+ both passed
+
+npm run build
+ Next.js 16.2.6 (Turbopack)
+ Compiled successfully; TypeScript and static-page generation completed cleanly
+
+npm run start -- --hostname 127.0.0.1 --port 8125
+node scripts/ui-contract-check.mjs
+ PASS | Mascot resting/occlusion summary — 10/10 checks passed at 1440×1000 and 390×844
+ PASS | Mascot DOM assertion summary — 50/50 checks passed
+ PASS | Mascot 3D/video fallback summary — 65/65 checks passed · states on/video · all three WebM sources selected
+ PASS | Mascot contract summary — 126/126 checks passed
+ PASS | UI contract summary — 327/327 checks passed
+```
+
+The final production run proved the WebGL loading video was genuinely playing before one live canvas took over; the old video handle was disconnected and paused, the live path made one GLB request, and expand/collapse retained the same canvas while selecting the contracted clips. Reduced-motion runs made zero WebGL probes and zero GLB requests, selected WebM, reached `readyState=4`, advanced `currentTime`, paused while the document was hidden and resumed when visible. The same mounted reduced-motion component traversed all nine moods, every clip change stopped/removed the old element and restarted the new source, and proud→collapsed returned to `idle`. WebGL-disabled runs made zero GLB requests; malformed-GLB and context-loss runs continued with video and no canvas. From the explicit hydration boundary onward, the transition audit observed only visible `on`/`video` surfaces, never `off`/unset, and attached advancing-video proofs. Resting and expanded geometry/occlusion stayed green at both viewports, and no page, Three.js, WebGL or video error came from these paths.
+
+The 700 ms fallback screenshot probes changed real chip pixels in every final dedicated run: 205/5,766 (desktop production), 202/5,766 (desktop fixture), 244/5,766 (mobile production), and 207/5,766 (mobile fixture). The existing live-canvas probe also retained 3/3 distinct rendered frames at each viewport.
+
+Known limits and reviewer risks:
+
+1. The fallback is a baked `#C5CEDF` motion card, not the transparent live GLB, so the visual handoff can expose a background/rendering difference even though geometry does not shift.
+2. The live origin is auth-walled; Bodin still needs to eyeball the deployed result, and hardware-GPU plus iOS autoplay/rendering QA remains manual.
+3. Only VP9 WebM is decode-proven on this host. The MP4 path is present in the required order and Chromium advertises it through `canPlayType`, but its real decode relies on shipped-browser H.264 support rather than this CI Chromium build.
