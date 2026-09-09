@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mascotMotionForMood, type MascotMotionClip } from "./mascot-motion";
+import { mascotMediaForMotion, mascotMotionForMood, type MascotMotionClip } from "./mascot-motion";
 import type { MascotMood } from "./mascot";
 
 const EXPECTED_MOTIONS = {
@@ -33,5 +33,15 @@ describe("mascot mood motion mapping", () => {
     expect(Object.values(EXPECTED_MOTIONS).filter((clip) => clip === "idle")).toHaveLength(6);
     expect(Object.values(EXPECTED_MOTIONS).filter((clip) => clip === "happy_clap")).toHaveLength(2);
     expect(Object.values(EXPECTED_MOTIONS).filter((clip) => clip === "excited_bounce")).toHaveLength(1);
+  });
+});
+
+describe("mascot motion media mapping", () => {
+  it.each([
+    ["idle", "/mascot/motion-idle.webm", "/mascot/motion-idle.mp4"],
+    ["happy_clap", "/mascot/motion-happy-clap.webm", "/mascot/motion-happy-clap.mp4"],
+    ["excited_bounce", "/mascot/motion-excited-bounce.webm", "/mascot/motion-excited-bounce.mp4"],
+  ] as const)("maps %s to its hyphenated WebM and MP4 sources", (clip, webm, mp4) => {
+    expect(mascotMediaForMotion(clip)).toEqual({ webm, mp4 });
   });
 });

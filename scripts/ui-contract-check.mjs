@@ -13,7 +13,8 @@ const browserCandidates = [
 ].filter(Boolean);
 const executablePath = browserCandidates.find((candidate) => existsSync(candidate));
 const results = [];
-const observedMascot3dStates = new Set();
+const observedMascotSurfaceStates = new Set();
+const observedMascotVideoSources = new Set();
 
 const routes = [
   { name: "home", path: "/", finalPaths: ["/"] },
@@ -839,6 +840,168 @@ const mascotMotions = {
   alert: "idle",
 };
 
+function mascotMediaStem(clip) {
+  return clip.replaceAll("_", "-");
+}
+
+async function installMascotSurfaceAudit(page) {
+  await page.addInitScript(() => {
+    window.__mascotSurfaceAudit = {
+      hydrationSeen: false,
+      inspections: 0,
+      states: [],
+      videoPlaybackProofs: [],
+      violations: [],
+    };
+    const start = () => {
+      const audit = window.__mascotSurfaceAudit;
+      const inspect = () => {
+        const companion = document.querySelector("[data-mascot-companion]");
+        if (!companion?.hasAttribute("data-mascot-hydrated")) return;
+        audit.hydrationSeen = true;
+        audit.inspections++;
+        const state = companion.getAttribute("data-mascot-3d");
+        const canvas = companion.querySelector("[data-mascot-canvas]");
+        const video = companion.querySelector("[data-mascot-video]");
+        const sprite = companion.querySelector(".mascot-sprite");
+        const canvasCount = companion.querySelectorAll("[data-mascot-canvas]").length;
+        const videoCount = companion.querySelectorAll("[data-mascot-video]").length;
+        const stateLabel = state ?? "unset";
+        if (!audit.states.includes(stateLabel)) audit.states.push(stateLabel);
+        const visiblyOccupiesChip = (element) => {
+          if (!(element instanceof HTMLElement)) return false;
+          const rect = element.getBoundingClientRect();
+          const style = getComputedStyle(element);
+          return rect.width > 0 && rect.height > 0
+            && style.display !== "none" && style.visibility !== "hidden"
+            && Number(style.opacity) > 0;
+        };
+        // The off-DOM canvas is appended immediately before the React state
+        // handoff removes video, so a brief two-surface overlap is continuous
+        // motion rather than a static gap. Settled-state checks remain exact.
+        const hasVisibleMotionSurface = (state === "on" && canvasCount >= 1 && visiblyOccupiesChip(canvas))
+          || (state === "video" && videoCount >= 1 && visiblyOccupiesChip(video));
+        const spriteHidden = sprite instanceof HTMLElement && getComputedStyle(sprite).opacity === "0";
+        if ((!hasVisibleMotionSurface || !spriteHidden) && audit.violations.length < 10) {
+          audit.violations.push({ state: stateLabel, canvasCount, videoCount,
+            canvasVisible: visiblyOccupiesChip(canvas), videoVisible: visiblyOccupiesChip(video), spriteHidden });
+        }
+      };
+      new MutationObserver(inspect).observe(document.documentElement, {
+        attributes: true,
+        childList: true,
+        subtree: true,
+        attributeFilter: ["data-mascot-3d", "data-mascot-hydrated"],
+      });
+      inspect();
+    };
+    if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start, { once: true });
+    else start();
+  });
+}
+
+async function assertNoStaticMascotAfterMotion(page) {
+  const audit = await page.evaluate(() => window.__mascotSurfaceAudit);
+  for (const state of audit?.states ?? []) observedMascotSurfaceStates.add(state);
+  requireCondition(audit?.hydrationSeen && audit.inspections > 0,
+    "mascot motion-surface audit never observed the explicit client hydration boundary");
+  requireCondition(audit.violations.length === 0,
+    `mascot lost its motion surface after hydration: ${JSON.stringify(audit.violations)}`);
+  if (audit.states.includes("video")) {
+    requireCondition(audit.videoPlaybackProofs.length > 0,
+      "hydrated video surface was visible but never proved advancing playback");
+  }
+  return `hydration boundary retained only visible motion surfaces; ${audit.videoPlaybackProofs.length} advancing-video proof(s)`;
+}
+
+async function assertMascotVideoPlaying(page, expectedClip) {
+  const expectedWebm = `/mascot/motion-${mascotMediaStem(expectedClip)}.webm`;
+  await page.waitForFunction(({ clip, webm }) => {
+    const video = document.querySelector("[data-mascot-video]");
+    if (!(video instanceof HTMLVideoElement)) return false;
+    let currentPath = "";
+    try { currentPath = new URL(video.currentSrc).pathname; } catch {}
+    return video.getAttribute("data-mascot-motion") === clip
+      && currentPath === webm
+      && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA
+      && video.videoWidth === 720
+      && video.videoHeight === 720
+      && !video.paused
+      && video.error === null;
+  }, { clip: expectedClip, webm: expectedWebm }, { timeout: 20_000 });
+
+  const before = await page.locator("[data-mascot-video]").evaluate((video) => ({
+    currentTime: video.currentTime,
+    duration: video.duration,
+  }));
+  await page.waitForFunction(({ startedAt, duration }) => {
+    const video = document.querySelector("[data-mascot-video]");
+    if (!(video instanceof HTMLVideoElement) || video.paused || video.error) return false;
+    const elapsed = video.currentTime >= startedAt
+      ? video.currentTime - startedAt
+      : video.currentTime + duration - startedAt;
+    return elapsed >= 0.08;
+  }, { startedAt: before.currentTime, duration: before.duration }, { timeout: 10_000 });
+
+  const detail = await page.locator("[data-mascot-video]").evaluate((video) => ({
+    currentSrc: new URL(video.currentSrc).pathname,
+    currentTime: video.currentTime,
+    duration: video.duration,
+    readyState: video.readyState,
+    width: video.videoWidth,
+    height: video.videoHeight,
+    paused: video.paused,
+    error: video.error ? { code: video.error.code, message: video.error.message } : null,
+  }));
+  requireCondition(Number.isFinite(detail.duration) && Math.abs(detail.duration - 7) <= 0.05,
+    `fallback video duration is ${detail.duration}, expected 7.00 seconds`);
+  requireCondition(!detail.paused && detail.error === null, `fallback video is not playing cleanly: ${JSON.stringify(detail)}`);
+  await page.evaluate(({ clip, source, currentTime }) => {
+    const audit = window.__mascotSurfaceAudit;
+    if (!audit) return;
+    audit.videoPlaybackProofs.push({ clip, source, currentTime });
+  }, { clip: expectedClip, source: detail.currentSrc, currentTime: detail.currentTime });
+  observedMascotVideoSources.add(detail.currentSrc);
+  return `${detail.currentSrc} · readyState ${detail.readyState} · 720×720 · ${detail.currentTime.toFixed(2)}s/7.00s advancing`;
+}
+
+async function assertMascotScreenshotMotion(page, delayMs = 700) {
+  const chip = page.locator(".mascot-chip");
+  const before = await chip.screenshot({ animations: "allow" });
+  await page.waitForTimeout(delayMs);
+  const after = await chip.screenshot({ animations: "allow" });
+  const diff = await page.evaluate(async ({ first, second }) => {
+    const decode = async (base64) => {
+      const bytes = Uint8Array.from(atob(base64), (character) => character.charCodeAt(0));
+      const bitmap = await createImageBitmap(new Blob([bytes], { type: "image/png" }));
+      const canvas = document.createElement("canvas");
+      canvas.width = bitmap.width;
+      canvas.height = bitmap.height;
+      const context = canvas.getContext("2d", { willReadFrequently: true });
+      context.drawImage(bitmap, 0, 0);
+      const pixels = context.getImageData(0, 0, bitmap.width, bitmap.height).data;
+      bitmap.close();
+      return { width: canvas.width, height: canvas.height, pixels: [...pixels] };
+    };
+    const [one, two] = await Promise.all([decode(first), decode(second)]);
+    if (one.width !== two.width || one.height !== two.height) {
+      return { changedPixels: 0, totalPixels: 0, dimensions: `${one.width}x${one.height}/${two.width}x${two.height}` };
+    }
+    let changedPixels = 0;
+    for (let index = 0; index < one.pixels.length; index += 4) {
+      if (Math.abs(one.pixels[index] - two.pixels[index]) > 2
+        || Math.abs(one.pixels[index + 1] - two.pixels[index + 1]) > 2
+        || Math.abs(one.pixels[index + 2] - two.pixels[index + 2]) > 2
+        || Math.abs(one.pixels[index + 3] - two.pixels[index + 3]) > 2) changedPixels++;
+    }
+    return { changedPixels, totalPixels: one.width * one.height, dimensions: `${one.width}x${one.height}` };
+  }, { first: before.toString("base64"), second: after.toString("base64") });
+  const minimumChangedPixels = Math.max(20, Math.ceil(diff.totalPixels * 0.001));
+  requireCondition(diff.totalPixels > 0 && diff.changedPixels >= minimumChangedPixels,
+    `video fallback screenshots ${delayMs}ms apart changed ${diff.changedPixels}/${diff.totalPixels} pixels (${diff.dimensions})`);
+  return `${diff.changedPixels}/${diff.totalPixels} pixels changed across ${delayMs}ms (${diff.dimensions})`;
+}
+
 async function assertMascot(page, expectedMood) {
   const companion = page.locator("[data-mascot-companion]");
   requireCondition(await companion.count() === 1 && await companion.isVisible(), "mascot is missing, hidden or duplicated");
@@ -888,7 +1051,7 @@ async function assertMascotResting(page, expectedState) {
   requireCondition(!await page.locator(".mascot-bubble").isVisible(), "resting mascot has a visible bubble");
   requireCondition(!await page.locator(".mascot-controls").isVisible(), "resting mascot has a visible controls row");
   const reducedMotion = await page.evaluate(() => matchMedia("(prefers-reduced-motion: reduce)").matches);
-  const viewerDetail = await assertMascot3dState(page, expectedState ?? (reducedMotion ? "off" : "on"));
+  const viewerDetail = await assertMascotSurfaceState(page, expectedState ?? (reducedMotion ? "video" : "on"));
   await page.waitForFunction(() => {
     const card = document.querySelector(".mascot-card")?.getBoundingClientRect();
     return Boolean(card && card.width <= 65 && card.height <= 99);
@@ -903,71 +1066,112 @@ async function assertMascotResting(page, expectedState) {
       shadow: style.boxShadow, dotWidth: dot.width, dotHeight: dot.height };
   });
   requireCondition(Math.abs(geometry.width - 64) <= 1 && Math.abs(geometry.height - 96) <= 3, `resting card is ${geometry.width}×${geometry.height}, expected about 64×96`);
-  requireCondition(Math.abs(geometry.ratio - 2 / 3) < 0.01, "compact sprite loses its 2:3 aspect ratio");
+  requireCondition(Math.abs(geometry.ratio - 2 / 3) < 0.01, "compact motion surface loses its 2:3 aspect ratio");
   requireCondition(geometry.radius === "12px", `compact card radius is ${geometry.radius}, expected 12px`);
   requireCondition(geometry.border === "rgb(223, 229, 242)" && geometry.borderWidth === "1px" && /rgba\(21, 35, 72, 0\.07\) 0px 14px 35px(?: 0px)?/.test(geometry.shadow), "compact card lacks the app border/shadow tokens");
   requireCondition(geometry.dotWidth > 0 && geometry.dotWidth <= 10 && geometry.dotHeight <= 10, "resting status dot is absent or not tiny");
-  return `${geometry.width}×${geometry.height}px chip · 2:3 sprite · tiny status dot · no visible bubble or controls · ${viewerDetail}`;
+  return `${geometry.width}×${geometry.height}px chip · 2:3 motion surface · tiny status dot · no visible bubble or controls · ${viewerDetail}`;
 }
 
-async function assertMascot3dState(page, expectedState) {
+async function assertMascotSurfaceState(page, expectedState) {
   await page.waitForFunction((state) => {
     const companion = document.querySelector("[data-mascot-companion]");
     const canvasCount = companion?.querySelectorAll("[data-mascot-canvas]").length ?? 0;
+    const videoCount = companion?.querySelectorAll("[data-mascot-video]").length ?? 0;
     const sprite = companion?.querySelector(".mascot-sprite");
     const canvas = companion?.querySelector("[data-mascot-canvas]");
+    const video = companion?.querySelector("[data-mascot-video]");
     const expanded = companion?.querySelector("[data-mascot-toggle]")?.getAttribute("aria-expanded") === "true";
     const mood = companion?.getAttribute("data-mascot-mood");
     const motion = !expanded ? "idle" : ["happy", "proud"].includes(mood) ? "happy_clap" : mood === "excited" ? "excited_bounce" : "idle";
     const ratio = Number(canvas?.getAttribute("data-mascot-pixel-ratio"));
+    const motionSurface = state === "on" ? canvas : state === "video" ? video : null;
     return sprite && companion?.getAttribute("data-mascot-3d") === state
-      && (state === "on" ? canvasCount === 1 : canvasCount === 0)
-      && getComputedStyle(sprite).opacity === (state === "on" ? "0" : "1")
+      && (state === "on" ? canvasCount === 1 && videoCount === 0
+        : state === "video" ? canvasCount === 0 && videoCount === 1
+          : canvasCount === 0 && videoCount === 0)
+      && getComputedStyle(sprite).opacity === (["on", "video"].includes(state) ? "0" : "1")
+      && (state === "off" || motionSurface?.getAttribute("data-mascot-motion") === motion)
       && (state !== "on" || (canvas?.getAttribute("data-mascot-motion") === motion
         && Math.abs(canvas.width - canvas.clientWidth * ratio) <= 1
         && Math.abs(canvas.height - canvas.clientHeight * ratio) <= 1));
   }, expectedState, { timeout: 20_000 });
 
+  const initialMood = await page.locator("[data-mascot-companion]").getAttribute("data-mascot-mood");
+  const initialExpanded = await page.locator("[data-mascot-toggle]").getAttribute("aria-expanded") === "true";
+  const initialMotion = initialExpanded ? mascotMotions[initialMood] : "idle";
+  const playback = expectedState === "video" ? await assertMascotVideoPlaying(page, initialMotion) : null;
+
   const detail = await page.locator("[data-mascot-companion]").evaluate((companion, state) => {
     const sprite = companion.querySelector(".mascot-sprite");
     const canvas = companion.querySelector("[data-mascot-canvas]");
+    const video = companion.querySelector("[data-mascot-video]");
+    const motionSurface = state === "on" ? canvas : state === "video" ? video : null;
     const chip = companion.querySelector(".mascot-chip");
     const card = companion.querySelector(".mascot-card");
     const spriteRect = sprite?.getBoundingClientRect();
     const canvasRect = canvas?.getBoundingClientRect();
+    const videoRect = video?.getBoundingClientRect();
+    const motionSurfaceRect = motionSurface?.getBoundingClientRect();
     const chipRect = chip?.getBoundingClientRect();
     const cardRect = card?.getBoundingClientRect();
+    const videoStyle = video ? getComputedStyle(video) : null;
     return {
       rootState: companion.getAttribute("data-mascot-3d"),
       spriteOpacity: sprite ? getComputedStyle(sprite).opacity : null,
-      spriteVisible: Boolean(spriteRect?.width && spriteRect?.height && getComputedStyle(sprite).visibility === "visible"),
+      spriteBoxPresent: Boolean(spriteRect?.width && spriteRect?.height && getComputedStyle(sprite).visibility === "visible"),
       canvasCount: companion.querySelectorAll("[data-mascot-canvas]").length,
+      videoCount: companion.querySelectorAll("[data-mascot-video]").length,
       expanded: chip?.getAttribute("aria-expanded") === "true",
       canvasPointerEvents: canvas ? getComputedStyle(canvas).pointerEvents : null,
       canvasRadius: canvas ? getComputedStyle(canvas).borderRadius : null,
       chipRadius: chip ? getComputedStyle(chip).borderRadius : null,
       canvasAriaHidden: canvas?.getAttribute("aria-hidden") ?? null,
       animations: canvas?.getAttribute("data-mascot-animations") ?? null,
-      motion: canvas?.getAttribute("data-mascot-motion") ?? null,
+      motion: motionSurface?.getAttribute("data-mascot-motion") ?? null,
       bounds: canvas?.getAttribute("data-mascot-bounds") ?? null,
       pixelRatio: Number(canvas?.getAttribute("data-mascot-pixel-ratio") ?? 0),
       drawingWidth: canvas?.width ?? 0,
       drawingHeight: canvas?.height ?? 0,
       spriteRect: spriteRect ? { width: spriteRect.width, height: spriteRect.height, left: spriteRect.left, top: spriteRect.top } : null,
       canvasRect: canvasRect ? { width: canvasRect.width, height: canvasRect.height, left: canvasRect.left, top: canvasRect.top } : null,
+      videoRect: videoRect ? { width: videoRect.width, height: videoRect.height, left: videoRect.left, top: videoRect.top } : null,
+      motionSurfaceRect: motionSurfaceRect ? { width: motionSurfaceRect.width, height: motionSurfaceRect.height, left: motionSurfaceRect.left, top: motionSurfaceRect.top } : null,
       chipRect: chipRect ? { width: chipRect.width, height: chipRect.height } : null,
       cardRect: cardRect ? { width: cardRect.width, height: cardRect.height } : null,
+      video: video ? {
+        muted: video.muted,
+        autoplay: video.autoplay,
+        loop: video.loop,
+        playsInline: video.playsInline,
+        preload: video.preload,
+        controls: video.controls,
+        ariaHidden: video.getAttribute("aria-hidden"),
+        pointerEvents: videoStyle.pointerEvents,
+        radius: videoStyle.borderRadius,
+        position: videoStyle.position,
+        inset: [videoStyle.top, videoStyle.right, videoStyle.bottom, videoStyle.left],
+        objectFit: videoStyle.objectFit,
+        sources: [...video.querySelectorAll("source")].map((source) => ({
+          type: source.getAttribute("type"),
+          src: source.getAttribute("src"),
+        })),
+        currentSrc: video.currentSrc ? new URL(video.currentSrc).pathname : null,
+        mp4Support: video.canPlayType('video/mp4; codecs="avc1.64001f"'),
+      } : null,
       expectedState: state,
     };
   }, expectedState);
 
+  observedMascotSurfaceStates.add(detail.rootState ?? "unset");
   requireCondition(detail.rootState === expectedState, `expected data-mascot-3d=${expectedState}, found ${detail.rootState}`);
-  requireCondition(detail.spriteVisible, "mascot 2D fallback/underlay lost its display box");
+  requireCondition(detail.spriteBoxPresent, "mascot 2D a11y underlay lost its display box");
+  const mood = await page.locator("[data-mascot-companion]").getAttribute("data-mascot-mood");
+  const expectedMotion = detail.expanded ? mascotMotions[mood] : "idle";
   if (expectedState === "on") {
-    const mood = await page.locator("[data-mascot-companion]").getAttribute("data-mascot-mood");
+    requireCondition(detail.videoCount === 0, "live mascot leaves its fallback video mounted");
     requireCondition(detail.canvasCount === 1 && detail.canvasAriaHidden === "true", "live mascot canvas is missing or exposed to assistive technology");
     requireCondition(detail.animations === "idle,happy_clap,excited_bounce", `unexpected GLB clips ${detail.animations}`);
-    const expectedMotion = detail.expanded ? mascotMotions[mood] : "idle";
     requireCondition(detail.motion === expectedMotion, `mood ${mood} (${detail.expanded ? "expanded" : "resting"}) plays ${detail.motion}, expected ${expectedMotion}`);
     requireCondition(detail.canvasPointerEvents === "none", "decorative canvas intercepts the chip hit target");
     requireCondition(detail.canvasRadius === detail.chipRadius, "canvas does not inherit the chip border radius");
@@ -990,14 +1194,48 @@ async function assertMascot3dState(page, expectedState) {
     const bounds = detail.bounds?.split(",").map(Number) ?? [];
     requireCondition(bounds.length === 3 && bounds.every(Number.isFinite) && bounds[1] > 1.65 && bounds[1] < 1.75,
       `computed model bounds do not frame the ~1.7m full body: ${detail.bounds}`);
+  } else if (expectedState === "video") {
+    const stem = mascotMediaStem(expectedMotion);
+    requireCondition(detail.canvasCount === 0 && detail.videoCount === 1, "video fallback does not own the sole motion surface");
+    requireCondition(detail.spriteOpacity === "0", `playing video leaves the static sprite visible at opacity ${detail.spriteOpacity}`);
+    requireCondition(detail.motion === expectedMotion,
+      `mood ${mood} (${detail.expanded ? "expanded" : "resting"}) video plays ${detail.motion}, expected ${expectedMotion}`);
+    requireCondition(detail.video?.muted && detail.video.autoplay && detail.video.loop && detail.video.playsInline
+      && detail.video.preload === "auto" && !detail.video.controls && detail.video.ariaHidden === "true",
+    `fallback video attributes differ from contract: ${JSON.stringify(detail.video)}`);
+    requireCondition(detail.video.pointerEvents === "none" && detail.video.radius === detail.chipRadius
+      && detail.video.position === "absolute" && detail.video.inset.every((value) => value === "0px")
+      && detail.video.objectFit === "cover", `fallback video CSS differs from contract: ${JSON.stringify(detail.video)}`);
+    requireCondition(JSON.stringify(detail.video.sources) === JSON.stringify([
+      { type: "video/webm", src: `/mascot/motion-${stem}.webm` },
+      { type: "video/mp4", src: `/mascot/motion-${stem}.mp4` },
+    ]), `fallback sources are not ordered WebM then MP4: ${JSON.stringify(detail.video.sources)}`);
+    requireCondition(detail.video.currentSrc === `/mascot/motion-${stem}.webm`,
+      `Chromium selected ${detail.video.currentSrc}, expected VP9 WebM first`);
+    requireCondition(detail.video.mp4Support !== "", "browser does not advertise an MP4 fallback capability");
+    requireCondition(detail.spriteRect && detail.videoRect && detail.motionSurfaceRect && detail.chipRect && detail.cardRect,
+      "video display geometry is incomplete");
+    const box = detail.expanded ? { width: 126, height: 189, cardWidth: 128, cardHeight: 262 }
+      : { width: 62, height: 93, cardWidth: 64, cardHeight: 95 };
+    requireCondition(Math.abs(detail.chipRect.width - box.width) <= 1 && Math.abs(detail.chipRect.height - box.height) <= 3,
+      `video display box is ${detail.chipRect.width}×${detail.chipRect.height}, expected about ${box.width}×${box.height}`);
+    requireCondition(Math.abs(detail.cardRect.width - box.cardWidth) <= 1 && Math.abs(detail.cardRect.height - box.cardHeight) <= 4,
+      `video card is ${detail.cardRect.width}×${detail.cardRect.height}, expected about ${box.cardWidth}×${box.cardHeight}`);
+    for (const dimension of ["width", "height", "left", "top"]) {
+      requireCondition(Math.abs(detail.spriteRect[dimension] - detail.motionSurfaceRect[dimension]) <= 1,
+        `video ${dimension} differs from the existing sprite box`);
+    }
   } else {
-    requireCondition(detail.canvasCount === 0, `${expectedState} fallback leaves a canvas mounted`);
-    requireCondition(detail.spriteOpacity === "1", `${expectedState} fallback sprite opacity is ${detail.spriteOpacity}`);
+    requireCondition(expectedState === "off", `unknown mascot surface state ${expectedState}`);
+    requireCondition(detail.canvasCount === 0 && detail.videoCount === 0, "last-resort static fallback leaves a motion surface mounted");
+    requireCondition(detail.spriteOpacity === "1", `last-resort static sprite opacity is ${detail.spriteOpacity}`);
   }
-  observedMascot3dStates.add(expectedState);
+  if (expectedState === "video") {
+    return `data-mascot-3d=video · ${expectedMotion} · ${playback} · no canvas · static sprite hidden`;
+  }
   return `data-mascot-3d=${expectedState} · ${expectedState === "on"
-    ? `${detail.motion} · clips ${detail.animations} · ${detail.chipRect.width}×${detail.chipRect.height}px unchanged box · DPR ${detail.pixelRatio}`
-    : "no canvas · visible 2D sprite"}`;
+    ? `${detail.motion} · clips ${detail.animations} · ${detail.chipRect.width}×${detail.chipRect.height}px unchanged box · DPR ${detail.pixelRatio} · no video`
+    : "no canvas/video · visible last-resort sprite"}`;
 }
 
 async function assertOpaqueMascotBubble(page) {
@@ -1121,15 +1359,19 @@ async function checkMascotRoute(page, route, viewport, response) {
         collapsed: companions.every((element) => element.querySelector('[data-mascot-toggle][aria-expanded="false"]') && !element.querySelector(".mascot-controls")),
         sprites: companions.reduce((sum, element) => sum + element.querySelectorAll("img[alt][width='320'][height='480']").length, 0),
         canvases: companions.reduce((sum, element) => sum + element.querySelectorAll("[data-mascot-canvas]").length, 0),
-        viewerStates: companions.map((element) => element.getAttribute("data-mascot-3d")) };
+        videos: companions.reduce((sum, element) => sum + element.querySelectorAll("[data-mascot-video]").length, 0),
+        viewerStates: companions.map((element) => element.getAttribute("data-mascot-3d")),
+        hydrated: companions.map((element) => element.hasAttribute("data-mascot-hydrated")) };
     }, html);
     requireCondition(serverMarkup.count === (route.name === "login" ? 0 : 1), `server HTML has ${serverMarkup.count} companions`);
     if (route.name !== "login") {
       requireCondition(serverMarkup.visible && serverMarkup.sprites === 1 && serverMarkup.collapsed, "server HTML omits the collapsed default sprite or exposes expanded controls");
-      requireCondition(serverMarkup.canvases === 0 && serverMarkup.viewerStates.every((state) => state === "off"),
-        "server HTML renders the client-only mascot canvas or an active 3D state");
+      requireCondition(serverMarkup.canvases === 0 && serverMarkup.videos === 0
+        && serverMarkup.viewerStates.every((state) => state === null)
+        && serverMarkup.hydrated.every((state) => state === false),
+      "server HTML renders a client-only motion surface or claims a hydrated mascot state");
     }
-    return route.name === "login" ? "absent from login HTML" : "collapsed sprite present before hydration; no canvas or controls row";
+    return route.name === "login" ? "absent from login HTML" : "collapsed static sprite is the pre-hydration exception; state unset and no canvas/video or controls row";
   });
   if (route.name === "login") {
     await check(`${prefix} remains absent after hydration`, async () => {
@@ -1435,6 +1677,7 @@ async function auditPopulatedFixtures(browser, fixtureUrl, viewport) {
 
 async function auditMascotFixtures(browser, fixtureUrl, viewport) {
   const page = await browser.newPage({ viewport: { width: viewport.width, height: viewport.height } });
+  await installMascotSurfaceAudit(page);
   const browserErrors = [];
   let glbRequests = 0;
   page.on("pageerror", (error) => browserErrors.push(`page: ${error.message}`));
@@ -1445,12 +1688,12 @@ async function auditMascotFixtures(browser, fixtureUrl, viewport) {
   const prefix = `${viewport.name} mascot fixture`;
   try {
     const coveredMoods = new Set();
-    // These legacy derivation/interaction cases do not need to download and
-    // parse the 4.48 MB model nine times. The dedicated live block below pins
-    // every motion transition in one expanded WebGL instance.
+    // Exercise the real video fallback without downloading and parsing the
+    // 4.48 MB model for every derivation case. The live block below separately
+    // pins every motion transition in one WebGL instance.
     await page.emulateMedia({ reducedMotion: "reduce" });
     for (const fixture of browserFixture.mascotScenarios) {
-      await check(`${prefix} ${fixture.scenario} derives ${fixture.mood}`, async () => {
+      await check(`${prefix} ${fixture.scenario} derives ${fixture.mood} and maps fallback video`, async () => {
         const clock = new Date(browserFixture.asOf);
         clock.setUTCHours(fixture.hourUtc, 0, 0, 0);
         await page.clock.setFixedTime(clock);
@@ -1459,19 +1702,62 @@ async function auditMascotFixtures(browser, fixtureUrl, viewport) {
         await page.locator("[data-mascot-companion]").waitFor();
         await assertMascot(page, fixture.mood);
         requireCondition(await page.locator("[data-mascot-toggle]").getAttribute("aria-expanded") === "false", "new fixture defaults expanded");
+        await assertMascotSurfaceState(page, "video");
         await assertOpaqueMascotBubble(page);
         await page.locator("[data-mascot-toggle]").click();
         await assertMascotExpanded(page);
+        await assertMascotSurfaceState(page, "video");
         await assertMascotPlacement(page);
         await page.locator("[data-mascot-toggle]").click();
         await assertMascotResting(page);
+        await assertNoStaticMascotAfterMotion(page);
         coveredMoods.add(fixture.mood);
         return fixture.description;
       });
     }
-    await check(`${prefix} covers all nine distinct mood sprites`, async () => {
+    await check(`${prefix} covers all nine distinct moods and video mappings`, async () => {
       requireCondition(mascotMoods.every((mood) => coveredMoods.has(mood)), `missing moods: ${mascotMoods.filter((mood) => !coveredMoods.has(mood)).join(", ")}`);
-      return `${coveredMoods.size} mood sprites loaded with intrinsic dimensions and meaningful alt text`;
+      const fixtureByMood = new Map(browserFixture.mascotScenarios.map((fixture) => [fixture.mood, fixture]));
+      const reducedMoodOrder = [...mascotMoods.filter((mood) => mood !== "proud"), "proud"];
+      const firstFixture = fixtureByMood.get(reducedMoodOrder[0]);
+      const firstClock = new Date(browserFixture.asOf);
+      firstClock.setUTCHours(firstFixture.hourUtc, 0, 0, 0);
+      await page.clock.setFixedTime(firstClock);
+      const response = await page.goto(`${fixtureUrl}/?scenario=${firstFixture.scenario}`, { waitUntil: "networkidle", timeout: 15_000 });
+      requireCondition(response?.ok(), `fixture HTTP ${response?.status() ?? "unavailable"}`);
+      await page.locator("[data-mascot-toggle]").click();
+      await assertMascotExpanded(page);
+      let previousClip = mascotMotions[reducedMoodOrder[0]];
+      let previousVideo = await page.locator("[data-mascot-video]").elementHandle();
+      await assertMascotSurfaceState(page, "video");
+      for (const mood of reducedMoodOrder.slice(1)) {
+        const fixture = fixtureByMood.get(mood);
+        const clock = new Date(browserFixture.asOf);
+        clock.setUTCHours(fixture.hourUtc, 0, 0, 0);
+        await page.clock.setFixedTime(clock);
+        await page.evaluate((scenario) => window.dispatchEvent(new CustomEvent("ui-fixture:scenario", { detail: scenario })), fixture.scenario);
+        await page.locator(`[data-mascot-mood="${mood}"]`).waitFor();
+        await assertMascotSurfaceState(page, "video");
+        const expectedClip = mascotMotions[mood];
+        const currentVideo = await page.locator("[data-mascot-video]").elementHandle();
+        if (expectedClip !== previousClip) {
+          requireCondition(await previousVideo.evaluate((video) => !video.isConnected && video.paused),
+            `${previousClip} video was not stopped/removed before ${expectedClip}`);
+          requireCondition(await currentVideo.evaluate((video) => video.currentTime < 1.5),
+            `${expectedClip} in-document mood switch did not restart near zero`);
+        }
+        await previousVideo.dispose();
+        previousVideo = currentVideo;
+        previousClip = expectedClip;
+      }
+      await page.locator("[data-mascot-toggle]").click();
+      await assertMascotResting(page, "video");
+      requireCondition(await previousVideo.evaluate((video) => !video.isConnected && video.paused),
+        "expanded proud video was not stopped/removed when collapse selected idle");
+      await previousVideo.dispose();
+      const neverStatic = await assertNoStaticMascotAfterMotion(page);
+      requireCondition(glbRequests === 0, `reduced-motion derivation fixtures made ${glbRequests} GLB requests`);
+      return `${coveredMoods.size} mood sprites retain intrinsic dimensions/alt text; all mapped videos play across reload and in-document mood changes; proud→idle collapse restarts; zero GLB requests · ${neverStatic}`;
     });
 
     await check(`${prefix} DOM WebGL 3D switches all nine mapped mood motions without re-downloading`, async () => {
@@ -1485,7 +1771,7 @@ async function auditMascotFixtures(browser, fixtureUrl, viewport) {
       requireCondition(response?.ok(), `fixture HTTP ${response?.status() ?? "unavailable"}`);
       await page.emulateMedia({ reducedMotion: "no-preference" });
       await page.locator("[data-mascot-toggle]").click();
-      await assertMascot3dState(page, "on");
+      await assertMascotSurfaceState(page, "on");
       for (const mood of mascotMoods) {
         const fixture = fixtureByMood.get(mood);
         const clock = new Date(browserFixture.asOf);
@@ -1509,12 +1795,13 @@ async function auditMascotFixtures(browser, fixtureUrl, viewport) {
         }
       }
       await page.emulateMedia({ reducedMotion: "reduce" });
-      await assertMascot3dState(page, "off");
+      const videoFallback = await assertMascotSurfaceState(page, "video");
       await page.emulateMedia({ reducedMotion: "no-preference" });
-      const restored = await assertMascot3dState(page, "on");
+      const restored = await assertMascotSurfaceState(page, "on");
       requireCondition(glbRequests - requestsBefore === 1, `nine in-document mood changes made ${glbRequests - requestsBefore} GLB requests`);
       requireCondition(await page.locator("[data-mascot-canvas]").getAttribute("data-mascot-motion") === mascotMotions.alert, "re-enabled viewer lost the current alert motion");
-      return `data-mascot-3d=on · ${mascotMoods.map((mood) => `${mood}→${mascotMotions[mood]}`).join(", ")} · live reduced-motion off/on remount (${restored}) · one GLB request`;
+      const neverStatic = await assertNoStaticMascotAfterMotion(page);
+      return `data-mascot-3d=on · ${mascotMoods.map((mood) => `${mood}→${mascotMotions[mood]}`).join(", ")} · on→video→on (${videoFallback}; ${restored}) · ${neverStatic} · one GLB request`;
     });
 
     await check(`${prefix} DOM new server props refresh mood and preserve expanded mute`, async () => {
@@ -1558,20 +1845,23 @@ async function auditMascotFixtures(browser, fixtureUrl, viewport) {
       await assertOpaqueMascotBubble(page);
       return "alert source message expired; alert unreconciled message is newly visible while controls remain hidden";
     });
-    await check(`${prefix} DOM reduced motion keeps mascot 3D off and disables animation/fade`, async () => {
+    await check(`${prefix} DOM reduced motion keeps fallback video moving while CSS animation/fade is disabled`, async () => {
       await page.emulateMedia({ reducedMotion: "reduce" });
       await page.locator("[data-mascot-toggle]").click();
       await assertMascotExpanded(page);
-      const fallback = await assertMascot3dState(page, "off");
-      const styles = await page.locator("[data-mascot-companion], [data-mascot-companion] *").evaluateAll((elements) => elements.map((element) => {
-        const style = getComputedStyle(element);
-        return { animation: style.animationName, transition: style.transitionDuration, property: style.transitionProperty };
-      }));
+      const fallback = await assertMascotSurfaceState(page, "video");
+      const styles = await page.locator("[data-mascot-companion], [data-mascot-companion] *").evaluateAll((elements) => elements
+        .filter((element) => element.tagName !== "SOURCE")
+        .map((element) => {
+          const style = getComputedStyle(element);
+          return { animation: style.animationName, transition: style.transitionDuration, property: style.transitionProperty };
+        }));
       requireCondition(styles.length > 0 && styles.every((style) => style.animation === "none"
-        && style.transition.split(",").every((duration) => parseFloat(duration) === 0)), "mascot still animates with reduced motion");
+        && style.transition.split(",").every((duration) => parseFloat(duration) === 0)), "mascot CSS animation or transition remains enabled under reduced motion");
       await page.locator("[data-mascot-toggle]").click();
       await assertMascotResting(page);
-      return `${fallback} · ${styles.length} expanded companion elements: animation-name=none, transition durations=0; collapse leaves compact chip`;
+      const neverStatic = await assertNoStaticMascotAfterMotion(page);
+      return `${fallback} · ${styles.length} expanded companion elements: CSS animation-name=none, transition durations=0; native video continues; collapse leaves compact chip · ${neverStatic}`;
     });
     await check(`${prefix} console remains clean across every mood and prop transition`, async () => {
       requireCondition(browserErrors.length === 0, browserErrors.join(" | "));
@@ -1583,6 +1873,7 @@ async function auditMascotFixtures(browser, fixtureUrl, viewport) {
 
 async function auditMascotRestingIdle(browser, fixtureUrl, viewport) {
   const page = await browser.newPage({ viewport: { width: viewport.width, height: viewport.height }, reducedMotion: "no-preference" });
+  await installMascotSurfaceAudit(page);
   const browserErrors = [];
   let glbRequests = 0;
   let restingCanvas;
@@ -1611,7 +1902,7 @@ async function auditMascotRestingIdle(browser, fixtureUrl, viewport) {
       const response = await page.goto(`${fixtureUrl}/?scenario=portfolio-mascot-excited`, { waitUntil: "networkidle", timeout: 15_000 });
       requireCondition(response?.ok(), `fixture HTTP ${response?.status() ?? "unavailable"}`);
       await assertMascot(page, "excited");
-      await assertMascot3dState(page, "on");
+      await assertMascotSurfaceState(page, "on");
       requireCondition(await page.locator("[data-mascot-toggle]").getAttribute("aria-expanded") === "false", "idle motion needed expansion");
       restingCanvas = await page.locator("[data-mascot-canvas]").elementHandle();
       await assertSameCanvas();
@@ -1636,7 +1927,7 @@ async function auditMascotRestingIdle(browser, fixtureUrl, viewport) {
       for (let cycle = 0; cycle < 2; cycle++) {
         await toggle.click();
         await assertMascotExpanded(page);
-        await assertMascot3dState(page, "on");
+        await assertMascotSurfaceState(page, "on");
         requireCondition(await page.locator("[data-mascot-canvas]").getAttribute("data-mascot-motion") === "excited_bounce", "expanded excited fixture lost its mood clip");
         await assertSameCanvas();
         if (cycle === 0) await toggle.click();
@@ -1654,21 +1945,32 @@ async function auditMascotRestingIdle(browser, fixtureUrl, viewport) {
       await page.evaluate(() => window.dispatchEvent(new CustomEvent("ui-fixture:scenario", { detail: "portfolio-mascot-happy" })));
       await page.locator('[data-mascot-mood="happy"]').waitFor();
       await assertMascot(page, "happy");
-      await assertMascot3dState(page, "on");
+      await assertMascotSurfaceState(page, "on");
       requireCondition(await page.locator("[data-mascot-toggle]").getAttribute("aria-expanded") === "false", "mood update expanded resting chip");
       await assertSameCanvas();
       return "excited → happy server props · still collapsed/idle · same canvas · one GLB request";
     });
-    await check(`${prefix} DOM WebGL resting reduced-motion toggle removes and restores idle`, async () => {
+    await check(`${prefix} DOM WebGL resting reduced-motion toggle hands idle to video and restores live`, async () => {
       await page.emulateMedia({ reducedMotion: "reduce" });
-      await assertMascot3dState(page, "off");
+      const fallback = await assertMascotSurfaceState(page, "video");
       requireCondition(await page.locator(".mascot-3d-host").count() === 0, "reduced motion retains the viewer host");
       requireCondition(await restingCanvas.evaluate((canvas) => !canvas.isConnected), "reduced motion did not remove live canvas");
       await page.emulateMedia({ reducedMotion: "no-preference" });
-      const restored = await assertMascot3dState(page, "on");
+      const restored = await assertMascotSurfaceState(page, "on");
       requireCondition(await page.locator("[data-mascot-toggle]").getAttribute("aria-expanded") === "false", "restored idle needed expansion");
       requireCondition(glbRequests === 1, `restoring idle made ${glbRequests} GLB requests`);
-      return `on → off → on while collapsed · ${restored} · cached GLB`;
+      requireCondition(await page.locator("[data-mascot-video]").count() === 0, "restored live viewer retains fallback video");
+      return `on → video → on while collapsed · ${fallback} · ${restored} · cached GLB`;
+    });
+    await check(`${prefix} DOM WebGL context loss switches the live idle canvas to playing video`, async () => {
+      const liveCanvas = page.locator("[data-mascot-canvas]");
+      requireCondition(await liveCanvas.count() === 1, "context-loss fixture has no live canvas");
+      await liveCanvas.dispatchEvent("webglcontextlost", { cancelable: true });
+      const fallback = await assertMascotSurfaceState(page, "video");
+      requireCondition(await liveCanvas.count() === 0, "context loss leaves the canvas mounted");
+      requireCondition(glbRequests === 1, `context loss made ${glbRequests} GLB requests`);
+      const neverStatic = await assertNoStaticMascotAfterMotion(page);
+      return `${fallback} · one cached GLB request · ${neverStatic}`;
     });
     await check(`${prefix} WebGL resting idle and transition console stays clean`, async () => {
       requireCondition(browserErrors.length === 0, browserErrors.join(" | "));
@@ -1682,29 +1984,49 @@ async function auditMascotRestingIdle(browser, fixtureUrl, viewport) {
 
 async function auditMascotLoading(browser, fixtureUrl, viewport) {
   const page = await browser.newPage({ viewport: { width: viewport.width, height: viewport.height }, reducedMotion: "no-preference" });
+  await installMascotSurfaceAudit(page);
   let releaseModel;
   const modelGate = new Promise((resolve) => { releaseModel = resolve; });
   let glbRequests = 0;
+  const mediaRequests = [];
+  const browserErrors = [];
+  page.on("pageerror", (error) => browserErrors.push(`page: ${error.message}`));
+  page.on("console", (message) => captureBrowserConsole(browserErrors, message));
+  page.on("request", (request) => {
+    const pathname = new URL(request.url()).pathname;
+    if (/^\/mascot\/motion-/.test(pathname)) mediaRequests.push(pathname);
+  });
+  page.on("requestfailed", (request) => {
+    const pathname = new URL(request.url()).pathname;
+    if (/^\/mascot\/motion-/.test(pathname)) browserErrors.push(`media request failed: ${pathname} (${request.failure()?.errorText ?? "unknown"})`);
+  });
   await page.route("**/mascot/mascot-3d.glb", async (route) => {
     glbRequests++;
     await modelGate;
     await route.continue();
   });
   try {
-    await check(`${viewport.name} mascot fixture DOM WebGL loading keeps a visible sprite and no canvas`, async () => {
+    await check(`${viewport.name} mascot fixture DOM WebGL loading plays video then hands off to the live canvas`, async () => {
       const requested = page.waitForRequest("**/mascot/mascot-3d.glb");
       await page.goto(`${fixtureUrl}/?scenario=portfolio-mascot-excited`, { waitUntil: "domcontentloaded" });
       await requested;
       await assertMascot(page, "excited");
       requireCondition(await page.locator("[data-mascot-canvas]").count() === 0, "loading GLB exposes a canvas before it is ready");
       const before = await page.locator(".mascot-card").boundingBox();
-      await assertMascot3dState(page, "off");
+      const fallback = await assertMascotSurfaceState(page, "video");
+      const fallbackVideo = await page.locator("[data-mascot-video]").elementHandle();
       releaseModel();
-      await assertMascot3dState(page, "on");
+      const live = await assertMascotSurfaceState(page, "on");
       const after = await page.locator(".mascot-card").boundingBox();
       requireCondition(JSON.stringify(before) === JSON.stringify(after), `loading shifted resting card: ${JSON.stringify({ before, after })}`);
+      requireCondition(await fallbackVideo.evaluate((video) => !video.isConnected && video.paused),
+        "loading fallback video was not stopped and removed after live canvas attachment");
       requireCondition(glbRequests === 1, `loading made ${glbRequests} GLB requests`);
-      return `off → on · visible sprite/no canvas until ready · ${after.width}×${after.height}px card unchanged · one GLB request`;
+      requireCondition(mediaRequests.length > 0 && mediaRequests.every((path) => path === "/mascot/motion-idle.webm"),
+        `loading requested unused/fallback media sources: ${mediaRequests.join(", ") || "none"}`);
+      requireCondition(browserErrors.length === 0, browserErrors.join(" | "));
+      const neverStatic = await assertNoStaticMascotAfterMotion(page);
+      return `video → on · ${fallback} · ${live} · stopped/removed video · ${after.width}×${after.height}px unchanged card · one GLB · WebM-only request · ${neverStatic}`;
     });
   } finally {
     releaseModel();
@@ -1714,6 +2036,7 @@ async function auditMascotLoading(browser, fixtureUrl, viewport) {
 
 async function auditMascotReducedMotion(browser, url, viewport, originLabel) {
   const page = await browser.newPage({ viewport: { width: viewport.width, height: viewport.height }, reducedMotion: "reduce" });
+  await installMascotSurfaceAudit(page);
   const browserErrors = [];
   let glbRequests = 0;
   page.on("pageerror", (error) => browserErrors.push(`page: ${error.message}`));
@@ -1730,24 +2053,42 @@ async function auditMascotReducedMotion(browser, url, viewport, originLabel) {
     };
   });
   try {
-    await check(`${viewport.name} ${originLabel} mascot DOM initial reduced motion never mounts 3D at rest`, async () => {
+    await check(`${viewport.name} ${originLabel} mascot DOM reduced motion plays video without mounting WebGL`, async () => {
       const response = await page.goto(url, { waitUntil: "networkidle", timeout: 45_000 });
       requireCondition(response?.ok(), `HTTP ${response?.status() ?? "unavailable"}`);
       await assertMascot(page);
-      await assertMascot3dState(page, "off");
+      const fallback = await assertMascotSurfaceState(page, "video");
       requireCondition(await page.locator("[data-mascot-toggle]").getAttribute("aria-expanded") === "false", "reduced-motion page starts expanded");
       requireCondition(await page.locator(".mascot-3d-host").count() === 0, "reduced motion mounts the viewer");
-      const styles = await page.locator("[data-mascot-companion], [data-mascot-companion] *").evaluateAll((elements) => elements.map((element) => {
-        const style = getComputedStyle(element);
-        return { animation: style.animationName, transition: style.transitionDuration, property: style.transitionProperty };
-      }));
+      const styles = await page.locator("[data-mascot-companion], [data-mascot-companion] *").evaluateAll((elements) => elements
+        .filter((element) => element.tagName !== "SOURCE")
+        .map((element) => {
+          const style = getComputedStyle(element);
+          return { animation: style.animationName, transition: style.transitionDuration, property: style.transitionProperty };
+        }));
       requireCondition(styles.every((style) => style.animation === "none"
-        && style.transition.split(",").every((duration) => parseFloat(duration) === 0)), "reduced-motion resting chip animates or fades");
+        && style.transition.split(",").every((duration) => parseFloat(duration) === 0)), "reduced-motion CSS animation or transition remains enabled");
+      const pixelMotion = await assertMascotScreenshotMotion(page, 700);
+      await page.evaluate(() => {
+        window.__mascotTestHidden = true;
+        Object.defineProperty(document, "hidden", {
+          configurable: true,
+          get: () => window.__mascotTestHidden,
+        });
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+      await page.waitForFunction(() => document.querySelector("[data-mascot-video]")?.paused === true);
+      await page.evaluate(() => {
+        window.__mascotTestHidden = false;
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+      const resumed = await assertMascotVideoPlaying(page, "idle");
       await page.locator("[data-mascot-bubble]").waitFor({ state: "detached", timeout: 8_000 });
       const detail = await assertMascotResting(page);
       requireCondition(await page.evaluate(() => window.mascotWebglProbes) === 0 && glbRequests === 0, "reduced-motion startup attempted WebGL or fetched the GLB");
       requireCondition(browserErrors.length === 0, browserErrors.join(" | "));
-      return `${detail} · zero WebGL probes/GLB requests · no animation/fade · clean console`;
+      const neverStatic = await assertNoStaticMascotAfterMotion(page);
+      return `${fallback} · ${detail} · ${pixelMotion} · hidden pauses/visible resumes (${resumed}) · zero WebGL probes/GLB requests · CSS animation/fade disabled · ${neverStatic} · clean console`;
     });
   } finally {
     await page.close();
@@ -1756,6 +2097,7 @@ async function auditMascotReducedMotion(browser, url, viewport, originLabel) {
 
 async function auditMascotNoWebgl(browser, fixtureUrl, viewport) {
   const page = await browser.newPage({ viewport: { width: viewport.width, height: viewport.height } });
+  await installMascotSurfaceAudit(page);
   const browserErrors = [];
   let glbRequests = 0;
   await page.addInitScript(() => {
@@ -1772,19 +2114,25 @@ async function auditMascotNoWebgl(browser, fixtureUrl, viewport) {
   });
   const prefix = `${viewport.name} mascot fixture`;
   try {
-    await check(`${prefix} DOM WebGL disabled keeps mascot 3D off with its 2D fallback`, async () => {
+    await check(`${prefix} DOM WebGL disabled plays video and restarts clips on expand/collapse`, async () => {
       const response = await page.goto(`${fixtureUrl}/?scenario=portfolio-mascot-happy`, { waitUntil: "networkidle", timeout: 15_000 });
       requireCondition(response?.ok(), `fixture HTTP ${response?.status() ?? "unavailable"}`);
       await assertMascot(page, "happy");
-      await assertMascot3dState(page, "off");
+      const initial = await assertMascotSurfaceState(page, "video");
       requireCondition(await page.locator("[data-mascot-toggle]").getAttribute("aria-expanded") === "false", "WebGL-disabled fixture starts expanded");
+      await page.waitForTimeout(250);
       await page.locator("[data-mascot-toggle]").click();
       await assertMascotExpanded(page);
-      const detail = await assertMascot3dState(page, "off");
+      const detail = await assertMascotSurfaceState(page, "video");
+      requireCondition(await page.locator("[data-mascot-video]").evaluate((video) => video.currentTime < 1.5),
+        "expanded happy_clap fallback did not restart near time zero");
       requireCondition(glbRequests === 0, `WebGL-disabled fallback requested the GLB ${glbRequests} times`);
       await page.locator("[data-mascot-toggle]").click();
-      const resting = await assertMascotResting(page, "off");
-      return `${detail} · ${resting} · zero GLB requests`;
+      const resting = await assertMascotResting(page, "video");
+      requireCondition(await page.locator("[data-mascot-video]").evaluate((video) => video.currentTime < 1.5),
+        "collapsed idle fallback did not restart near time zero");
+      const neverStatic = await assertNoStaticMascotAfterMotion(page);
+      return `${initial} · idle→happy_clap→idle with near-zero restarts · ${detail} · ${resting} · zero GLB requests · ${neverStatic}`;
     });
     await check(`${prefix} WebGL-disabled mascot fallback console is clean`, async () => {
       await page.waitForTimeout(200);
@@ -1798,6 +2146,7 @@ async function auditMascotNoWebgl(browser, fixtureUrl, viewport) {
 
 async function auditMascotLoadError(browser, fixtureUrl, viewport) {
   const page = await browser.newPage({ viewport: { width: viewport.width, height: viewport.height } });
+  await installMascotSurfaceAudit(page);
   const browserErrors = [];
   let glbRequests = 0;
   await page.route("**/mascot/mascot-3d.glb", async (route) => {
@@ -1808,21 +2157,22 @@ async function auditMascotLoadError(browser, fixtureUrl, viewport) {
   page.on("console", (message) => captureBrowserConsole(browserErrors, message));
   const prefix = `${viewport.name} mascot fixture`;
   try {
-    await check(`${prefix} DOM WebGL 3D malformed GLB reports error at rest and after expansion`, async () => {
+    await check(`${prefix} DOM WebGL malformed GLB keeps playing video at rest and after expansion`, async () => {
       const response = await page.goto(`${fixtureUrl}/?scenario=portfolio-mascot-happy`, { waitUntil: "networkidle", timeout: 15_000 });
       requireCondition(response?.ok(), `fixture HTTP ${response?.status() ?? "unavailable"}`);
       await assertMascot(page, "happy");
-      await assertMascot3dState(page, "error");
+      await assertMascotSurfaceState(page, "video");
       requireCondition(await page.locator("[data-mascot-toggle]").getAttribute("aria-expanded") === "false", "malformed-GLB fallback needed expansion");
       await page.locator("[data-mascot-toggle]").click();
       await assertMascotExpanded(page);
-      const detail = await assertMascot3dState(page, "error");
+      const detail = await assertMascotSurfaceState(page, "video");
       await page.locator("[data-mascot-toggle]").click();
-      await assertMascotResting(page, "error");
+      const resting = await assertMascotResting(page, "video");
       await page.waitForTimeout(200);
       requireCondition(glbRequests === 1, `malformed-GLB fallback made ${glbRequests} model requests`);
       requireCondition(browserErrors.length === 0, browserErrors.join(" | "));
-      return `${detail} · one request · zero page errors or Three/WebGL warnings`;
+      const neverStatic = await assertNoStaticMascotAfterMotion(page);
+      return `${detail} · ${resting} · one request · ${neverStatic} · zero page/video errors or Three/WebGL warnings`;
     });
   } finally {
     await page.close();
@@ -1895,7 +2245,7 @@ async function auditMascotInteractions(browser, viewport) {
     await check(`${prefix} DOM WebGL 3D click expands the live viewer; panel stays expanded`, async () => {
       await page.locator("[data-mascot-toggle]").click();
       const detail = await assertMascotExpanded(page);
-      const viewerDetail = await assertMascot3dState(page, "on");
+      const viewerDetail = await assertMascotSurfaceState(page, "on");
       requireCondition(glbRequests === 1, `resting/expansion requested the GLB ${glbRequests} times`);
       requireCondition(mascotInfo.includes('[mascot-3d] gltf.animations ["idle","happy_clap","excited_bounce"]'),
         `exact gltf.animations log is missing: ${mascotInfo.join(" | ")}`);
@@ -1903,7 +2253,7 @@ async function auditMascotInteractions(browser, viewport) {
       await assertMascotPlacement(page);
       await page.waitForTimeout(6_300);
       await assertMascotExpanded(page);
-      await assertMascot3dState(page, "on");
+      await assertMascotSurfaceState(page, "on");
       return `${detail} · ${viewerDetail} · exact gltf.animations log · bubble/controls/live loop remain beyond the transient deadline`;
     });
     await check(`${prefix} DOM second click collapses back to the resting chip`, async () => {
@@ -1915,7 +2265,7 @@ async function auditMascotInteractions(browser, viewport) {
       await toggle.focus();
       await page.keyboard.press("Enter");
       await assertMascotExpanded(page);
-      await assertMascot3dState(page, "on");
+      await assertMascotSurfaceState(page, "on");
       requireCondition(glbRequests === 1, `re-expansion re-downloaded the GLB (${glbRequests} requests)`);
       await page.getByLabel("Mute guide", { exact: true }).focus();
       await page.keyboard.press("Escape");
@@ -1923,7 +2273,7 @@ async function auditMascotInteractions(browser, viewport) {
       requireCondition(await toggle.evaluate((button) => document.activeElement === button), "Escape from mute did not restore chip focus");
       await page.keyboard.press("Space");
       await assertMascotExpanded(page);
-      await assertMascot3dState(page, "on");
+      await assertMascotSurfaceState(page, "on");
       requireCondition(glbRequests === 1, `second re-expansion re-downloaded the GLB (${glbRequests} requests)`);
       await page.getByRole("button", { name: "Hide guide", exact: true }).focus();
       await page.keyboard.press("Escape");
@@ -1931,7 +2281,7 @@ async function auditMascotInteractions(browser, viewport) {
       requireCondition(await toggle.evaluate((button) => document.activeElement === button), "Escape from hide did not restore chip focus");
       return "Enter and Space expand cached 3D bytes without another GLB request; Escape from Mute guide and Hide guide collapses, aria-expanded=false, focus returns to chip";
     });
-    await check(`${prefix} DOM mute hides the bubble, retains the sprite and persists on reload`, async () => {
+    await check(`${prefix} DOM mute hides the bubble, retains the a11y sprite underlay and persists on reload`, async () => {
       await page.locator("[data-mascot-toggle]").click();
       const mute = page.getByLabel("Mute guide", { exact: true });
       await mute.check();
@@ -1953,7 +2303,7 @@ async function auditMascotInteractions(browser, viewport) {
       requireCondition(await mute.isChecked() && !await page.locator("[data-mascot-bubble]").isVisible(), "Enter does not mute the guide");
       await page.keyboard.press("Enter");
       requireCondition(!await mute.isChecked() && await page.locator("[data-mascot-bubble]").isVisible(), "Enter does not unmute the guide");
-      return "mute checkbox/aria-pressed/localStorage agree · accessible sprite retained beneath live canvas · reload rests silently · Space/Enter unmute restore current bubble";
+      return "mute checkbox/aria-pressed/localStorage agree · accessible sprite DOM underlay retained beneath motion surface · reload rests silently · Space/Enter unmute restore current bubble";
     });
     await check(`${prefix} DOM hide removes the companion, survives client navigation and resets on reload`, async () => {
       const documentToken = await page.evaluate(() => performance.timeOrigin);
@@ -2130,6 +2480,19 @@ try {
   await browser.close();
 }
 
+const requiredMascotVideoSources = [
+  "/mascot/motion-idle.webm",
+  "/mascot/motion-happy-clap.webm",
+  "/mascot/motion-excited-bounce.webm",
+];
+record("Mascot motion surfaces never settle on the static fallback in codec-capable Chromium",
+  observedMascotSurfaceStates.has("on") && observedMascotSurfaceStates.has("video")
+    && [...observedMascotSurfaceStates].every((state) => state === "on" || state === "video"),
+  `post-hydration states observed: ${[...observedMascotSurfaceStates].sort().join("/") || "none"}`);
+record("Mascot video fallback selects every contracted VP9 WebM clip",
+  requiredMascotVideoSources.every((source) => observedMascotVideoSources.has(source)),
+  `selected sources observed: ${[...observedMascotVideoSources].sort().join(", ") || "none"}`);
+
 const failures = results.filter((result) => !result.passed);
 const mascotResults = results.filter((result) => /mascot/i.test(result.label));
 const mascotFailures = mascotResults.filter((result) => !result.passed);
@@ -2137,11 +2500,11 @@ const mascotDomResults = mascotResults.filter((result) => /\bDOM\b/.test(result.
 const mascotDomFailures = mascotDomResults.filter((result) => !result.passed);
 const mascotOcclusionResults = mascotDomResults.filter((result) => /resting.*(?:chip|occlusion)/i.test(result.label));
 const mascotOcclusionFailures = mascotOcclusionResults.filter((result) => !result.passed);
-const mascot3dResults = mascotResults.filter((result) => /\b(?:3D|WebGL)\b/i.test(result.label));
-const mascot3dFailures = mascot3dResults.filter((result) => !result.passed);
+const mascotMotionResults = mascotResults.filter((result) => /\b(?:3D|WebGL|video|motion surface)\b/i.test(result.label));
+const mascotMotionFailures = mascotMotionResults.filter((result) => !result.passed);
 process.stdout.write(`\n${mascotOcclusionFailures.length === 0 ? "PASS" : "FAIL"} | Mascot resting/occlusion summary — ${mascotOcclusionResults.length - mascotOcclusionFailures.length}/${mascotOcclusionResults.length} checks passed at 1440×1000 and 390×844\n`);
-process.stdout.write(`${mascotDomFailures.length === 0 ? "PASS" : "FAIL"} | Screenshot-free mascot DOM assertion summary — ${mascotDomResults.length - mascotDomFailures.length}/${mascotDomResults.length} checks passed (individual DOM assertions printed above)\n`);
-process.stdout.write(`${mascot3dFailures.length === 0 ? "PASS" : "FAIL"} | Mascot 3D/fallback summary — ${mascot3dResults.length - mascot3dFailures.length}/${mascot3dResults.length} checks passed · data-mascot-3d states observed: ${[...observedMascot3dStates].sort().join("/") || "none"}\n`);
+process.stdout.write(`${mascotDomFailures.length === 0 ? "PASS" : "FAIL"} | Mascot DOM assertion summary — ${mascotDomResults.length - mascotDomFailures.length}/${mascotDomResults.length} checks passed (individual assertions printed above)\n`);
+process.stdout.write(`${mascotMotionFailures.length === 0 ? "PASS" : "FAIL"} | Mascot 3D/video fallback summary — ${mascotMotionResults.length - mascotMotionFailures.length}/${mascotMotionResults.length} checks passed · data-mascot-3d states observed: ${[...observedMascotSurfaceStates].sort().join("/") || "none"} · selected video sources: ${[...observedMascotVideoSources].sort().join(", ") || "none"}\n`);
 process.stdout.write(`\n${mascotFailures.length === 0 ? "PASS" : "FAIL"} | Mascot contract summary — ${mascotResults.length - mascotFailures.length}/${mascotResults.length} checks passed\n`);
 process.stdout.write(`\n${failures.length === 0 ? "PASS" : "FAIL"} | UI contract summary — ${results.length - failures.length}/${results.length} checks passed\n`);
 if (failures.length > 0) process.exitCode = 1;

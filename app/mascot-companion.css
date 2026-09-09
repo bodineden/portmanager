@@ -74,14 +74,14 @@
   aspect-ratio: 2 / 3;
 }
 
-.mascot-companion[data-mascot-3d="on"] .mascot-sprite { opacity: 0; }
+.mascot-companion:is([data-mascot-3d="on"], [data-mascot-3d="video"]) .mascot-sprite { opacity: 0; }
 
 .mascot-3d-host {
   display: contents;
   border-radius: inherit;
 }
 
-.mascot-chip [data-mascot-canvas] {
+.mascot-chip :is([data-mascot-canvas], [data-mascot-video]) {
   border-radius: inherit;
   position: absolute;
   inset: 0;
@@ -91,6 +91,8 @@
   height: 100%;
   pointer-events: none;
 }
+
+.mascot-chip [data-mascot-video] { object-fit: cover; }
 
 .mascot-status {
   position: absolute;
@@ -159,7 +161,7 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  /* Override the global tiny-duration rule: this fallback is fully static. */
+  /* Disable CSS-authored movement; the native fallback video intentionally keeps playing. */
   .mascot-companion,
   .mascot-companion * {
     animation: none !important;

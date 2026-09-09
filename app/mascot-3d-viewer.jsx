@@ -87,7 +87,7 @@ export default function Mascot3dViewer({ clip, onStateChange }) {
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
-    // Probe/load off-DOM so the sprite is the only surface until ready.
+    // Probe/load off-DOM while the pre-rendered motion fallback stays visible.
     const canvas = document.createElement("canvas");
     canvas.setAttribute("data-mascot-canvas", "");
     canvas.setAttribute("aria-hidden", "true");

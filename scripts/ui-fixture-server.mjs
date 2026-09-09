@@ -109,6 +109,35 @@ export async function startUiFixtureServer() {
           response.end(contents);
           return;
         }
+        if (/^\/mascot\/motion-(?:idle|happy-clap|excited-bounce)\.(?:webm|mp4)$/.test(pathname)) {
+          const contents = await readFile(path.join(projectRoot, "public", pathname.slice(1)));
+          const range = request.headers.range?.match(/^bytes=(\d*)-(\d*)$/);
+          response.setHeader("Accept-Ranges", "bytes");
+          response.setHeader("Content-Type", pathname.endsWith(".webm") ? "video/webm" : "video/mp4");
+          if (range) {
+            const suffixLength = !range[1] && range[2] ? Number(range[2]) : null;
+            const start = suffixLength === null
+              ? Number(range[1] || 0)
+              : Math.max(0, contents.length - suffixLength);
+            const end = suffixLength === null && range[2]
+              ? Math.min(Number(range[2]), contents.length - 1)
+              : contents.length - 1;
+            if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end < start || start >= contents.length) {
+              response.writeHead(416, { "Content-Range": `bytes */${contents.length}` }).end();
+              return;
+            }
+            const body = contents.subarray(start, end + 1);
+            response.writeHead(206, {
+              "Content-Length": body.length,
+              "Content-Range": `bytes ${start}-${end}/${contents.length}`,
+            });
+            response.end(body);
+            return;
+          }
+          response.setHeader("Content-Length", contents.length);
+          response.end(contents);
+          return;
+        }
         if (pathname === "/mascot/mascot-3d.glb") {
           const contents = await readFile(path.join(projectRoot, "public", pathname.slice(1)));
           response.setHeader("Content-Type", "model/gltf-binary");

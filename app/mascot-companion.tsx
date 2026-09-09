@@ -3,7 +3,11 @@
 import dynamic from "next/dynamic";
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { MascotState } from "@/lib/mascot";
-import { mascotMotionForMood } from "@/lib/mascot-motion";
+import {
+  mascotMediaForMotion,
+  mascotMotionForMood,
+  type MascotMotionClip,
+} from "@/lib/mascot-motion";
 import "./mascot-companion.css";
 
 const Mascot3dViewer = dynamic(() => import("./mascot-3d-viewer"), {
@@ -13,6 +17,7 @@ const Mascot3dViewer = dynamic(() => import("./mascot-3d-viewer"), {
 
 const MUTE_KEY = "portmanager:mascot:muted";
 const HIDE_KEY = "portmanager:mascot:hidden-document";
+const VIDEO_START_TIMEOUT_MS = 15_000;
 const MUTED = 1;
 const HIDDEN = 2;
 let preferences = 0;
@@ -45,6 +50,18 @@ function readReducedMotion() {
 function serverReducedMotion() {
   // Keep SSR/hydration static until the browser preference is known.
   return true;
+}
+
+function subscribeHydration() {
+  return () => {};
+}
+
+function clientHydrated() {
+  return true;
+}
+
+function serverHydrated() {
+  return false;
 }
 
 function subscribePreferences(listener: () => void) {
@@ -95,11 +112,95 @@ function hideGuide() {
   notifyPreferences();
 }
 
+function MascotVideoFallback({
+  clip,
+  onUnavailable,
+}: {
+  clip: MascotMotionClip;
+  onUnavailable: (clip: MascotMotionClip) => void;
+}) {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const media = mascotMediaForMotion(clip);
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    let stopped = false;
+    let watchdog = 0;
+
+    const clearWatchdog = () => {
+      if (watchdog) window.clearTimeout(watchdog);
+      watchdog = 0;
+    };
+    const armWatchdog = () => {
+      clearWatchdog();
+      watchdog = window.setTimeout(() => {
+        watchdog = 0;
+        if (!stopped && !document.hidden) onUnavailable(clip);
+      }, VIDEO_START_TIMEOUT_MS);
+    };
+
+    const play = () => {
+      if (document.hidden) return;
+      armWatchdog();
+      void video.play().catch(() => {
+        if (stopped || document.hidden || !video.isConnected) return;
+        clearWatchdog();
+        onUnavailable(clip);
+      });
+    };
+    const handleVisibility = () => {
+      if (document.hidden) {
+        clearWatchdog();
+        video.pause();
+      } else play();
+    };
+    const handlePause = () => {
+      if (!stopped && !document.hidden) play();
+    };
+
+    document.addEventListener("visibilitychange", handleVisibility);
+    video.addEventListener("pause", handlePause);
+    video.addEventListener("playing", clearWatchdog);
+    video.addEventListener("error", clearWatchdog);
+    play();
+    return () => {
+      stopped = true;
+      clearWatchdog();
+      document.removeEventListener("visibilitychange", handleVisibility);
+      video.removeEventListener("pause", handlePause);
+      video.removeEventListener("playing", clearWatchdog);
+      video.removeEventListener("error", clearWatchdog);
+      video.pause();
+    };
+  }, [clip, onUnavailable]);
+
+  return (
+    <video
+      ref={videoRef}
+      data-mascot-video
+      data-mascot-motion={clip}
+      muted
+      autoPlay
+      loop
+      playsInline
+      preload="auto"
+      aria-hidden="true"
+      onError={() => onUnavailable(clip)}
+    >
+      <source type="video/webm" src={media.webm} />
+      <source type="video/mp4" src={media.mp4} />
+    </video>
+  );
+}
+
 function CompanionView({ state, muted }: { state: MascotState; muted: boolean }) {
   const [expanded, setExpanded] = useState(false);
   const [viewerMounted, setViewerMounted] = useState(true);
   const [viewerState, setViewerState] = useState<"off" | "on" | "error">("off");
+  const [failedVideoClip, setFailedVideoClip] = useState<MascotMotionClip | null>(null);
   const chipRef = useRef<HTMLButtonElement>(null);
+  const hydrated = useSyncExternalStore(subscribeHydration, clientHydrated, serverHydrated);
   const reducedMotion = useSyncExternalStore(subscribeReducedMotion, readReducedMotion, serverReducedMotion);
   const [bubble, setBubble] = useState<{
     mood: MascotState["mood"];
@@ -129,7 +230,15 @@ function CompanionView({ state, muted }: { state: MascotState; muted: boolean })
 
   const handleViewerState = useCallback((nextState: "off" | "on" | "error") => {
     setViewerState(nextState);
-    if (nextState !== "on") setViewerMounted(false);
+    if (nextState === "on") {
+      setFailedVideoClip(null);
+    } else {
+      setViewerMounted(false);
+    }
+  }, []);
+
+  const handleVideoUnavailable = useCallback((clip: MascotMotionClip) => {
+    setFailedVideoClip(clip);
   }, []);
 
   useEffect(() => {
@@ -154,6 +263,11 @@ function CompanionView({ state, muted }: { state: MascotState; muted: boolean })
 
   const showBubble = !muted && (expanded || bubble.phase !== "quiet");
   const fading = !expanded && bubble.phase === "fading";
+  const currentClip: MascotMotionClip = expanded ? mascotMotionForMood(state.mood) : "idle";
+  const liveSurface = hydrated && !reducedMotion && viewerState === "on";
+  const videoSurface = hydrated && !liveSurface && failedVideoClip !== currentClip;
+  const staticSurface = hydrated && !liveSurface && failedVideoClip === currentClip;
+  const surfaceState = liveSurface ? "on" : videoSurface ? "video" : staticSurface ? "off" : undefined;
 
   return (
     <aside
@@ -161,7 +275,8 @@ function CompanionView({ state, muted }: { state: MascotState; muted: boolean })
       aria-label="PortManager guide"
       data-mascot-companion
       data-mascot-mood={state.mood}
-      data-mascot-3d={reducedMotion ? "off" : viewerState}
+      data-mascot-3d={surfaceState}
+      data-mascot-hydrated={hydrated ? "" : undefined}
       onKeyDown={(event) => {
         if (event.key === "Escape" && expanded) {
           event.preventDefault();
@@ -192,8 +307,15 @@ function CompanionView({ state, muted }: { state: MascotState; muted: boolean })
           {/* The supplied sprites are already-sized image cards, not cutouts. */}
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img src={`/mascot/mascot-${state.mood}.webp`} width={320} height={480} alt={`PortManager guide — ${state.mood}`} className="mascot-sprite" />
-          {viewerMounted && !reducedMotion && (
-            <Mascot3dViewer clip={expanded ? mascotMotionForMood(state.mood) : "idle"} onStateChange={handleViewerState} />
+          {hydrated && !liveSurface && failedVideoClip !== currentClip && (
+            <MascotVideoFallback
+              key={currentClip}
+              clip={currentClip}
+              onUnavailable={handleVideoUnavailable}
+            />
+          )}
+          {hydrated && viewerMounted && !reducedMotion && (
+            <Mascot3dViewer clip={currentClip} onStateChange={handleViewerState} />
           )}
           <span className="mascot-status" data-mascot-status aria-label={`Guide status: ${state.mood}`} role="img" />
         </button>
