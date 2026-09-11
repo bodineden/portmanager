@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { chromium } from "playwright";
 import { browserFixture, startUiFixtureServer } from "./ui-fixture-server.mjs";
+import { auditCapitalFixtures } from "./capital-ui-checks.mjs";
 
 const baseUrl = process.env.UI_BASE_URL ?? "http://127.0.0.1:8125";
 const configuredBrowser = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH;
@@ -336,9 +337,10 @@ async function checkPnlContract(page) {
 
   await check("home retains all seven source statuses and unavailable-source honesty", async () => {
     const sources = page.locator(".pnl-source-strip [data-source-key]");
-    requireCondition(await sources.count() === 7, `expected seven sources, found ${await sources.count()}`);
+    requireCondition(await sources.count() === 9, `expected nine sources, found ${await sources.count()}`);
     const keys = await sources.evaluateAll((elements) => elements.map((element) => element.getAttribute("data-source-key")));
-    requireCondition(new Set(keys).size === 7, "source keys are duplicated");
+    requireCondition(new Set(keys).size === 9, "source keys are duplicated");
+    for (const key of ["t212Summary", "t212Positions", "nfts", "fiatFx", "ethPrice", "walletNative", "walletTokens", "manualHoldings", "capital"]) requireCondition(keys.includes(key), `missing source ${key}`);
     for (const source of await sources.all()) {
       requireCondition(/^(?:live|partial|unavailable)$/i.test(compactText((await source.locator(".live-source-badge").textContent()) ?? "")), "source has no readable availability status");
     }
@@ -347,7 +349,7 @@ async function checkPnlContract(page) {
       requireCondition(await page.locator("[data-pnl-summary]").getAttribute("data-pnl-state") === "none", "unavailable sources imply computable P&L");
       requireCondition(/No recorded cost basis/i.test((await page.locator("[data-pnl-summary]").textContent()) ?? ""), "unavailable source fixture lacks the honest P&L empty state");
     }
-    return allUnavailable ? "all seven sources unavailable · P&L remains honest" : "seven source statuses retained";
+    return allUnavailable ? "all nine sources unavailable · P&L remains honest" : "seven original plus two ledger source statuses retained";
   });
 }
 
@@ -2239,8 +2241,9 @@ async function auditMascotInteractions(browser, viewport) {
     });
     await check(`${prefix} DOM resting occlusion leaves home class legend visible and hittable`, async () => {
       await assertMascotResting(page);
-      requireCondition(await page.locator(".pnl-class-values [data-value-class]").count() === 4, "home class legend does not contain its four classes");
-      return assertHomeMascotOcclusion(page, ".pnl-class-values [data-value-class] > small, .pnl-class-values [data-value-class] > strong, .pnl-class-values [data-value-class] > span:not(.pnl-class-dot)", "four-class legend labels and USD/THB values");
+      requireCondition(await page.locator(".pnl-class-values [data-value-class]").count() === 5, "home class legend does not contain its five classes including cash");
+      for (const key of ["t212", "cash", "nfts", "walletNative", "walletTokens"]) requireCondition(await page.locator(`.pnl-class-values [data-value-class="${key}"]`).count() === 1, `missing or duplicate value class ${key}`);
+      return assertHomeMascotOcclusion(page, ".pnl-class-values [data-value-class] > small, .pnl-class-values [data-value-class] > strong, .pnl-class-values [data-value-class] > span:not(.pnl-class-dot)", "five-class legend labels and USD/THB values");
     });
     await check(`${prefix} DOM WebGL 3D click expands the live viewer; panel stays expanded`, async () => {
       await page.locator("[data-mascot-toggle]").click();
@@ -2464,6 +2467,7 @@ try {
     });
     if (started) {
       for (const viewport of viewports) {
+        await auditCapitalFixtures(browser, fixtureServer.url, viewport, check);
         await auditPopulatedFixtures(browser, fixtureServer.url, viewport);
         await auditMascotFixtures(browser, fixtureServer.url, viewport);
         await auditMascotReducedMotion(browser, `${fixtureServer.url}/?scenario=portfolio-mascot-excited`, viewport, "fixture");

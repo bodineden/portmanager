@@ -87,6 +87,6 @@ export async function proxy(request: NextRequest) {
 }
 
 export const config = {
-  // Everything except API auth handlers, static files, and assets.
-  matcher: ["/((?!api/auth|_next/static|_next/image|favicon.ico|icon.svg).*)"],
+  // Cron handlers enforce CRON_SECRET; exclude them along with API auth handlers, static files, and assets.
+  matcher: ["/((?!api/auth|api/cron(?:/|$)|_next/static|_next/image|favicon.ico|icon.svg).*)"],
 };

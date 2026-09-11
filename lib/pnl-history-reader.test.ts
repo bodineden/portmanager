@@ -19,6 +19,8 @@ describe("snapshot row mapping", () => {
     const mapped = mapPortfolioSnapshotRow(source);
     expect(mapped).toEqual({
       date: "2026-09-05", totalValueUsd: 1200.5, totalValueThb: 43218,
+      contributedCapitalThb: null, contributedCapitalUsd: null, manualValueUsd: null, manualValueThb: null,
+      bookPnlThb: null, bookPnlUsd: null, holdings: null, sources: null,
       costBasisUsd: null, costBasisThb: null, pnlUsd: null, pnlThb: null, pnlPct: null,
       coverage,
     });

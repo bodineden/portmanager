@@ -111,6 +111,40 @@ export const PORTFOLIO_SNAPSHOT_DDL = `
   )
 `;
 
+/** Live ledgers are separate from the frozen archive: no seeds or legacy migrations. */
+export const CAPITAL_EVENTS_DDL = `
+  CREATE TABLE IF NOT EXISTS capital_events (
+    id uuid primary key default gen_random_uuid(),
+    occurred_at timestamptz not null,
+    kind text not null check (kind in ('contribution','withdrawal')),
+    amount_thb numeric(20,6) not null check (amount_thb > 0),
+    note text,
+    created_at timestamptz not null default now()
+  )
+`;
+export const MANUAL_HOLDINGS_DDL = `
+  CREATE TABLE IF NOT EXISTS manual_holdings (
+    id uuid primary key default gen_random_uuid(),
+    recorded_at timestamptz not null,
+    label text not null,
+    kind text not null check (kind in ('cash')),
+    currency text not null,
+    amount numeric(20,6) not null check (amount >= 0),
+    note text,
+    created_at timestamptz not null default now()
+  )
+`;
+export const PORTFOLIO_SNAPSHOT_EXTENSION_DDL = `
+  ALTER TABLE portfolio_snapshot
+    ADD COLUMN IF NOT EXISTS contributed_capital_thb numeric,
+    ADD COLUMN IF NOT EXISTS contributed_capital_usd numeric,
+    ADD COLUMN IF NOT EXISTS manual_value_usd numeric,
+    ADD COLUMN IF NOT EXISTS manual_value_thb numeric,
+    ADD COLUMN IF NOT EXISTS book_pnl_thb numeric,
+    ADD COLUMN IF NOT EXISTS book_pnl_usd numeric,
+    ADD COLUMN IF NOT EXISTS holdings jsonb
+`;
+
 async function createSchema(sql: Sql) {
   await sql.query(PORTFOLIO_SNAPSHOT_DDL);
   await sql`CREATE EXTENSION IF NOT EXISTS pgcrypto`;

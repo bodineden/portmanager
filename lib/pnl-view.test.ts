@@ -15,11 +15,14 @@ const coverage: PnlCoverage = {
 };
 function snapshot(date = "2026-09-05", valueUsd: number | null = 1_200): PortfolioSnapshot {
   return { date, totalValueUsd: valueUsd, totalValueThb: valueUsd === null ? null : valueUsd * 36,
-    costBasisUsd: 500, costBasisThb: 18_000, pnlUsd: 50, pnlThb: 1_800, pnlPct: 10, coverage: { ...coverage } };
+    costBasisUsd: 500, costBasisThb: 18_000, pnlUsd: 50, pnlThb: 1_800, pnlPct: 10, coverage: { ...coverage },
+    contributedCapitalThb: 120000, contributedCapitalUsd: 120000 / 36,
+    holdings: { "t212:fixture": valueUsd }, sources: Object.fromEntries(["t212Summary", "t212Positions", "nfts", "fiatFx", "ethPrice", "walletNative", "walletTokens", "manualHoldings", "capital"].map((key) => [key, { status: "live", asOf: DATE, message: "fixture" }])) };
 }
 const fx = { usdToThb: 36, gbpToThb: 45, eurToThb: 40, asOf: DATE };
 const live = <T>(data: T): LiveResult<T> => ({ data, state: { status: "live", asOf: DATE, message: "fixture" } });
 const book = () => buildJoinedPortfolio({
+  manualHoldings: live([]),
   t212Summary: live({ currency: "GBP", cashAvailable: 487, totalValue: 487, investmentsCurrentValue: 0 }),
   t212Positions: live([]), nfts: live([{ collection: "fixture", collectionName: "Fixture", tokenCount: 2, floorEth: 0.1 }]),
   walletNative: live([{ chainId: 42161, chainName: "Arbitrum One", symbol: "ETH", amount: 0.25 }]),
@@ -100,10 +103,10 @@ describe("snapshot currency and value allocation", () => {
     const portfolio = book();
     expect(portfolio.totals.pnlUsd).toBeNull();
     const allocation = valueAllocation(portfolio);
-    expect(allocation.map(({ key }) => key)).toEqual(["t212", "nfts", "walletNative", "walletTokens"]);
-    expect(allocation.map(({ valueUsd }) => valueUsd)).toEqual([608.75, 480, 600, 0]);
+    expect(allocation.map(({ key }) => key)).toEqual(["t212", "cash", "nfts", "walletNative", "walletTokens"]);
+    expect(allocation.map(({ valueUsd }) => valueUsd)).toEqual([0, 608.75, 480, 600, 0]);
     expect(allocation.reduce((sum, { sharePct }) => sum + sharePct!, 0)).toBeCloseTo(100);
-    expect(allocation[0].valueThb).toBe(21_915);
+    expect(allocation[1].valueThb).toBe(21_915);
   });
 
   it("never assigns unknown classes zero value or presents incomplete/zero totals as 100%", () => {
@@ -117,6 +120,7 @@ describe("snapshot currency and value allocation", () => {
     portfolio.totals.nftsUsd = 0;
     portfolio.totals.t212Thb = 0;
     portfolio.t212.totalValue = 0;
+    portfolio.t212.cashAvailable = 0;
     expect(valueAllocation(portfolio).every(({ sharePct }) => sharePct === null)).toBe(true);
   });
 
@@ -126,11 +130,11 @@ describe("snapshot currency and value allocation", () => {
     portfolio.t212.totalValue = 487;
     portfolio.totals.t212Thb = null;
     portfolio.fx.usdToThb = null;
-    expect(valueAllocation(portfolio)[0]).toMatchObject({ valueUsd: 487, valueThb: null });
+    expect(valueAllocation(portfolio)[1]).toMatchObject({ valueUsd: 487, valueThb: null });
   });
 });
 
-describe("adjacent snapshot value changes, never cash-flow-adjusted returns", () => {
+describe("adjacent adjusted snapshot value changes, never investment P&L", () => {
   it("derives adjacent UTC-day changes from equal coverage even when basis coverage is partial", () => {
     const rows = [snapshot("2026-09-04", 1_000), snapshot("2026-09-05", 1_200)];
     expect(dailyChange(rows, DATE)).toEqual({ usd: 200, thb: 7_200, pct: 20, date: "2026-09-05", previousDate: "2026-09-04" });
@@ -143,17 +147,18 @@ describe("adjacent snapshot value changes, never cash-flow-adjusted returns", ()
     expect(dailyChange([snapshot()], DATE)).toBeNull();
     expect(dailyChange([snapshot(), snapshot("2026-09-03")], DATE)).toBeNull();
     expect(dailyChange([snapshot(), snapshot("2026-09-04")], "2026-09-06T00:00:00Z")).toBeNull();
-    const changed = snapshot(); changed.coverage.notRecorded -= 1; changed.coverage.eligible += 1;
+    const changed = snapshot(); changed.holdings = { "t212:different-fixture": 1200 };
     expect(dailyChange([changed, snapshot("2026-09-04")], DATE)).toBeNull();
-    const partial = snapshot(); partial.coverage.sourcesComplete = false;
+    const partial = snapshot(); partial.sources!.walletTokens.status = "partial";
     expect(dailyChange([partial, snapshot("2026-09-04")], DATE)).toBeNull();
     expect(dailyChange([snapshot(), snapshot("2026-09-04", null)], DATE)).toBeNull();
   });
 
-  it("preserves missing THB and zero-denominator percentages without erasing known USD changes", () => {
+  it("rejects missing THB and preserves zero-denominator percentages and negative changes", () => {
     const current = snapshot(); current.totalValueThb = null;
     expect(dailyChange([current, snapshot("2026-09-04", 0)], DATE))
-      .toMatchObject({ usd: 1_200, thb: null, pct: null });
+      .toBeNull();
+    expect(dailyChange([snapshot(), snapshot("2026-09-04", 0)], DATE)?.pct).toBeNull();
     expect(dailyChange([snapshot("2026-09-05", 900), snapshot("2026-09-04", 1_000)], DATE))
       .toMatchObject({ usd: -100, thb: -3_600, pct: -10 });
   });

@@ -5,9 +5,10 @@ import { deriveMascotState } from "@/lib/mascot";
 import { WalletBalancesPanel } from "./home-wallet-panel";
 import { PnlPerformance, PnlCalendar } from "./pnl-history-panels";
 import { PnlAssetTable } from "./pnl-asset-table";
+import { BookPnlMetric } from "./book-pnl-metric";
 import { formatCurrency, formatThb, formatUsd, getJoinedPortfolio, type LiveSourceState } from "@/lib/live-data";
 import { readPortfolioSnapshotHistory } from "@/lib/pnl-history";
-import { coverageLabel, dailyChange, formatPnlPercent, formatSnapshotAsOf, formatHoldingQuantity, snapshotFiatUsd, valueAllocation } from "@/lib/pnl-view";
+import { coverageLabel, dailyChangeDetails, previousDayHoldings, valueDirection, formatPnlMoney, formatPnlPercent, formatSnapshotAsOf, formatHoldingQuantity, snapshotFiatUsd, valueAllocation } from "@/lib/pnl-view";
 import { requireSession } from "@/lib/auth";
 import "./home.css";
 
@@ -27,7 +28,9 @@ export default async function Home() {
   const coverage = totals.pnlCoverage;
   const hasRecordedPnl = coverage.eligible > 0 && totals.pnlUsd !== null;
   const pnlState = !hasRecordedPnl ? "none" : coverage.status;
-  const change = dailyChange(history, portfolio.asOf);
+  const { change, reason: changeReason } = dailyChangeDetails(history, portfolio.asOf);
+  const dayDirection = valueDirection(change?.usd);
+  const valueSourcesComplete = Object.entries(sources).every(([key, source]) => key === "capital" || source.status === "live");
   const classes = valueAllocation(portfolio);
   const walletTokens = [...wallet.tokens].sort((left, right) => Number(right.priced) - Number(left.priced));
   const nativeRows = [...wallet.native].sort((left, right) => Number(right.valueUsd !== null) - Number(left.valueUsd !== null)).map((holding) => ({
@@ -43,7 +46,7 @@ export default async function Home() {
   }));
   const sourceNames: Record<keyof typeof sources, string> = {
     t212Summary: "T212 account", t212Positions: "T212 positions", nfts: "OpenSea NFTs", fiatFx: "Fiat FX",
-    ethPrice: "ETH price", walletNative: "Wallet native", walletTokens: "Wallet tokens",
+    ethPrice: "ETH price", walletNative: "Wallet native", walletTokens: "Wallet tokens", manualHoldings: "Manual holdings", capital: "Contributed capital",
   };
 
   return (
@@ -67,9 +70,9 @@ export default async function Home() {
                 <p className="pnl-secondary">{formatThb(totals.grandTotalThb)} <span>THB</span></p>
               </div>
               <div className="pnl-hero-asof">
-                <span className={`pnl-status ${!coverage.sourcesComplete ? "is-partial" : ""}`}>{totals.grandTotalUsd === null ? "Value unavailable" : !coverage.sourcesComplete ? "Partial joined value" : "Joined snapshot"}</span>
+                <span className={`pnl-status ${!valueSourcesComplete ? "is-partial" : ""}`}>{totals.grandTotalUsd === null ? "Value unavailable" : !valueSourcesComplete ? "Partial joined value" : "Joined snapshot"}</span>
                 <small>As of {formatSnapshotAsOf(portfolio.asOf)}</small>
-                <p>{totals.grandTotalUsd === null ? "One or more sources are unavailable. Known class values remain visible below." : !coverage.sourcesComplete ? "Known value is shown; source coverage is incomplete. See source status below." : "Account cash, securities, NFT floors and priced wallet balances."}</p>
+                <p>{totals.grandTotalUsd === null ? "One or more sources are unavailable. Known class values remain visible below." : !valueSourcesComplete ? "Known value is shown; source coverage is incomplete. See source status below." : "Account cash, manual cash pot, securities, NFT floors and priced wallet balances."}</p>
               </div>
             </div>
             <div className="pnl-class-values">
@@ -81,6 +84,7 @@ export default async function Home() {
             <div className="pnl-hero-foot"><span data-wallet-summary-count={nativeRows.length + tokenRows.length}>{nativeRows.length + tokenRows.length} wallet assets</span><span>Cash contributes to value only; it has no P&amp;L.</span></div>
           </section>
           <section className="pnl-metric-strip" aria-label="P&L and coverage">
+            <BookPnlMetric portfolio={portfolio} />
             <article className="panel pnl-metric pnl-summary" data-pnl-summary data-pnl-state={pnlState}>
               <p className="eyebrow">COST BASIS / UNREALIZED</p><h2>P&amp;L (recorded)</h2>
               <div className="pnl-metric-line"><strong className={hasRecordedPnl ? (totals.pnlUsd! >= 0 ? "positive" : "negative") : ""}>{formatUsd(hasRecordedPnl ? totals.pnlUsd : null)}</strong><span>{formatPnlPercent(hasRecordedPnl ? totals.pnlPct : null)}</span></div>
@@ -90,10 +94,10 @@ export default async function Home() {
             </article>
             <article className="panel pnl-metric" data-daily-change={change ? "available" : "unavailable"}>
               <p className="eyebrow">SNAPSHOT VALUE / DAY TO DAY</p><h2>Daily change</h2>
-              <div className="pnl-metric-line"><strong className={change ? (change.usd >= 0 ? "positive" : "negative") : ""}>{formatUsd(change?.usd)}</strong><span>{formatPnlPercent(change?.pct)}</span></div>
-              <small>{formatThb(change?.thb)} THB</small>
-              <p>{change ? `${change.previousDate} → ${change.date} · first daily observations.` : "Awaiting comparable snapshots on adjacent days."}</p>
-              <p className="muted">Value change includes cash flows. It is not investment return.</p>
+              <div className="pnl-metric-line"><strong className={dayDirection === "up" ? "positive is-up" : dayDirection === "down" ? "negative is-down" : dayDirection === "flat" ? "muted is-flat" : ""}>{dayDirection === "up" ? "↑ " : dayDirection === "down" ? "↓ " : dayDirection === "flat" ? "→ " : ""}{formatPnlMoney(change?.usd)}</strong><span>{formatPnlPercent(change?.pct)}</span></div>
+              <small>{formatPnlMoney(change?.thb, "THB")} THB</small>
+              <p>{change ? `${change.previousDate} → ${change.date} · first daily observations.` : `Awaiting comparable snapshots — ${changeReason}.`}</p>
+              <p className="muted">Adjusted day change · deposits and withdrawals excluded. Not investment P&amp;L.</p>
             </article>
             <article className="panel pnl-metric pnl-coverage" data-pnl-coverage={coverage.status}>
               <p className="eyebrow">WHAT CAN BE MEASURED</p><h2>P&amp;L coverage</h2>
@@ -111,13 +115,13 @@ export default async function Home() {
                 <div><span><i className={`pnl-class-dot is-${item.key}`} />{item.label}</span><strong>{formatUsd(item.valueUsd)}</strong></div>
                 <div className="pnl-allocation-track"><span className={`is-${item.key}`} style={{ width: item.sharePct === null ? "0%" : `${item.sharePct}%` }} /></div>
                 <small>{item.sharePct === null ? "Share unavailable" : `${formatHoldingQuantity(item.sharePct, 1)}% of class value`} · {formatThb(item.valueThb)}</small>
-                <small className="pnl-class-pnl">P&amp;L (recorded): {formatUsd(totals.pnlByClass[item.key].pnlCoverage.eligible > 0 ? totals.pnlByClass[item.key].pnlUsd : null)} · {totals.pnlByClass[item.key].pnlCoverage.eligible} eligible</small>
+                {item.key === "cash" ? <small className="pnl-class-pnl">Value only · no per-asset P&amp;L</small> : <small className="pnl-class-pnl">P&amp;L (recorded): {formatUsd(totals.pnlByClass[item.key].pnlCoverage.eligible > 0 ? totals.pnlByClass[item.key].pnlUsd : null)} · {totals.pnlByClass[item.key].pnlCoverage.eligible} eligible</small>}
               </div>)}</div>
               <p className="pnl-panel-note">Allocation measures value. Unpriced assets have no inferred weight; percentages wait for all class values.</p>
             </section>
           </div>
           <PnlCalendar snapshots={history} asOf={portfolio.asOf} />
-          <PnlAssetTable portfolio={portfolio} />
+          <PnlAssetTable portfolio={portfolio} previousHoldings={previousDayHoldings(history, portfolio.asOf)} />
           <section className="panel pnl-account-context">
             <div><p className="eyebrow">TRADING 212 / CASH &amp; POSITIONS</p><h2 className="panel-title">Account context</h2></div>
             <div><small>Cash available · no P&amp;L</small><strong>{formatUsd(snapshotFiatUsd(t212.cashAvailable, t212.currency, fx))}</strong><span>{formatCurrency(t212.cashAvailable, t212.currency)} · account currency</span></div>
@@ -129,7 +133,7 @@ export default async function Home() {
             walletSourcesUnavailable={sources.walletNative.status === "unavailable" && sources.walletTokens.status === "unavailable"}
             totalWalletUsd={formatUsd(totals.walletUsd)} totalWalletThb={formatThb(totals.walletThb)} />
           <section className="panel pnl-source-strip" aria-label="Portfolio sources">
-            <div className="panel-header"><div><p className="eyebrow">EVERY FIGURE HAS A SOURCE</p><h2 className="panel-title">Source status</h2></div><span className="panel-count">7 sources</span></div>
+            <div className="panel-header"><div><p className="eyebrow">EVERY FIGURE HAS A SOURCE</p><h2 className="panel-title">Source status</h2></div><span className="panel-count">{Object.keys(sources).length} sources</span></div>
             <div className="pnl-source-grid">{(Object.keys(sources) as (keyof typeof sources)[]).map((key) => <article key={key} data-source-key={key}>
               <div><strong>{sourceNames[key]}</strong><SourceBadge state={sources[key]} /></div><small>{formatSnapshotAsOf(sources[key].asOf)}</small><p>{sources[key].message}</p>
             </article>)}</div>

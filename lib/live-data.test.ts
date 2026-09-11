@@ -39,6 +39,7 @@ function unavailable<T>(): LiveResult<T> {
 
 function fixtureInputs(): JoinedPortfolioInputs {
   return {
+    manualHoldings: live([]),
     t212Summary: live({
       currency: "GBP",
       cashAvailable: 487,
@@ -354,6 +355,7 @@ describe("buildJoinedPortfolio", () => {
         unreconciled: 0, status: "partial", sourcesComplete: false },
     };
     expect(portfolio.totals).toEqual({
+      manualUsd: null, manualThb: null, bookPnl: null,
       ...unavailablePnl,
       pnlByClass: { t212: unavailablePnl, nfts: unavailablePnl, walletNative: unavailablePnl, walletTokens: unavailablePnl },
       t212Thb: null,

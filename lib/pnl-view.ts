@@ -1,6 +1,7 @@
 import type { FiatRates, JoinedPortfolio } from "./live-data";
 import type { BasisStatus, PnlClass, PnlCoverage, PnlEligibility } from "./pnl";
 import type { PortfolioSnapshot } from "./pnl-history";
+import { valueSetSignature, type HoldingsValueMap } from "./holding-values";
 
 function finite(value: number | null | undefined): value is number {
   return typeof value === "number" && Number.isFinite(value);
@@ -105,7 +106,7 @@ export function snapshotFiatUsd(
 }
 
 export type ValueAllocation = {
-  key: PnlClass;
+  key: PnlClass | "cash";
   label: string;
   valueUsd: number | null;
   valueThb: number | null;
@@ -115,8 +116,17 @@ export type ValueAllocation = {
 /** Value includes cash and excluded holdings; it never uses P&L subset sums. */
 export function valueAllocation(portfolio: JoinedPortfolio): ValueAllocation[] {
   const { totals, fx } = portfolio;
+  const accountUsd = snapshotFiatUsd(portfolio.t212.totalValue, portfolio.t212.currency, fx);
+  const brokerCashUsd = snapshotFiatUsd(portfolio.t212.cashAvailable, portfolio.t212.currency, fx);
+  const brokerCashThb = portfolio.t212.currency === "THB" ? portfolio.t212.cashAvailable
+    : finite(brokerCashUsd) && finite(fx.usdToThb) && fx.usdToThb > 0 ? brokerCashUsd * fx.usdToThb : null;
+  // Account remainder, not a second sum of positions: account total is authoritative.
+  const stocksUsd = finite(accountUsd) && finite(brokerCashUsd) && accountUsd >= brokerCashUsd ? accountUsd - brokerCashUsd : null;
+  const stocksThb = finite(totals.t212Thb) && finite(brokerCashThb) && totals.t212Thb >= brokerCashThb ? totals.t212Thb - brokerCashThb : null;
   const values: Omit<ValueAllocation, "sharePct">[] = [
-    { key: "t212", label: "T212", valueUsd: snapshotFiatUsd(portfolio.t212.totalValue, portfolio.t212.currency, fx), valueThb: totals.t212Thb },
+    { key: "t212", label: "T212 stocks", valueUsd: stocksUsd, valueThb: stocksThb },
+    { key: "cash", label: "Cash", valueUsd: finite(brokerCashUsd) && finite(totals.manualUsd) ? brokerCashUsd + totals.manualUsd : null,
+      valueThb: finite(brokerCashThb) && finite(totals.manualThb) ? brokerCashThb + totals.manualThb : null },
     { key: "nfts", label: "NFTs", valueUsd: totals.nftsUsd, valueThb: totals.nftsThb },
     { key: "walletNative", label: "Wallet native", valueUsd: totals.walletNativeUsd, valueThb: totals.walletNativeThb },
     { key: "walletTokens", label: "Wallet tokens", valueUsd: totals.walletTokensUsd, valueThb: totals.walletTokensThb },
@@ -137,26 +147,53 @@ function utcDate(value: string): string | null {
 
 export type DailyValueChange = { usd: number; thb: number | null; pct: number | null; date: string; previousDate: string };
 
-/**
- * Adjacent UTC first-observation value changes only. No cash-flow ledger exists,
- * so this must never be labelled daily investment P&L or an adjusted return.
- * Matching counts cannot prove identical holdings; consumers retain this caveat.
- */
-export function dailyChange(snapshots: readonly PortfolioSnapshot[], asOf?: string): DailyValueChange | null {
+export type DailyChangeResult = { change: DailyValueChange | null; reason: string | null };
+export function valueDirection(value: number | null | undefined): "up" | "down" | "flat" | null {
+  return !finite(value) ? null : value > 0 ? "up" : value < 0 ? "down" : "flat";
+}
+
+/** Adjacent UTC book observations, with reported deposits/withdrawals excluded. Not investment P&L. */
+export function dailyChangeDetails(snapshots: readonly PortfolioSnapshot[], asOf?: string): DailyChangeResult {
   const [current, previous] = [...snapshots].sort((a, b) => b.date.localeCompare(a.date));
+  const absent = (reason: string): DailyChangeResult => ({ change: null, reason });
   if (!current || !previous || utcDate(current.date) !== current.date || utcDate(previous.date) !== previous.date
     || (asOf !== undefined && utcDate(asOf) !== current.date)
-    || Date.parse(`${current.date}T00:00:00Z`) - Date.parse(`${previous.date}T00:00:00Z`) !== 86_400_000) return null;
-  const keys = ["status", "totalHoldings", "eligible", "notRecorded", "dust", "unpriced", "unreconciled"] as const;
-  if (!current.coverage.sourcesComplete || !previous.coverage.sourcesComplete
-    || !keys.every((key) => current.coverage[key] === previous.coverage[key])
-    || !finite(current.totalValueUsd) || !finite(previous.totalValueUsd)
-    || current.totalValueUsd < 0 || previous.totalValueUsd < 0) return null;
-  const usd = current.totalValueUsd - previous.totalValueUsd;
-  const thb = finite(current.totalValueThb) && finite(previous.totalValueThb)
-    ? current.totalValueThb - previous.totalValueThb : null;
-  const pct = previous.totalValueUsd > 0 ? usd / previous.totalValueUsd * 100 : null;
-  return { usd, thb: finite(thb) ? thb : null, pct: finite(pct) ? pct : null, date: current.date, previousDate: previous.date };
+    || Date.parse(`${current.date}T00:00:00Z`) - Date.parse(`${previous.date}T00:00:00Z`) !== 86_400_000) return absent("no previous recorded day");
+  if (![current, previous].every((row) => finite(row.totalValueUsd) && row.totalValueUsd >= 0
+    && finite(row.totalValueThb) && row.totalValueThb >= 0)) return absent("book value unavailable");
+  if (![current, previous].every((row) => row.sources && !Object.values(row.sources).some((source) => source.status === "unavailable"))) return absent("source unavailable");
+  const signature = valueSetSignature(current.holdings, current.sources);
+  const previousSignature = valueSetSignature(previous.holdings, previous.sources);
+  if (!signature || !previousSignature) return absent("value-set evidence unavailable");
+  if (signature !== previousSignature) return absent("holdings changed between days");
+  if (![current, previous].every((row) => finite(row.contributedCapitalUsd) && finite(row.contributedCapitalThb))) return absent("contributed capital not recorded");
+  const usd = (current.totalValueUsd! - previous.totalValueUsd!) - (current.contributedCapitalUsd! - previous.contributedCapitalUsd!);
+  const thb = (current.totalValueThb! - previous.totalValueThb!) - (current.contributedCapitalThb! - previous.contributedCapitalThb!);
+  if (!finite(usd) || !finite(thb)) return absent("adjusted change unavailable");
+  // Suppress floating-point cancellation noise, not genuine cent-level changes.
+  const clean = (value: number, a: number, b: number) => Math.abs(value) <= Number.EPSILON * 16 * Math.max(1, Math.abs(a), Math.abs(b)) ? 0 : value;
+  const adjustedUsd = clean(usd, current.totalValueUsd!, current.contributedCapitalUsd!);
+  const adjustedThb = clean(thb, current.totalValueThb!, current.contributedCapitalThb!);
+  const pct = previous.totalValueUsd! > 0 ? adjustedUsd / previous.totalValueUsd! * 100 : null;
+  return { change: { usd: adjustedUsd, thb: adjustedThb, pct: finite(pct) ? pct : null, date: current.date, previousDate: previous.date }, reason: null };
+}
+export function dailyChange(snapshots: readonly PortfolioSnapshot[], asOf?: string): DailyValueChange | null {
+  return dailyChangeDetails(snapshots, asOf).change;
+}
+
+/** Asset Day compares only a recorded adjacent UTC date, never an older available row. */
+export function previousDayHoldings(snapshots: readonly PortfolioSnapshot[], asOf: string): HoldingsValueMap | null {
+  const date = utcDate(asOf);
+  if (!date) return null;
+  const previousDate = new Date(Date.parse(`${date}T00:00:00Z`) - 86_400_000).toISOString().slice(0, 10);
+  return snapshots.find((row) => row.date === previousDate)?.holdings ?? null;
+}
+export function holdingDayChange(id: string, valueUsd: number | null, previous: HoldingsValueMap | null): { usd: number; pct: number | null } | null {
+  const before = previous && Object.hasOwn(previous, id) ? previous[id] : null;
+  if (!finite(valueUsd) || valueUsd < 0 || !finite(before) || before < 0) return null;
+  const usd = valueUsd - before;
+  const pct = before > 0 ? usd / before * 100 : null;
+  return finite(usd) ? { usd, pct: finite(pct) ? pct : null } : null;
 }
 
 export type HistoryPeriod = "1M" | "3M" | "All";

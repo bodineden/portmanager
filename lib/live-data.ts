@@ -9,6 +9,8 @@
 import { aggregatePnl, deriveOnchainPnl, deriveT212Pnl, type AcquisitionEvidence, type HoldingPnl, type PortfolioPnlTotals } from "./pnl";
 
 import { isNeonConfigured } from "./assets-db";
+import { calculateBookPnl, latestManualHoldings, sumContributedCapital, type BookCapital, type BookPnl, type CapitalEvent, type ManualHoldingReport } from "./capital";
+import { ensureLedgerSchema, readCapitalEvents, readManualHoldings } from "./capital-db";
 import { recordPortfolioSnapshot } from "./pnl-history";
 
 export type SourceStatus = "live" | "partial" | "unavailable";
@@ -100,7 +102,12 @@ export type FxRates = FiatRates & {
   ethToUsd: number | null;
 };
 
+export type JoinedManualHolding = Omit<ManualHoldingReport, "createdAt"> & { valueUsd: number | null; valueThb: number | null };
+
 export type JoinedPortfolio = {
+  manualHoldings: JoinedManualHolding[];
+  capital: BookCapital;
+  snapshotRecordResult?: import("./pnl-history").SnapshotRecordResult;
   t212: {
     currency: string | null;
     cashAvailable: number | null;
@@ -116,6 +123,9 @@ export type JoinedPortfolio = {
   };
   fx: FxRates;
   totals: PortfolioPnlTotals & {
+    manualUsd: number | null;
+    manualThb: number | null;
+    bookPnl: BookPnl | null;
     t212Thb: number | null;
     nftsEth: number | null;
     nftsUsd: number | null;
@@ -137,6 +147,8 @@ export type JoinedPortfolio = {
     ethPrice: LiveSourceState;
     walletNative: LiveSourceState;
     walletTokens: LiveSourceState;
+    manualHoldings: LiveSourceState;
+    capital: LiveSourceState;
   };
   asOf: string;
 };
@@ -151,6 +163,8 @@ export type JoinedPortfolioInputs = {
    * Keys: nft:4663:<collection>, native:<chainId>:native, token:<chainId>:<lowercase contract>.
    */
   basisEvidence?: Readonly<Record<string, AcquisitionEvidence>>;
+  manualHoldings?: LiveResult<ManualHoldingReport[]>;
+  capitalEvents?: LiveResult<CapitalEvent[]>;
   t212Summary: LiveResult<T212AccountSummary>;
   t212Positions: LiveResult<NormalizedT212Position[]>;
   nfts: LiveResult<NftFloorHolding[]>;
@@ -1132,6 +1146,21 @@ export function buildJoinedPortfolio(inputs: JoinedPortfolioInputs, asOf: string
   const fiatFx = inputs.fiatFx.data;
   const ethToUsd = inputs.ethPrice.data;
   const accountCurrency = summary?.currency ?? null;
+  const manualState = inputs.manualHoldings?.state ?? sourceState("unavailable", "Manual holdings not included.");
+  const capitalState = inputs.capitalEvents?.state ?? sourceState("unavailable", "Contributed capital not included.");
+  const manualHoldings = latestManualHoldings(inputs.manualHoldings?.data ?? [], asOf).map(({ createdAt: _createdAt, ...row }): JoinedManualHolding => {
+    void _createdAt;
+    const valueThb = convertAmount(row.amount, rateToThb(row.currency, fiatFx));
+    const valueUsd = row.currency === "USD" ? row.amount : convertAmount(valueThb, fiatFx?.usdToThb ? 1 / fiatFx.usdToThb : null);
+    return { ...row, valueUsd, valueThb };
+  });
+  const manualComplete = manualState.status === "live" && inputs.manualHoldings?.data != null;
+  const manualUsd = manualComplete ? sumComplete(manualHoldings.map((row) => row.valueUsd)) : null;
+  const manualThb = manualComplete ? sumComplete(manualHoldings.map((row) => row.valueThb)) : null;
+  const contributedThb = capitalState.status === "live" ? sumContributedCapital(inputs.capitalEvents?.data ?? [], asOf) : null;
+  const contributedUsd = contributedThb !== null && fiatFx?.usdToThb && fiatFx.usdToThb > 0 ? contributedThb / fiatFx.usdToThb : null;
+  const capital: BookCapital = { contributedThb, contributedUsd: contributedUsd !== null && Number.isFinite(contributedUsd) ? contributedUsd : null,
+    asOf, available: contributedThb !== null };
   const walletWasProvided = inputs.walletNative !== undefined || inputs.walletTokens !== undefined;
   const walletNativeState = inputs.walletNative?.state ?? {
     status: "unavailable",
@@ -1203,9 +1232,9 @@ export function buildJoinedPortfolio(inputs: JoinedPortfolioInputs, asOf: string
   const walletUsd = combineWalletSubtotals(walletNativeUsd, walletTokensUsd);
   const walletThb = combineWalletSubtotals(walletNativeThb, walletTokensThb);
   const legacyGrandTotalThb = sumComplete([t212Thb, nftsThb]);
-  const grandTotalThb = walletWasProvided
-    ? sumComplete([legacyGrandTotalThb, walletThb])
-    : legacyGrandTotalThb;
+  const valueBeforeManual = walletWasProvided ? sumComplete([legacyGrandTotalThb, walletThb]) : legacyGrandTotalThb;
+  const usdBeforeManual = valueBeforeManual === 0 ? 0 : convertAmount(valueBeforeManual, fiatFx?.usdToThb ? 1 / fiatFx.usdToThb : null);
+  const grandTotalThb = sumComplete([valueBeforeManual, manualThb]);
   const grandTotalUsd = grandTotalThb === 0
     ? 0
     : convertAmount(grandTotalThb, fiatFx?.usdToThb ? 1 / fiatFx.usdToThb : null);
@@ -1221,6 +1250,8 @@ export function buildJoinedPortfolio(inputs: JoinedPortfolioInputs, asOf: string
     },
     nfts,
     wallet: { native: walletNative, tokens: walletTokens },
+    manualHoldings,
+    capital,
     fx: {
       usdToThb: fiatFx?.usdToThb ?? null,
       gbpToThb: fiatFx?.gbpToThb ?? null,
@@ -1234,8 +1265,11 @@ export function buildJoinedPortfolio(inputs: JoinedPortfolioInputs, asOf: string
         nfts: { holdings: nfts, sourceComplete: inputs.nfts.data !== null && inputs.nfts.state.status === "live" },
         walletNative: { holdings: walletNative, sourceComplete: inputs.walletNative?.data != null && walletNativeState.status === "live" },
         walletTokens: { holdings: walletTokens, sourceComplete: inputs.walletTokens?.data != null && walletTokenState.status === "live" },
-      }, fiatFx?.usdToThb ?? null, grandTotalUsd !== null && grandTotalThb !== null
+      }, fiatFx?.usdToThb ?? null, valueBeforeManual !== null && usdBeforeManual !== null
         && inputs.t212Summary.state.status === "live" && inputs.fiatFx.state.status === "live" && inputs.ethPrice.state.status === "live"),
+      manualUsd,
+      manualThb,
+      bookPnl: calculateBookPnl(grandTotalThb, contributedThb, fiatFx?.usdToThb ?? null),
       t212Thb,
       nftsEth,
       nftsUsd,
@@ -1257,6 +1291,10 @@ export function buildJoinedPortfolio(inputs: JoinedPortfolioInputs, asOf: string
       ethPrice: inputs.ethPrice.state,
       walletNative: walletNativeState,
       walletTokens: walletTokenState,
+      manualHoldings: manualState.status === "live" && (manualUsd === null || manualThb === null)
+        ? { ...manualState, status: "partial", message: "Manual holdings conversion unavailable." } : manualState,
+      capital: capitalState.status === "live" && (!capital.available || capital.contributedUsd === null)
+        ? { ...capitalState, status: "partial", message: "Capital or its snapshot USD conversion unavailable." } : capitalState,
     },
     asOf,
   };
@@ -1277,14 +1315,17 @@ let inFlightSnapshot: Promise<FetchedPortfolioSnapshot> | null = null;
 let snapshotGeneration = 0;
 
 async function fetchPortfolioSnapshot(asOf: string): Promise<FetchedPortfolioSnapshot> {
+  await ensureLedgerSchema();
   const wallet = process.env.NFT_WALLET || DEFAULT_NFT_WALLET;
-  const [t212, nfts, fiatFx, ethPrice, walletNative, walletTokens] = await Promise.all([
+  const [t212, nfts, fiatFx, ethPrice, walletNative, walletTokens, manualHoldings, capitalEvents] = await Promise.all([
     fetchT212Sources(),
     fetchNftSource(),
     fetchFiatFxSource(),
     fetchEthPriceSource(),
     fetchWalletNativeSource(wallet),
     fetchWalletTokenSource(wallet),
+    readManualHoldings(asOf),
+    readCapitalEvents(asOf),
   ]);
 
   return {
@@ -1296,6 +1337,8 @@ async function fetchPortfolioSnapshot(asOf: string): Promise<FetchedPortfolioSna
       ethPrice,
       walletNative,
       walletTokens,
+      manualHoldings,
+      capitalEvents,
     },
     asOf,
   };
@@ -1339,7 +1382,7 @@ export async function getJoinedPortfolio(options: SnapshotOptions = {}): Promise
   const snapshot = await getSnapshot(options);
   const portfolio = buildJoinedPortfolio(snapshot.inputs, snapshot.asOf);
   // Await a bounded, fail-soft write: fire-and-forget can be dropped by serverless runtimes.
-  if (isNeonConfigured()) await recordPortfolioSnapshot(portfolio, { now: options.now });
+  portfolio.snapshotRecordResult = isNeonConfigured() ? await recordPortfolioSnapshot(portfolio, { now: options.now }) : "skipped";
   return portfolio;
 }
 

@@ -24,6 +24,8 @@ export async function startUiFixtureServer() {
     const virtualArchive = "\0ui-fixture-archive";
     const virtualHistory = "\0ui-fixture-history";
     const virtualLink = "\0ui-fixture-link";
+    const virtualLedger = "\0ui-fixture-ledger";
+    const virtualAuth = "\0ui-fixture-auth";
     await build({
       root: temporaryRoot,
       configFile: false,
@@ -41,6 +43,8 @@ export async function startUiFixtureServer() {
         resolveId(source, importer) {
           if (path.isAbsolute(source)) source = path.normalize(source);
           if (source === "next/link") return virtualLink;
+          if (source === "@/lib/auth" || source === path.join(projectRoot, "lib/auth")) return virtualAuth;
+          if (source === "./capital-db" && importer === path.join(projectRoot, "lib/live-data.ts")) return virtualLedger;
           if (source === path.join(projectRoot, "lib/live-data") || source === "@/lib/live-data") return virtualData;
           if (source === path.join(projectRoot, "lib/assets-db") || source === "@/lib/assets-db"
             || (source === "./assets-db" && importer === path.join(projectRoot, "lib/live-data.ts"))) return virtualArchive;
@@ -51,9 +55,16 @@ export async function startUiFixtureServer() {
           if (id === virtualData) return `
             import fixture from ${JSON.stringify(fixturePath)};
             export { formatCurrency, formatEth, formatThb, formatUsd } from ${JSON.stringify(path.join(projectRoot, "lib/live-data.ts"))};
+            import { capitalBook } from ${JSON.stringify(path.join(projectRoot, "lib/__fixtures__/capital-book.ts"))};
             export async function getJoinedPortfolio() {
-              const portfolio = structuredClone(fixture.portfolio);
               const scenario = new URLSearchParams(location.search).get("scenario");
+              if (scenario?.startsWith("capital-")) return capitalBook(scenario !== "capital-empty");
+              const portfolio = structuredClone(fixture.portfolio);
+              portfolio.manualHoldings = [];
+              portfolio.capital = { contributedThb: null, contributedUsd: null, asOf: portfolio.asOf, available: false };
+              Object.assign(portfolio.totals, { manualUsd: 0, manualThb: 0, bookPnl: null });
+              portfolio.sources.manualHoldings = { status: "live", asOf: portfolio.asOf, message: "Known empty fixture ledger" };
+              portfolio.sources.capital = { status: "live", asOf: portfolio.asOf, message: "Fixture source status" };
               const mascot = fixture.mascotScenarios.find((entry) => entry.scenario === scenario);
               if (mascot?.totals) {
                 Object.assign(portfolio.totals, mascot.totals);
@@ -80,11 +91,33 @@ export async function startUiFixtureServer() {
             export function isNeonConfigured() { return true; }
             export async function listPortfolioValueSeries() { return structuredClone(fixture.legacyPoints); }
           `;
+          if (id === virtualAuth) return 'export async function requireSession() { return null; }';
+          if (id === virtualLedger) return 'export async function ensureLedgerSchema() { throw new Error("Fixture ledger IO forbidden"); } export const readCapitalEvents = ensureLedgerSchema; export const readManualHoldings = ensureLedgerSchema;';
           if (id === virtualHistory) return `
+            import { capitalBook } from ${JSON.stringify(path.join(projectRoot, "lib/__fixtures__/capital-book.ts"))};
+            import { joinedHoldingsMap } from ${JSON.stringify(path.join(projectRoot, "lib/holding-values.ts"))};
             import fixture from ${JSON.stringify(fixturePath)};
             export async function recordPortfolioSnapshot() { throw new Error("Fixture must never record snapshots"); }
             export async function readPortfolioSnapshotHistory() {
               const scenario = new URLSearchParams(location.search).get("scenario");
+              if (scenario?.startsWith("capital-")) {
+                const portfolio = capitalBook(scenario !== "capital-empty");
+                const current = { date: "2026-09-11", totalValueUsd: portfolio.totals.grandTotalUsd,
+                  totalValueThb: portfolio.totals.grandTotalThb, costBasisUsd: portfolio.totals.costBasisUsd,
+                  costBasisThb: portfolio.totals.costBasisThb, pnlUsd: portfolio.totals.pnlUsd, pnlThb: portfolio.totals.pnlThb,
+                  pnlPct: portfolio.totals.pnlPct, coverage: portfolio.totals.pnlCoverage, sources: portfolio.sources,
+                  holdings: joinedHoldingsMap(portfolio), contributedCapitalThb: portfolio.capital.contributedThb,
+                  contributedCapitalUsd: portfolio.capital.contributedUsd };
+                const previous = structuredClone(current);
+                previous.date = "2026-09-10";
+                if (scenario !== "capital-flat") {
+                  previous.holdings["manual:T212 cash pot"] -= 10;
+                  previous.holdings["t212:CMCSA_US_EQ"] += 1;
+                  previous.totalValueUsd -= 9;
+                  previous.totalValueThb -= 9 * portfolio.fx.usdToThb;
+                }
+                return { snapshots: [current, previous], available: true };
+              }
               const mascot = fixture.mascotScenarios.find((entry) => entry.scenario === scenario);
               const available = mascot?.snapshotHistoryAvailable !== false;
               return { snapshots: available ? structuredClone(fixture.snapshots) : [], available };

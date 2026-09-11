@@ -119,6 +119,8 @@ export default async function AssetListPage() {
     { label: "WALLET TOKENS", state: portfolio.sources.walletTokens },
     { label: "FIAT FX", state: portfolio.sources.fiatFx },
     { label: "ETH PRICE", state: portfolio.sources.ethPrice },
+    { label: "MANUAL HOLDINGS", state: portfolio.sources.manualHoldings },
+    { label: "CONTRIBUTED CAPITAL", state: portfolio.sources.capital },
   ];
 
   return (

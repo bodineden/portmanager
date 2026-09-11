@@ -1,5 +1,6 @@
 import { neon } from "@neondatabase/serverless";
-import { isNeonConfigured, PORTFOLIO_SNAPSHOT_DDL } from "./assets-db";
+import { isNeonConfigured, PORTFOLIO_SNAPSHOT_DDL, PORTFOLIO_SNAPSHOT_EXTENSION_DDL } from "./assets-db";
+import { joinedHoldingsMap, valueSetSignature, VALUE_SOURCE_KEYS, type HoldingsValueMap, type SnapshotSources } from "./holding-values";
 import type { JoinedPortfolio } from "./live-data";
 import type { PnlCoverage } from "./pnl";
 
@@ -26,18 +27,22 @@ function validValue(value: number | null): value is number {
 /** One first qualifying observation per UTC day. Factory gives tests isolated attempt flags. */
 export function createSnapshotRecorder(options: SnapshotRecorderOptions = {}) {
   let attemptedDate: string | null = null;
+  let recordedDate: string | null = null;
   return async (portfolio: JoinedPortfolio, clock: { now?: () => number } = {}): Promise<SnapshotRecordResult> => {
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let attemptDate: string | null = null;
     try {
       if (!(options.hasDb ?? isNeonConfigured)()) return "skipped";
       const now = (clock.now ?? options.now ?? Date.now)();
       const observed = Date.parse(portfolio.asOf);
       if (!Number.isFinite(now) || !Number.isFinite(new Date(now).getTime()) || !Number.isFinite(observed) || observed > now) return "skipped";
       const date = new Date(now).toISOString().slice(0, 10);
+      if (recordedDate === date) return "already-exists";
       if (attemptedDate === date || new Date(observed).toISOString().slice(0, 10) !== date) return "skipped";
       const totals = portfolio.totals;
       if (!validValue(totals.grandTotalUsd) || !validValue(totals.grandTotalThb)
         || portfolio.sources.fiatFx.status !== "live" || !validValue(portfolio.fx.usdToThb) || portfolio.fx.usdToThb === 0) return "skipped";
+      attemptDate = date;
       attemptedDate = date; // Set before the first await so concurrent page renders coalesce.
       const db = (options.getDb ?? defaultDb)();
       const controller = new AbortController();
@@ -50,21 +55,33 @@ export function createSnapshotRecorder(options: SnapshotRecorderOptions = {}) {
         // Never call assets-db ensureSchema: it performs archive ALTER/UPDATE/seed operations.
         await db.query(PORTFOLIO_SNAPSHOT_DDL, [], controller.signal);
         controller.signal.throwIfAborted();
+        await db.query(PORTFOLIO_SNAPSHOT_EXTENSION_DDL, [], controller.signal);
+        controller.signal.throwIfAborted();
+        const holdings = joinedHoldingsMap(portfolio);
         const rows = await db.query(`
           INSERT INTO portfolio_snapshot (
             snapshot_date, total_value_usd, total_value_thb, cost_basis_usd, cost_basis_thb,
-            pnl_usd, pnl_thb, pnl_pct, coverage, as_of
-          ) VALUES ($1::date, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10::timestamptz)
+            pnl_usd, pnl_thb, pnl_pct, coverage, as_of,
+            contributed_capital_thb, contributed_capital_usd, manual_value_usd, manual_value_thb,
+            book_pnl_thb, book_pnl_usd, holdings
+          ) VALUES ($1::date, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10::timestamptz,
+            $11, $12, $13, $14, $15, $16, $17::jsonb)
           ON CONFLICT (snapshot_date) DO NOTHING
           RETURNING snapshot_date
         `, [date, totals.grandTotalUsd, totals.grandTotalThb, totals.costBasisUsd, totals.costBasisThb,
           totals.pnlUsd, totals.pnlThb, totals.pnlPct, JSON.stringify({ ...totals.pnlCoverage,
-            sources: portfolio.sources, byClass: Object.fromEntries(Object.entries(totals.pnlByClass).map(([name, value]) => [name, value.pnlCoverage])),
-          }), portfolio.asOf], controller.signal);
+            sources: portfolio.sources, valueSetSignature: valueSetSignature(holdings, portfolio.sources), byClass: Object.fromEntries(Object.entries(totals.pnlByClass).map(([name, value]) => [name, value.pnlCoverage])),
+          }), portfolio.asOf, portfolio.capital.contributedThb, portfolio.capital.contributedUsd,
+          totals.manualUsd, totals.manualThb, totals.bookPnl?.pnlThb ?? null, totals.bookPnl?.pnlUsd ?? null,
+          JSON.stringify(holdings)], controller.signal);
         return Array.isArray(rows) && rows.length > 0 ? "recorded" : "already-exists";
       };
-      return await Promise.race([write(), timeout]);
+      const result = await Promise.race([write(), timeout]);
+      if (result === "recorded" || result === "already-exists") recordedDate = attemptDate;
+      return result;
     } catch {
+      // A failed page attempt must not suppress the same day's scheduled retry.
+      if (attemptDate !== null && attemptedDate === attemptDate) attemptedDate = null;
       // Driver errors may contain credentials/SQL. Log only a fixed operational label.
       try { (options.log ?? console.warn)("[portfolio_snapshot] Daily snapshot attempt failed; page remains available."); } catch { /* Logging must not break rendering either. */ }
       return "error";
@@ -88,6 +105,15 @@ export type PortfolioSnapshot = {
   pnlThb: number | null;
   pnlPct: number | null;
   coverage: PnlCoverage;
+  // Optional for legacy callers; missing evidence blocks adjusted day comparisons.
+  contributedCapitalThb?: number | null;
+  contributedCapitalUsd?: number | null;
+  manualValueUsd?: number | null;
+  manualValueThb?: number | null;
+  bookPnlThb?: number | null;
+  bookPnlUsd?: number | null;
+  holdings?: HoldingsValueMap | null;
+  sources?: SnapshotSources | null;
 };
 
 function snapshotNumber(value: unknown, nonNegative = false): number | null {
@@ -131,6 +157,25 @@ function snapshotCoverage(value: unknown): PnlCoverage | null {
   return coverage;
 }
 
+function jsonObject(value: unknown): Record<string, unknown> | null {
+  if (typeof value === "string") { try { value = JSON.parse(value); } catch { return null; } }
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+function snapshotHoldings(value: unknown): HoldingsValueMap | null {
+  const object = jsonObject(value);
+  if (!object) return null;
+  if (Object.values(object).some((value) => value !== null && snapshotNumber(value, true) === null)) return null;
+  return Object.fromEntries(Object.entries(object).map(([id, value]) => [id, snapshotNumber(value, true)]));
+}
+function snapshotSources(value: unknown): SnapshotSources | null {
+  const sources = jsonObject(jsonObject(value)?.sources);
+  if (!sources || !VALUE_SOURCE_KEYS.every((key) => key in sources)) return null;
+  const entries = Object.entries(sources).map(([key, value]) => [key, jsonObject(value)] as const);
+  if (entries.some(([, source]) => !source || !["live", "partial", "unavailable"].includes(String(source.status)))) return null;
+  return Object.fromEntries(entries.map(([key, source]) => [key, { status: source!.status,
+    asOf: typeof source!.asOf === "string" ? source!.asOf : null, message: typeof source!.message === "string" ? source!.message : "" }])) as SnapshotSources;
+}
+
 /** Pure driver-row boundary. Invalid coverage/date cannot become a chart point. */
 export function mapPortfolioSnapshotRow(value: unknown): PortfolioSnapshot | null {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
@@ -147,6 +192,14 @@ export function mapPortfolioSnapshotRow(value: unknown): PortfolioSnapshot | nul
     pnlUsd: snapshotNumber(row.pnl_usd),
     pnlThb: snapshotNumber(row.pnl_thb),
     pnlPct: snapshotNumber(row.pnl_pct),
+    contributedCapitalThb: snapshotNumber(row.contributed_capital_thb),
+    contributedCapitalUsd: snapshotNumber(row.contributed_capital_usd),
+    manualValueUsd: snapshotNumber(row.manual_value_usd, true),
+    manualValueThb: snapshotNumber(row.manual_value_thb, true),
+    bookPnlThb: snapshotNumber(row.book_pnl_thb),
+    bookPnlUsd: snapshotNumber(row.book_pnl_usd),
+    holdings: snapshotHoldings(row.holdings),
+    sources: snapshotSources(row.coverage),
     coverage,
   };
 }
@@ -177,7 +230,9 @@ export function createSnapshotHistoryReader(options: SnapshotReaderOptions = {})
       });
       const rows = await Promise.race([db.query(`
         SELECT snapshot_date::text AS snapshot_date, total_value_usd, total_value_thb,
-          cost_basis_usd, cost_basis_thb, pnl_usd, pnl_thb, pnl_pct, coverage
+          cost_basis_usd, cost_basis_thb, pnl_usd, pnl_thb, pnl_pct, coverage,
+          contributed_capital_thb, contributed_capital_usd, manual_value_usd, manual_value_thb,
+          book_pnl_thb, book_pnl_usd, holdings
         FROM portfolio_snapshot
         ORDER BY snapshot_date DESC
       `, [], controller.signal), timeout]);

@@ -17,7 +17,7 @@ function book(
     sources: {
       t212Summary: live(null).state, t212Positions: live(null).state, nfts: live(null).state,
       fiatFx: live(null).state, ethPrice: live(null).state, walletNative: live(null).state,
-      walletTokens: live(null).state,
+      walletTokens: live(null).state, manualHoldings: live(null).state, capital: live(null).state,
     },
     totals: {
       grandTotalUsd: 100.5, pnlUsd: 0, pnlPct: 0,
@@ -232,6 +232,7 @@ describe("UTC clock and pure observation handling", () => {
 describe("real pure joined-portfolio fixtures", () => {
   function inputs(): JoinedPortfolioInputs {
     return {
+      manualHoldings: live([]), capitalEvents: live([{ occurredAt: AS_OF, kind: "contribution", amountThb: 120000 }]),
       t212Summary: live({ currency: "USD", cashAvailable: 100, totalValue: 100, investmentsCurrentValue: 0 }),
       t212Positions: live([]), nfts: live([]), walletNative: live([]), walletTokens: live([]),
       fiatFx: live({ usdToThb: 36, gbpToThb: 45, eurToThb: 40, asOf: AS_OF }), ethPrice: live(2_400),

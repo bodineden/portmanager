@@ -6,6 +6,7 @@ const DATE = "2026-09-05T12:00:00.000Z";
 const live = <T>(data: T): LiveResult<T> => ({ data, state: { status: "live", asOf: DATE, message: "fixture" } });
 function portfolio(): JoinedPortfolio {
   return buildJoinedPortfolio({
+    manualHoldings: live([]),
     t212Summary: live({ currency: "GBP", cashAvailable: 487, totalValue: 487, investmentsCurrentValue: 0 }),
     t212Positions: live([]), nfts: live([]), walletTokens: live([]),
     walletNative: live([{ chainId: 42161, chainName: "Arbitrum One", symbol: "ETH", amount: 0.248396 }]),
@@ -20,12 +21,12 @@ describe("daily snapshot recorder", () => {
     const book = portfolio(); book.sources.walletNative.status = "partial";
     const record = history.createSnapshotRecorder({ hasDb: () => true, getDb: () => ({ query }), now: () => Date.parse(DATE) });
     expect(await record(book)).toBe("recorded");
-    const row = query.mock.calls[1][1]!;
+    const row = query.mock.calls[2][1]!;
     expect(JSON.parse(String(row[8])).sources.walletNative.status).toBe("partial");
     expect(row[9]).toBe(book.asOf);
   });
 
-  it("allows next-day recovery after an error even if the logger throws", async () => {
+  it("allows same-day and next-day recovery after an error even if the logger throws", async () => {
     let now = Date.parse(DATE);
     let fail = true;
     const query = vi.fn(async () => { if (fail) throw new Error("offline"); return [{ snapshot_date: "2026-09-06" }]; });
@@ -33,10 +34,10 @@ describe("daily snapshot recorder", () => {
     const book = portfolio();
     expect(await record(book)).toBe("error");
     fail = false;
-    expect(await record(book)).toBe("skipped");
+    expect(await record(book)).toBe("recorded");
     now = Date.parse("2026-09-06T00:00:00Z"); book.asOf = new Date(now).toISOString();
     expect(await record(book)).toBe("recorded");
-    expect(query).toHaveBeenCalledTimes(3);
+    expect(query).toHaveBeenCalledTimes(7);
   });
 
   it("hooks the existing joined server path only with DB configuration and forwards the injected clock", async () => {
@@ -51,19 +52,19 @@ describe("daily snapshot recorder", () => {
     expect(record).toHaveBeenCalledExactlyOnceWith(result, { now });
   });
 
-  it("swallows DB construction/DDL/INSERT errors, logs no secret, and attempts once per day", async () => {
+  it("swallows DB construction/DDL/INSERT errors, logs no secret, and allows retry", async () => {
     for (const failure of ["connect", "ddl", "insert"]) {
       let calls = 0;
       const log = vi.fn();
       const getDb = vi.fn(() => {
         if (failure === "connect") throw new Error("sensitive database URL");
-        return { query: async () => { calls += 1; if (failure === "ddl" || calls === 2) throw new Error("sensitive database URL"); return []; } };
+        return { query: async () => { calls += 1; if (failure === "ddl" || calls % 3 === 0) throw new Error("sensitive database URL"); return []; } };
       });
       const record = history.createSnapshotRecorder({ hasDb: () => true, getDb, now: () => Date.parse(DATE), log });
       expect(await record(portfolio())).toBe("error");
-      expect(await record(portfolio())).toBe("skipped");
-      expect(getDb).toHaveBeenCalledTimes(1);
-      expect(log).toHaveBeenCalledTimes(1);
+      expect(await record(portfolio())).toBe("error");
+      expect(getDb).toHaveBeenCalledTimes(2);
+      expect(log).toHaveBeenCalledTimes(2);
       expect(log.mock.calls[0][0]).not.toContain("sensitive");
     }
   });
@@ -104,7 +105,7 @@ describe("daily snapshot recorder", () => {
     expect(await record(book)).toBe("skipped"); // yesterday's cached snapshot
     book.asOf = new Date(now).toISOString();
     expect(await record(book)).toBe("recorded");
-    expect(query).toHaveBeenCalledTimes(4);
+    expect(query).toHaveBeenCalledTimes(6);
   });
 
   it("bounds page latency when a DB query never resolves", async () => {
@@ -116,16 +117,18 @@ describe("daily snapshot recorder", () => {
       const pending = record(portfolio());
       await vi.advanceTimersByTimeAsync(21);
       expect(await pending).toBe("error");
-      expect(await record(portfolio())).toBe("skipped");
-      expect(query).toHaveBeenCalledTimes(1);
-      expect(log).toHaveBeenCalledTimes(1);
+      const retry = record(portfolio());
+      await vi.advanceTimersByTimeAsync(21);
+      expect(await retry).toBe("error");
+      expect(query).toHaveBeenCalledTimes(2);
+      expect(log).toHaveBeenCalledTimes(2);
     } finally { vi.useRealTimers(); }
   });
 
   it("records one UTC-date row with null basis/P&L and partial coverage, without touching archive", async () => {
     const stored = new Map<string, unknown[]>();
     const query = vi.fn(async (text: string, values?: unknown[]) => {
-      if (text.includes("CREATE TABLE")) return [];
+      if (text.includes("CREATE TABLE") || text.includes("ALTER TABLE portfolio_snapshot")) return [];
       expect(text).toContain("ON CONFLICT (snapshot_date) DO NOTHING");
       expect(text).not.toMatch(/UPDATE|DELETE|\bholding\b|\basset\b|\binvestor\b|\btransactions\b/);
       const key = String(values![0]);
@@ -136,8 +139,8 @@ describe("daily snapshot recorder", () => {
     const recorder = history.createSnapshotRecorder({ hasDb: () => true, getDb: () => ({ query }), now: () => Date.parse(DATE) });
     const book = portfolio();
     expect(await recorder(book)).toBe("recorded");
-    expect(await recorder(book)).toBe("skipped");
-    expect(query).toHaveBeenCalledTimes(2); // new table only, then parameterized INSERT
+    expect(await recorder(book)).toBe("already-exists");
+    expect(query).toHaveBeenCalledTimes(3); // snapshot table + additive extensions, then parameterized INSERT
     const row = stored.get("2026-09-05")!;
     expect(row.slice(0, 8)).toEqual(["2026-09-05", book.totals.grandTotalUsd, book.totals.grandTotalThb, null, null, null, null, null]);
     const coverage = JSON.parse(String(row[8]));

@@ -1,5 +1,6 @@
 import { createRoot } from "react-dom/client";
 import PortfolioPage from "../app/portfolio/page";
+import Home from "../app/page";
 import { PnlCalendar, PnlPerformance } from "../app/pnl-history-panels";
 import { WalletBalancesPanel } from "../app/home-wallet-panel";
 import type { PortfolioSnapshot } from "../lib/pnl-history";
@@ -14,6 +15,7 @@ let scenario = new URLSearchParams(location.search).get("scenario") ?? "recent";
 const root = createRoot(document.getElementById("root")!);
 
 async function mount() {
+  if (scenario.startsWith("capital-")) { root.render(await Home()); return; }
   if (scenario.startsWith("portfolio-")) {
     // Execute the actual page with fixture data boundaries, including livePoint
     // and the server-derived mascot props. No replacement guide UI lives here.
