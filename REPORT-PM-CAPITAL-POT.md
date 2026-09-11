@@ -96,7 +96,7 @@ All new DDL is idempotent and configuration-gated. A bounded initializer sets up
 - Mascot: 126/126 contract checks, 50/50 DOM checks, 65/65 3D/video checks and 10/10 resting/occlusion checks passed. Runtime mood/emotion contract unchanged.
 - Production-build browser tests used a private localhost server on port 8126 because 8125 already belonged to another process. External fetches were rejected by a loopback-only temporary preload; database/OAuth configuration was absent. This exercises real unavailable-source rendering, not live-provider balances. The independent fixture server builds actual Home/portfolio/history/wallet components and supplies explicit offline test data. Both 1440×1000 and 390×844 were exercised.
 - Real local HTTP readiness returned 200; `/api/cron/snapshot` without its secret returned 401. An authorized call with an explicit offline QA secret returned HTTP 503 with {"recorded":"skipped"}, correctly exposing that no database record could be written. Recorded/already-exists success and result propagation were exercised by unit tests, not a production cron invocation.
-- Frozen archive code was compared byte-for-byte after removing only the new DDL constants; equality passed. Auth and mascot runtime diffs are empty. `git diff --check` passed.
+- Frozen archive code was compared byte-for-byte after removing only the new DDL constants; equality passed. Auth and mascot runtime diffs are empty. `git diff --check` passed for implementation files. The verbatim report retains three trailing spaces from Next.js progress output, which Git’s whitespace checker flags; these are transcript bytes, not source-code whitespace defects.
 - Independent read-only review passed after corrections: same-day retry, non-success cron status, bounded `/api/cron` matcher, rejection (not normalization) of padded labels, neutral zero direction, visible Asset List ledger feeds, and source-neutral partial copy. Static review returned `passed: true`, with empty security/logic finding lists. One optional suggestion remains: a dedicated Asset List new-source-card render regression; the complete page is covered by the existing browser suite. The review did not execute tests in its read-only filesystem; the actual tests above were run separately.
 - New partial/unavailable ledger states remain genuine inputs to the unchanged mascot source-health rule. No production source status is forced live to preserve a previous mood. Book P&L does not replace the mascot's existing eligible-subset emotion logic.
 
@@ -636,4 +636,3 @@ app/api/cron/snapshot/route.ts   |  17 ++++++
  vercel.json                      |   1 +
  30 files changed, 1012 insertions(+), 91 deletions(-)
 ```
-
