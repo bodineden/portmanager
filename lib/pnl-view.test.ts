@@ -110,7 +110,7 @@ describe("snapshot currency and value allocation", () => {
     expect(allocation[1].valueThb).toBe(21_915);
   });
 
-  it("allocates only displayed security values while retaining account cash", () => {
+  it("retains a suppressed security's value in the authoritative account remainder", () => {
     const portfolio = buildJoinedPortfolio({
       manualHoldings: live([]),
       t212Summary: live({ currency: "USD", cashAvailable: 100, totalValue: 101.5, investmentsCurrentValue: 1.5 }),
@@ -124,8 +124,29 @@ describe("snapshot currency and value allocation", () => {
     }, DATE);
     const allocation = valueAllocation(portfolio);
     expect(portfolio.t212.investments.map(({ ticker }) => ticker)).toEqual(["BOUNDARY"]);
-    expect(allocation.map(({ valueUsd }) => valueUsd)).toEqual([1, 100, 0, 0, 0]);
-    expect(allocation[0].valueThb).toBe(36);
+    expect(portfolio.t212.totalValue).toBe(101.5);
+    expect(portfolio.t212.investmentsCurrentValue).toBe(1.5);
+    expect(portfolio.totals.t212Thb).toBe(3_654);
+    expect(allocation.map(({ valueUsd }) => valueUsd)).toEqual([1.5, 100, 0, 0, 0]);
+    expect(allocation[0].valueThb).toBe(54);
+    expect(allocation.reduce((sum, { valueUsd }) => sum + valueUsd!, 0)).toBe(portfolio.totals.grandTotalUsd);
+    expect(allocation.reduce((sum, { sharePct }) => sum + sharePct!, 0)).toBeCloseTo(100);
+  });
+
+  it("preserves broker cash beyond available-to-trade cash inside the account remainder", () => {
+    const portfolio = buildJoinedPortfolio({
+      manualHoldings: live([]),
+      t212Summary: live({ currency: "USD", cashAvailable: 10, totalValue: 160, investmentsCurrentValue: 100 }),
+      t212Positions: live([
+        { ticker: "STOCK", name: "Security", quantity: 1, averagePrice: 100, currentPrice: 100,
+          ppl: 0, currency: "USD", pplCurrency: "USD", valueNative: 100, valueAccount: 100 },
+      ]),
+      nfts: live([]), walletNative: live([]), walletTokens: live([]), fiatFx: live(fx), ethPrice: live(2_400),
+    }, DATE);
+    const allocation = valueAllocation(portfolio);
+    expect(allocation.map(({ valueUsd }) => valueUsd)).toEqual([150, 10, 0, 0, 0]);
+    expect(allocation.map(({ valueThb }) => valueThb)).toEqual([5_400, 360, 0, 0, 0]);
+    expect(allocation.reduce((sum, { valueUsd }) => sum + valueUsd!, 0)).toBe(160);
     expect(allocation.reduce((sum, { valueUsd }) => sum + valueUsd!, 0)).toBe(portfolio.totals.grandTotalUsd);
     expect(allocation.reduce((sum, { sharePct }) => sum + sharePct!, 0)).toBeCloseTo(100);
   });

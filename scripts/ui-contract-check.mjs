@@ -1494,7 +1494,7 @@ async function auditDustFixtures(browser, fixtureUrl, viewport) {
   page.on("console", (message) => captureBrowserConsole(browserErrors, message));
   const prefix = `${viewport.name} joined-boundary fixture`;
   try {
-    for (const scenario of ["mixed", "empty", "wholesale", "failed", "inventory"]) {
+    for (const scenario of ["mixed", "empty", "wholesale", "failed", "inventory", "eth-outage", "fiat-outage"]) {
       for (const surface of ["home", "registry"]) {
         const label = `${prefix} ${scenario} ${surface}`;
         if (!await check(`${label} renders the real page through buildJoinedPortfolio`, async () => {
@@ -1507,7 +1507,7 @@ async function auditDustFixtures(browser, fixtureUrl, viewport) {
           await assertNoSuppressionTrace(page);
           await assertMarketRowValues(page);
           const text = await renderedText(page);
-          for (const name of ["SECURITY-SMALL", "SECURITY-UNKNOWN", "COLLECTION-SMALL", "COLLECTION-UNKNOWN", "NATIVE-SMALL", "TOKEN-SMALL", "TOKEN-UNKNOWN"]) {
+          for (const name of ["SECURITY-SMALL", "SECURITY-UNKNOWN", "COLLECTION-SMALL", "COLLECTION-UNKNOWN", "COLLECTION-ZERO", "COLLECTION-POSITIVE", "NATIVE-SMALL", "TOKEN-SMALL", "TOKEN-UNKNOWN"]) {
             requireCondition(!text.includes(name), `${name} survived joined-boundary suppression`);
           }
           const rows = [...portfolio.t212.investments, ...portfolio.nfts, ...portfolio.wallet.native, ...portfolio.wallet.tokens];
@@ -1551,16 +1551,19 @@ async function auditDustFixtures(browser, fixtureUrl, viewport) {
           await assertWalletTotals(wallet, surface === "home" ? 4 : 5, surface === "home" ? 5 : 6);
         });
         await check(`${label} pins independent totals, boundary, cash exemption and outage behavior`, async () => {
-          const expectedMarketCount = scenario === "empty" || scenario === "wholesale" ? 0 : scenario === "failed" ? 1 : 4;
+          const expectedMarketCount = ["empty", "wholesale", "fiat-outage"].includes(scenario) ? 0 : scenario === "failed" ? 1 : scenario === "eth-outage" ? 2 : 4;
           requireCondition(portfolio.totals.pnlCoverage.totalHoldings === expectedMarketCount, "independent market holding count differs");
-          const unavailable = scenario === "wholesale" || scenario === "failed";
-          const expectedTotal = unavailable ? null : scenario === "empty" ? 0 : 4.25;
-          requireCondition(portfolio.totals.grandTotalUsd === expectedTotal, "joined total differs from independent displayed-value sum");
+          const unavailable = ["wholesale", "failed", "eth-outage", "fiat-outage"].includes(scenario);
+          const expectedAccountTotal = scenario === "empty" || scenario === "fiat-outage" ? 0.999 : 1.999;
+          requireCondition(portfolio.t212.totalValue === expectedAccountTotal && portfolio.t212.investmentsCurrentValue === expectedAccountTotal, "filtered positions changed authoritative broker figures");
+          requireCondition(scenario === "fiat-outage" ? portfolio.totals.t212Thb === null : Math.abs(portfolio.totals.t212Thb - expectedAccountTotal * 36) < 1e-9, "account THB differs from authoritative broker total/conversion availability");
+          const expectedTotal = unavailable ? null : scenario === "empty" ? 0.999 : 5.249;
+          requireCondition(expectedTotal === null ? portfolio.totals.grandTotalUsd === null : Math.abs(portfolio.totals.grandTotalUsd - expectedTotal) < 1e-9, "joined total differs from authoritative account plus displayed other classes");
           const hero = page.locator(surface === "home" ? '[data-value-currency="USD"]' : ".asset-registry-value");
-          requireCondition(parseDisplayedUsd(await hero.innerText()) === expectedTotal, "hero differs from independent displayed-value sum/outage null");
+          requireCondition(compactText(await hero.innerText()) === expectedUsd(expectedTotal), "hero differs from independent authoritative account sum/outage null");
           if (surface === "home") {
             if (unavailable) requireCondition((await page.locator(".pnl-value-hero").innerText()).includes("Value unavailable"), "outage lost the unavailable hero");
-            const expectedCash = scenario === "empty" || scenario === "wholesale" ? [] : [0.25, 0];
+            const expectedCash = ["empty", "wholesale", "eth-outage", "fiat-outage"].includes(scenario) ? [] : [0.25, 0];
             const cash = await page.locator('[data-manual-cash="true"] [data-pnl-cell="value"]').evaluateAll((cells) => cells.map((cell) => cell.firstChild?.textContent ?? ""));
             requireCondition(JSON.stringify(cash.map(parseDisplayedUsd)) === JSON.stringify(expectedCash), "manual quarter/zero cash pot exemption changed");
             requireCondition(await page.locator('.pnl-assets tbody tr').count() === expectedMarketCount + expectedCash.length, "P&L table lost cash exemption or reintroduced market rows");
@@ -1573,22 +1576,63 @@ async function auditDustFixtures(browser, fixtureUrl, viewport) {
             requireCondition(portfolio.sources.nfts.status === (scenario === "inventory" ? "partial" : "live"), "NFT status conflates incomplete inventory and missing individual price");
             requireCondition(portfolio.totals.pnlCoverage.status === (scenario === "inventory" ? "partial" : "complete"), "suppression caused partial P&L or inventory incompleteness disappeared");
             if (surface === "home") {
-              for (const [key, value] of [["t212", 1], ["cash", 0.25], ["nfts", 1], ["walletNative", 1], ["walletTokens", 1]]) {
-                requireCondition(parseDisplayedUsd(await page.locator(`[data-value-class="${key}"] strong`).innerText()) === value, `${key} class value differs from displayed rows`);
+              for (const [key, value] of [["t212", 1.999], ["cash", 0.25], ["nfts", 1], ["walletNative", 1], ["walletTokens", 1]]) {
+                requireCondition(compactText(await page.locator(`[data-value-class="${key}"] strong`).innerText()) === expectedUsd(value), `${key} class value differs from authoritative account remainder/displayed other classes`);
               }
               const allocationValues = await page.locator(".pnl-allocation-item > div:first-child > strong").allTextContents();
-              requireCondition(JSON.stringify(allocationValues.map(parseDisplayedUsd)) === JSON.stringify([1, 0.25, 1, 1, 1]), "allocation values differ from displayed class sums");
+              requireCondition(JSON.stringify(allocationValues.map(compactText)) === JSON.stringify([1.999, 0.25, 1, 1, 1].map(expectedUsd)), "allocation values differ from authoritative account remainder/displayed other class sums");
             }
           } else if (scenario === "empty") {
             requireCondition(Object.values(portfolio.sources).every((source) => source.status === "live"), "all-small mixed pricing book invents incomplete sources");
             requireCondition(portfolio.totals.pnlCoverage.status === "complete" && portfolio.totals.pnlCoverage.eligible === 0, "known zero displayed holdings invented partial coverage");
             requireCondition(!/(?:under|below)\s+\$1|hidden under|(?:wallet|asset) filter/i.test(await renderedText(page)), "all-small/unknown page exposes threshold or wallet-filter copy");
-          } else {
+          } else if (scenario === "wholesale" || scenario === "failed") {
             for (const key of ["nfts", "walletNative", "walletTokens"]) requireCondition(portfolio.sources[key].status === "unavailable", `${key} outage became a zero/live class`);
             for (const key of ["nftsUsd", "walletNativeUsd", "walletTokensUsd"]) requireCondition(portfolio.totals[key] === null, `${key} outage became zero`);
             requireCondition(portfolio.totals.pnlCoverage.sourcesComplete === false && portfolio.totals.pnlCoverage.status === "partial", "outage no longer makes coverage incomplete");
           }
         });
+        if (scenario === "eth-outage" || scenario === "fiat-outage") {
+          await check(`${label} keeps unavailable conversion dependencies null and renders no zero valuation`, async () => {
+            const ethOutage = scenario === "eth-outage";
+            const unavailableClasses = ethOutage ? ["nfts", "walletNative"] : ["t212Positions", "nfts", "walletNative", "walletTokens"];
+            requireCondition(portfolio.sources[ethOutage ? "ethPrice" : "fiatFx"].status === "unavailable", "independent fixture lost the failed conversion feed");
+            for (const key of unavailableClasses) requireCondition(portfolio.sources[key].status === "unavailable", `${key} conversion outage became a live/zero class`);
+            const nullTotals = ethOutage
+              ? ["nftsUsd", "nftsThb", "walletNativeUsd", "walletNativeThb", "grandTotalUsd", "grandTotalThb"]
+              : ["t212Thb", "nftsThb", "walletNativeThb", "walletTokensThb", "walletThb", "grandTotalUsd", "grandTotalThb"];
+            for (const key of nullTotals) requireCondition(portfolio.totals[key] === null, `${key} invents zero from suppressed rows despite its failed conversion dependency`);
+            if (ethOutage) requireCondition(portfolio.sources.walletTokens.status === "live" && portfolio.totals.walletTokensUsd === 1 && portfolio.totals.walletTokensThb === 36
+              && portfolio.totals.walletUsd === 1 && portfolio.totals.walletThb === 36, "ETH outage changed independent known token pricing/partial wallet aggregate");
+            requireCondition(portfolio.totals.pnlCoverage.sourcesComplete === false && portfolio.totals.pnlCoverage.status === "partial", "conversion outage disappeared from source completeness");
+            const heroUsd = page.locator(surface === "home" ? '[data-value-currency="USD"]' : ".asset-registry-value");
+            const heroThb = page.locator(surface === "home" ? ".pnl-value-hero .pnl-secondary" : ".asset-registry-secondary > span:first-child strong");
+            requireCondition(compactText(await heroUsd.innerText()) === "—", "conversion outage renders a zero USD book total");
+            requireCondition(compactText(await heroThb.innerText()) === (surface === "home" ? "— THB" : "—"), "conversion outage renders a zero THB book total");
+            if (surface === "home") {
+              requireCondition(compactText(await page.locator(".pnl-hero-asof .pnl-status").innerText()) === "Value unavailable", "conversion outage is rendered as a finite partial joined value");
+              for (const key of [...unavailableClasses, ethOutage ? "ethPrice" : "fiatFx"]) {
+                requireCondition(compactText(await page.locator(`[data-source-key="${key}"] .live-source-badge`).innerText()) === "unavailable", `${key} failed dependency is missing its unavailable source badge`);
+              }
+              for (const key of ethOutage ? ["nfts", "walletNative"] : ["t212", "nfts", "walletNative", "walletTokens"]) {
+                const valueClass = page.locator(`[data-value-class="${key}"]`);
+                requireCondition(compactText(await valueClass.locator(":scope > span:last-child").innerText()) === "—", `${key} renders a zero THB class subtotal`);
+                if (ethOutage) requireCondition(compactText(await valueClass.locator("strong").innerText()) === "—", `${key} renders a zero USD class subtotal`);
+              }
+            } else {
+              const nfts = page.locator(".asset-live-panel").filter({ has: page.getByRole("heading", { name: "Live NFT Collection Registry", exact: true }) });
+              requireCondition(compactText(await nfts.locator(".asset-source-badge").innerText()) === "UNAVAILABLE", "NFT registry loses its unavailable source badge");
+              requireCondition(await nfts.locator(".asset-empty-state.is-unavailable").count() === 1, "suppressed NFT rows render a known-empty state during a conversion outage");
+              const nftKpi = page.locator(".asset-registry-kpi").nth(2);
+              requireCondition(compactText(await nftKpi.locator("small").innerText()).split(" · ")[0] === "—", "NFT registry renders a zero THB subtotal");
+              if (ethOutage) requireCondition(compactText(await nftKpi.locator("strong").innerText()) === "—", "NFT registry renders a zero USD subtotal");
+              const walletBadges = page.locator(".asset-wallet-source-label .asset-source-badge");
+              requireCondition(compactText(await walletBadges.nth(0).innerText()) === "UNAVAILABLE", "native registry loses its unavailable source badge");
+              if (!ethOutage) requireCondition(compactText(await walletBadges.nth(1).innerText()) === "UNAVAILABLE", "token registry loses its unavailable FX dependency badge");
+            }
+            return ethOutage ? "0 and 0.1 ETH floors cannot mask failed NFT/native pricing; dependent totals stay null/—" : "all four market inputs are $0.999; failed fiat conversion keeps dependent totals null/—";
+          });
+        }
         await checkNoMutationControls(page, label);
       }
     }

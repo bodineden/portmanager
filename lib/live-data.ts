@@ -1125,14 +1125,16 @@ function pricedSubtotal<T>(
     : null;
 }
 
-/** Inspect original inventory so an absent price feed cannot become an empty class. */
+/** Check pricing dependencies before inventory so zero values cannot mask a feed outage. */
 function holdingSourceState<T extends { valueUsd: number | null }>(
   rows: T[] | null,
   state: LiveSourceState,
   amountOf: (row: T) => number,
   label: string,
+  pricingAvailable: boolean,
 ): LiveSourceState {
   if (rows === null || state.status === "unavailable") return { ...state, status: "unavailable" };
+  if (!pricingAvailable) return { ...state, status: "unavailable", message: `${label} conversion prices are unavailable.` };
   const positiveRows = rows.filter((row) => amountOf(row) > 0);
   if (positiveRows.length > 0 && positiveRows.every((row) => row.valueUsd === null || !Number.isFinite(row.valueUsd))) {
     return { ...state, status: "unavailable", message: `${label} prices are unavailable.` };
@@ -1158,8 +1160,10 @@ function latestTimestamp(values: Array<string | null>): string | null {
 /** Pure assembly function used by getJoinedPortfolio and deterministic unit tests. */
 export function buildJoinedPortfolio(inputs: JoinedPortfolioInputs, asOf: string): JoinedPortfolio {
   const summary = inputs.t212Summary.data;
-  const fiatFx = inputs.fiatFx.data;
-  const ethToUsd = inputs.ethPrice.data;
+  const fiatFx = inputs.fiatFx.state.status === "unavailable" ? null : inputs.fiatFx.data;
+  const ethToUsd = inputs.ethPrice.state.status === "unavailable" ? null : positiveNumber(inputs.ethPrice.data);
+  const fiatPricingAvailable = positiveNumber(fiatFx?.usdToThb) !== null;
+  const ethPricingAvailable = ethToUsd !== null;
   const accountCurrency = summary?.currency ?? null;
   const manualState = inputs.manualHoldings?.state ?? sourceState("unavailable", "Manual holdings not included.");
   const capitalState = inputs.capitalEvents?.state ?? sourceState("unavailable", "Contributed capital not included.");
@@ -1227,13 +1231,13 @@ export function buildJoinedPortfolio(inputs: JoinedPortfolioInputs, asOf: string
   });
 
   const t212PositionState = holdingSourceState(inputs.t212Positions.data === null ? null : allInvestments,
-    inputs.t212Positions.state, (row) => row.quantity, "Trading 212 position");
+    inputs.t212Positions.state, (row) => row.quantity, "Trading 212 position", fiatPricingAvailable);
   const nftState = holdingSourceState(inputs.nfts.data === null ? null : allNfts,
-    inputs.nfts.state, (row) => row.tokenCount, "NFT collection");
+    inputs.nfts.state, (row) => row.tokenCount, "NFT collection", ethPricingAvailable && fiatPricingAvailable);
   const walletNativeState = holdingSourceState(inputs.walletNative?.data == null ? null : allWalletNative,
-    walletNativeInputState, (row) => row.amount, "Native wallet");
+    walletNativeInputState, (row) => row.amount, "Native wallet", ethPricingAvailable && fiatPricingAvailable);
   const walletTokenState = holdingSourceState(inputs.walletTokens?.data == null ? null : allWalletTokens,
-    walletTokenInputState, (row) => row.amount, "Wallet token");
+    walletTokenInputState, (row) => row.amount, "Wallet token", fiatPricingAvailable);
 
   const investments = allInvestments.filter((row) => !shouldSuppressHolding(row));
   const nfts = allNfts.filter((row) => !shouldSuppressHolding(row));
@@ -1243,15 +1247,12 @@ export function buildJoinedPortfolio(inputs: JoinedPortfolioInputs, asOf: string
   const nftsEth = pricedSubtotal(nfts, nftState, (row) => row.tokenCount, (row) => row.valueEth);
   const nftsUsd = pricedSubtotal(nfts, nftState, (row) => row.tokenCount, (row) => row.valueUsd);
   const nftsThb = pricedSubtotal(nfts, nftState, (row) => row.tokenCount, (row) => row.valueThb);
-  const investmentsThb = pricedSubtotal(investments, t212PositionState, (row) => row.quantity, (row) => row.valueThb);
-  const investmentsUsd = pricedSubtotal(investments, t212PositionState, (row) => row.quantity, (row) => row.valueUsd);
   const accountToThb = rateToThb(accountCurrency, fiatFx);
-  const investmentsCurrentValue = accountCurrency === "USD" ? investmentsUsd
-    : convertAmount(investmentsThb, accountToThb ? 1 / accountToThb : null);
   const summaryAvailable = inputs.t212Summary.state.status !== "unavailable" && summary !== null;
-  const t212TotalValue = summaryAvailable ? sumComplete([summary.cashAvailable, investmentsCurrentValue]) : null;
-  const t212Thb = summaryAvailable
-    ? sumComplete([convertAmount(summary.cashAvailable, accountToThb), investmentsThb]) : null;
+  // The broker account includes cash in pies and reserved orders as well as positions.
+  // Displayed position rows must never redefine either authoritative account figure.
+  const t212Thb = summaryAvailable && accountToThb !== null
+    ? convertAmount(summary.totalValue, accountToThb) : null;
   const walletNativeUsd = pricedSubtotal(walletNative, walletNativeState, (row) => row.amount, (row) => row.valueUsd);
   const walletNativeThb = pricedSubtotal(walletNative, walletNativeState, (row) => row.amount, (row) => row.valueThb);
   const walletTokensUsd = pricedSubtotal(walletTokens, walletTokenState, (row) => row.amount, (row) => row.valueUsd);
@@ -1270,8 +1271,8 @@ export function buildJoinedPortfolio(inputs: JoinedPortfolioInputs, asOf: string
     t212: {
       currency: accountCurrency,
       cashAvailable: summary?.cashAvailable ?? null,
-      totalValue: t212TotalValue,
-      investmentsCurrentValue,
+      totalValue: summary?.totalValue ?? null,
+      investmentsCurrentValue: summary?.investmentsCurrentValue ?? null,
       investments,
       asOf: latestTimestamp([inputs.t212Summary.state.asOf, inputs.t212Positions.state.asOf]),
     },

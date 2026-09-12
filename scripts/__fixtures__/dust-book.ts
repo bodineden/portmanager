@@ -72,6 +72,21 @@ export function dustBook(scenario: string) {
     inputs.nfts = unavailable();
   } else if (scenario === "inventory") {
     inputs.nfts.state = { status: "partial", asOf: AS_OF, message: "Synthetic inventory pagination incomplete." };
+  } else if (scenario === "eth-outage") {
+    inputs.ethPrice = unavailable();
+    inputs.nfts = live([
+      { collection: "collection-zero", collectionName: "COLLECTION-ZERO", tokenCount: 1, floorEth: 0 },
+      { collection: "collection-positive", collectionName: "COLLECTION-POSITIVE", tokenCount: 1, floorEth: 0.1 },
+    ]);
+    inputs.manualHoldings = live([]);
+  } else if (scenario === "fiat-outage") {
+    inputs.fiatFx = unavailable();
+    inputs.t212Summary = live({ currency: "USD", totalValue: 0.999, cashAvailable: 0, investmentsCurrentValue: 0.999 });
+    inputs.t212Positions = live([position("SECURITY-SMALL", 0.999)]);
+    inputs.nfts.data = inputs.nfts.data!.slice(1, 2);
+    inputs.walletNative!.data = inputs.walletNative!.data!.slice(1);
+    inputs.walletTokens!.data = inputs.walletTokens!.data!.slice(1, 2);
+    inputs.manualHoldings = live([]);
   }
   return buildJoinedPortfolio(inputs, AS_OF);
 }

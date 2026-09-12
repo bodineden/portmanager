@@ -113,14 +113,14 @@ export type ValueAllocation = {
   sharePct: number | null;
 };
 
-/** Value includes cash and every displayed holding; it never uses P&L subset sums. */
+/** Value includes cash and excluded holdings; it never uses P&L subset sums. */
 export function valueAllocation(portfolio: JoinedPortfolio): ValueAllocation[] {
   const { totals, fx } = portfolio;
   const accountUsd = snapshotFiatUsd(portfolio.t212.totalValue, portfolio.t212.currency, fx);
   const brokerCashUsd = snapshotFiatUsd(portfolio.t212.cashAvailable, portfolio.t212.currency, fx);
   const brokerCashThb = portfolio.t212.currency === "THB" ? portfolio.t212.cashAvailable
     : finite(brokerCashUsd) && finite(fx.usdToThb) && fx.usdToThb > 0 ? brokerCashUsd * fx.usdToThb : null;
-  // The joined account total contains cash and the displayed positions.
+  // Account remainder, not a second sum of positions: account total is authoritative.
   const stocksUsd = finite(accountUsd) && finite(brokerCashUsd) && accountUsd >= brokerCashUsd ? accountUsd - brokerCashUsd : null;
   const stocksThb = finite(totals.t212Thb) && finite(brokerCashThb) && totals.t212Thb >= brokerCashThb ? totals.t212Thb - brokerCashThb : null;
   const values: Omit<ValueAllocation, "sharePct">[] = [
