@@ -1211,9 +1211,22 @@ export function buildJoinedPortfolio(inputs: JoinedPortfolioInputs, asOf: string
     }, fiatFx?.usdToThb ?? null, token.contract ? inputs.basisEvidence?.[`token:${token.chainId}:${token.contract.toLowerCase()}`] : undefined) };
   });
 
-  const nftsEth = inputs.nfts.data === null || inputs.nfts.state.status === "partial"
+  let nftState = inputs.nfts.state;
+  const missingFloors = nfts.filter((row) => row.floorEth === null).length;
+  if (inputs.nfts.data === null) nftState = { ...nftState, status: "unavailable" };
+  else if (nftState.status !== "unavailable") {
+    const knownEmpty = nfts.length === 0 && nftState.status === "live";
+    if (!knownEmpty && !nfts.some((row) => row.floorEth !== null)) {
+      nftState = { ...nftState, status: "unavailable", message: `No NFT collection floor resolved. ${nftState.message}` };
+    } else if (missingFloors > 0 && nftState.status === "live") {
+      nftState = { ...nftState, status: "partial", message: `${missingFloors} NFT collection floor(s) unavailable; total includes priced collections only.` };
+    }
+  }
+  // Like wallet tokens, retain the known priced subtotal and every unpriced row.
+  // A hard wallet failure or wholly unpriced inventory must never become zero.
+  const nftsEth = nftState.status === "unavailable"
     ? null
-    : sumComplete(nfts.map((holding) => holding.valueEth));
+    : pricedSubtotal(nfts, nftState, (row) => row.tokenCount, (row) => row.valueEth);
   const nftsUsd = nftsEth === 0 ? 0 : convertAmount(nftsEth, ethToUsd);
   const nftsThb = nftsUsd === 0 ? 0 : convertAmount(nftsUsd, fiatFx?.usdToThb ?? null);
   const t212Thb = convertAmount(summary?.totalValue ?? null, rateToThb(accountCurrency, fiatFx));
@@ -1262,7 +1275,7 @@ export function buildJoinedPortfolio(inputs: JoinedPortfolioInputs, asOf: string
     totals: {
       ...aggregatePnl({
         t212: { holdings: investments, sourceComplete: inputs.t212Positions.data !== null && inputs.t212Positions.state.status === "live" },
-        nfts: { holdings: nfts, sourceComplete: inputs.nfts.data !== null && inputs.nfts.state.status === "live" },
+        nfts: { holdings: nfts, sourceComplete: nftState.status === "live" },
         walletNative: { holdings: walletNative, sourceComplete: inputs.walletNative?.data != null && walletNativeState.status === "live" },
         walletTokens: { holdings: walletTokens, sourceComplete: inputs.walletTokens?.data != null && walletTokenState.status === "live" },
       }, fiatFx?.usdToThb ?? null, valueBeforeManual !== null && usdBeforeManual !== null
@@ -1286,7 +1299,7 @@ export function buildJoinedPortfolio(inputs: JoinedPortfolioInputs, asOf: string
     sources: {
       t212Summary: inputs.t212Summary.state,
       t212Positions: inputs.t212Positions.state,
-      nfts: inputs.nfts.state,
+      nfts: nftState,
       fiatFx: inputs.fiatFx.state,
       ethPrice: inputs.ethPrice.state,
       walletNative: walletNativeState,

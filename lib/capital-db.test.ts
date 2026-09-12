@@ -107,6 +107,53 @@ describe("SELECT-only operator ledgers", () => {
       expect(JSON.stringify(log.mock.calls)).not.toContain("private");
     }
   });
+  it.each([
+    ["capital", createCapitalReader, "Contributed capital"],
+    ["manualHoldings", createManualHoldingsReader, "Manual holdings"],
+  ] as const)("pins audit A4: %s SELECT finishing after 2000 ms reports a timeout, remains fail-closed, and retries", async (_name, createReader, label) => {
+    vi.useFakeTimers();
+    let signal: AbortSignal | undefined;
+    let slow = true;
+    const query = vi.fn((_sql: string, _params?: unknown[], s?: AbortSignal): Promise<unknown> => {
+      signal = s;
+      return slow ? new Promise((resolve) => setTimeout(() => resolve([]), 2001)) : Promise.resolve([]);
+    });
+    const log = vi.fn();
+    const read = createReader({ hasDb: () => true, getDb: () => ({ query }), log });
+    let settled = false;
+    const pending = read(AS_OF).then((result) => { settled = true; return result; });
+    await vi.advanceTimersByTimeAsync(1999);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    const result = await pending;
+    expect(result).toEqual({ data: [], state: { status: "unavailable", asOf: null, message: `${label} ledger read timed out.` } });
+    expect(signal?.aborted).toBe(true);
+    expect(log).toHaveBeenCalledWith("[portfolio_ledger] Read timed out; page remains available.");
+    await vi.advanceTimersByTimeAsync(1); // Late successful query cannot turn this timed-out read live.
+    expect(result.state.status).toBe("unavailable");
+    slow = false;
+    expect((await read(AS_OF)).state.status).toBe(_name === "capital" ? "partial" : "live");
+    expect(query).toHaveBeenCalledTimes(2);
+  });
+  it("classifies deadline-triggered driver aborts as timeouts without exposing private errors", async () => {
+    vi.useFakeTimers();
+    const log = vi.fn();
+    const read = createCapitalReader({ hasDb: () => true, log, getDb: () => ({
+      query: (_sql, _params, signal) => new Promise((_resolve, reject) => {
+        signal!.addEventListener("abort", () => reject(new Error("private connection aborted")), { once: true });
+      }),
+    }) });
+    const pending = read(AS_OF);
+    await vi.advanceTimersByTimeAsync(2000);
+    expect((await pending).state.message).toBe("Contributed capital ledger read timed out.");
+    expect(JSON.stringify(log.mock.calls)).not.toContain("private");
+  });
+  it("keeps real query failures distinct even if their private error text mentions a timeout", async () => {
+    const read = createCapitalReader({ hasDb: () => true, log: vi.fn(), getDb: () => ({
+      query: async () => { throw new Error("Ledger IO timed out: private SQL"); },
+    }) });
+    expect((await read(AS_OF)).state.message).toBe("Contributed capital ledger unavailable.");
+  });
   it("bounds and aborts a hanging SELECT", async () => {
     vi.useFakeTimers();
     let signal: AbortSignal | undefined;

@@ -97,7 +97,7 @@ export default async function Home() {
               <div className="pnl-metric-line"><strong className={dayDirection === "up" ? "positive is-up" : dayDirection === "down" ? "negative is-down" : dayDirection === "flat" ? "muted is-flat" : ""}>{dayDirection === "up" ? "↑ " : dayDirection === "down" ? "↓ " : dayDirection === "flat" ? "→ " : ""}{formatPnlMoney(change?.usd)}</strong><span>{formatPnlPercent(change?.pct)}</span></div>
               <small>{formatPnlMoney(change?.thb, "THB")} THB</small>
               <p>{change ? `${change.previousDate} → ${change.date} · first daily observations.` : `Awaiting comparable snapshots — ${changeReason}.`}</p>
-              <p className="muted">Adjusted day change · deposits and withdrawals excluded. Not investment P&amp;L.</p>
+              <p className="muted">Adjusted day change · deposits and withdrawals excluded. THB first, USD at snapshot FX; % uses the previous THB book value. Not investment P&amp;L.</p>
             </article>
             <article className="panel pnl-metric pnl-coverage" data-pnl-coverage={coverage.status}>
               <p className="eyebrow">WHAT CAN BE MEASURED</p><h2>P&amp;L coverage</h2>
@@ -114,10 +114,10 @@ export default async function Home() {
               <div className="pnl-allocation-list">{classes.map((item) => <div className="pnl-allocation-item" key={item.key}>
                 <div><span><i className={`pnl-class-dot is-${item.key}`} />{item.label}</span><strong>{formatUsd(item.valueUsd)}</strong></div>
                 <div className="pnl-allocation-track"><span className={`is-${item.key}`} style={{ width: item.sharePct === null ? "0%" : `${item.sharePct}%` }} /></div>
-                <small>{item.sharePct === null ? "Share unavailable" : `${formatHoldingQuantity(item.sharePct, 1)}% of class value`} · {formatThb(item.valueThb)}</small>
+                <small>{item.sharePct === null ? "Share unavailable" : `${formatHoldingQuantity(item.sharePct, 1)}% of priced value`} · {formatThb(item.valueThb)}</small>
                 {item.key === "cash" ? <small className="pnl-class-pnl">Value only · no per-asset P&amp;L</small> : <small className="pnl-class-pnl">P&amp;L (recorded): {formatUsd(totals.pnlByClass[item.key].pnlCoverage.eligible > 0 ? totals.pnlByClass[item.key].pnlUsd : null)} · {totals.pnlByClass[item.key].pnlCoverage.eligible} eligible</small>}
               </div>)}</div>
-              <p className="pnl-panel-note">Allocation measures value. Unpriced assets have no inferred weight; percentages wait for all class values.</p>
+              <p className="pnl-panel-note">Shares describe known priced class subtotals, not the entire inventory. Unpriced assets have no inferred weight; shares are unavailable when a class has no known subtotal.</p>
             </section>
           </div>
           <PnlCalendar snapshots={history} asOf={portfolio.asOf} />

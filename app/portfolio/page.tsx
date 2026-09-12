@@ -81,6 +81,7 @@ export default async function PortfolioPage() {
     }))
     .reverse();
   const liveValueAvailable = portfolio.totals.grandTotalUsd !== null;
+  const valueSourcesComplete = Object.entries(portfolio.sources).every(([key, source]) => key === "capital" || source.status === "live");
   const legacyRange = legacyPoints.length > 0
     ? `${shortDate(legacyPoints[0].date)} → ${shortDate(legacyPoints.at(-1)!.date)}`
     : legacyHistory.status === "not-configured"
@@ -100,9 +101,9 @@ export default async function PortfolioPage() {
             <p className="page-subtitle">Live T212, NFT and wallet value, with the legacy series retained as separate historical context</p>
           </div>
           <div className="header-tools">
-            <span className={`header-status ${liveValueAvailable ? "" : "is-partial"}`}>
+            <span className={`header-status ${liveValueAvailable && valueSourcesComplete ? "" : "is-partial"}`}>
               <span className="status-light" aria-hidden="true" />
-              {liveValueAvailable ? "LIVE JOINED" : "LIVE VALUE UNAVAILABLE"} · {formatAsOf(portfolio.asOf)} UTC
+              {liveValueAvailable ? valueSourcesComplete ? "LIVE JOINED" : "LIVE JOINED · PARTIAL VALUE" : "LIVE VALUE UNAVAILABLE"} · {formatAsOf(portfolio.asOf)} UTC
             </span>
             <Link href="/" className="toolbar-link">P&L Center</Link>
           </div>
@@ -115,6 +116,7 @@ export default async function PortfolioPage() {
               <span className="metric-label">Current Value</span>
               <strong className="metric-value">{formatUsd(portfolio.totals.grandTotalUsd)}</strong>
               <small>{formatThb(portfolio.totals.grandTotalThb)} · THB equivalent</small>
+              {liveValueAvailable && !valueSourcesComplete && <small>Known priced subtotal; source coverage is incomplete.</small>}
             </article>
             <article className="portfolio-kpi-card">
               <span className="metric-index">02 / T212 LIVE</span>

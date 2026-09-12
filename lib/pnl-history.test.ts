@@ -1,21 +1,80 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { __resetSnapshotCacheForTests, getJoinedPortfolio, buildJoinedPortfolio, type JoinedPortfolio, type LiveResult } from "./live-data";
+import { __resetSnapshotCacheForTests, getJoinedPortfolio, buildJoinedPortfolio, type JoinedPortfolio, type JoinedPortfolioInputs, type LiveResult } from "./live-data";
+import { VALUE_SOURCE_KEYS } from "./holding-values";
+import { oneUnpricedNft } from "./__fixtures__/nft-floors";
 import * as history from "./pnl-history";
 
 const DATE = "2026-09-05T12:00:00.000Z";
 const live = <T>(data: T): LiveResult<T> => ({ data, state: { status: "live", asOf: DATE, message: "fixture" } });
-function portfolio(): JoinedPortfolio {
+function portfolio(overrides: Partial<JoinedPortfolioInputs> = {}): JoinedPortfolio {
   return buildJoinedPortfolio({
     manualHoldings: live([]),
+    capitalEvents: { data: [], state: { status: "partial", asOf: DATE, message: "Contributed capital not recorded." } },
     t212Summary: live({ currency: "GBP", cashAvailable: 487, totalValue: 487, investmentsCurrentValue: 0 }),
     t212Positions: live([]), nfts: live([]), walletTokens: live([]),
     walletNative: live([{ chainId: 42161, chainName: "Arbitrum One", symbol: "ETH", amount: 0.248396 }]),
     fiatFx: live({ usdToThb: 36, gbpToThb: 45, eurToThb: 40, asOf: DATE }), ethPrice: live(2_400),
+    ...overrides,
   }, DATE);
 }
 afterEach(() => { __resetSnapshotCacheForTests(); vi.restoreAllMocks(); vi.unstubAllEnvs(); vi.unstubAllGlobals(); });
 
 describe("daily snapshot recorder", () => {
+  it.each(VALUE_SOURCE_KEYS)("rejects unavailable %s before DB IO without consuming the same-day retry", async (source) => {
+    const query = vi.fn(async () => [{ snapshot_date: "2026-09-05" }]);
+    const getDb = vi.fn(() => ({ query }));
+    const record = history.createSnapshotRecorder({ hasDb: () => true, getDb, now: () => Date.parse(DATE) });
+    const book = portfolio();
+    const original = book.sources[source];
+    book.sources[source] = { status: "unavailable", asOf: null, message: "Hard provider failure" };
+    expect(Number.isFinite(book.totals.grandTotalUsd)).toBe(true);
+    expect(await record(book)).toBe("skipped");
+    expect(getDb).not.toHaveBeenCalled();
+    book.sources[source] = original;
+    expect(await record(book)).toBe("recorded");
+    expect(await record(book)).toBe("already-exists");
+  });
+
+  it("pins audit A5's finite-but-incomplete wallet book: null tokens, wallet 200, total 2916.65 is skipped", async () => {
+    // Synthetic audit reproduction, not historical wallet balances.
+    const book = portfolio({
+      t212Summary: live({ currency: "GBP", totalValue: 9.62, cashAvailable: 0.28, investmentsCurrentValue: 9.34 }),
+      manualHoldings: live([{ id: "opening", label: "T212 cash pot", kind: "cash", currency: "GBP", amount: 2000, recordedAt: DATE, createdAt: DATE }]),
+      capitalEvents: live([{ occurredAt: DATE, kind: "contribution", amountThb: 120000 }]),
+      fiatFx: live({ usdToThb: 33.003871, gbpToThb: 44.6154, eurToThb: null, asOf: DATE }), ethPrice: live(2578.15),
+      walletNative: live([{ chainId: 42161, chainName: "Arbitrum One", symbol: "ETH", amount: 200 / 2578.15 }]),
+      walletTokens: { data: null, state: { status: "unavailable", asOf: null, message: "Hard provider failure" } },
+    });
+    expect(book.totals.walletTokensUsd).toBeNull();
+    expect(book.totals.walletUsd).toBe(200);
+    expect(book.totals.grandTotalUsd).toBeCloseTo(2916.65, 2);
+    const query = vi.fn(async () => [{ snapshot_date: "2026-09-05" }]);
+    const getDb = vi.fn(() => ({ query }));
+    const record = history.createSnapshotRecorder({ hasDb: () => true, getDb, now: () => Date.parse(DATE), log: vi.fn() });
+    expect(await record(book)).toBe("skipped");
+    expect(getDb).not.toHaveBeenCalled();
+  });
+
+  it("records partial-but-valued NFTs and wallet tokens with null inventory evidence intact", async () => {
+    const book = portfolio({
+      nfts: { data: oneUnpricedNft, state: { status: "partial", asOf: DATE, message: "One collection unpriced" } },
+      walletTokens: { data: [
+        { chainId: 1, chainName: "Ethereum", symbol: "UNPRICED", name: "Unpriced token", amountRaw: "7", decimals: 0, amount: 7, priceUsd: null },
+        { chainId: 1, chainName: "Ethereum", symbol: "DUST", name: "Priced dust", amountRaw: "1", decimals: 0, amount: 1, priceUsd: 0.02 },
+      ], state: { status: "partial", asOf: DATE, message: "One token unpriced" } },
+    });
+    expect(Number.isFinite(book.totals.grandTotalUsd)).toBe(true);
+    const query = vi.fn(async (_sql: string, _params?: unknown[]) => { void _sql; void _params; return [{ snapshot_date: "2026-09-05" }]; });
+    const record = history.createSnapshotRecorder({ hasDb: () => true, getDb: () => ({ query }), now: () => Date.parse(DATE) });
+    expect(await record(book)).toBe("recorded");
+    const params = query.mock.calls[2][1]!;
+    const coverage = JSON.parse(String(params[8]));
+    expect(coverage.sources.nfts.status).toBe("partial");
+    expect(coverage.sources.walletTokens.status).toBe("partial");
+    expect(coverage).toMatchObject({ unpriced: 2, dust: 1, status: "partial" });
+    expect(JSON.parse(String(params[16]))).toMatchObject({ "nft:wasteland-art": null, "token:1:unpriced": null });
+  });
+
   it("records non-null partial values with explicit partial source status and observation time", async () => {
     const query = vi.fn(async (_text: string, _params?: unknown[]) => { void _text; void _params; return [{ snapshot_date: "2026-09-05" }]; });
     const book = portfolio(); book.sources.walletNative.status = "partial";

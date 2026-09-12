@@ -9,6 +9,8 @@ function defaultDb(): SnapshotDb {
   return { query: (text, params, signal) => sql.query(text, params, { fetchOptions: { signal } }) };
 }
 
+class LedgerTimeoutError extends Error {}
+
 async function bounded<T>(options: SnapshotReaderOptions, action: (db: SnapshotDb, signal: AbortSignal) => Promise<T>): Promise<T> {
   const controller = new AbortController();
   const requested = options.timeoutMs ?? 2000;
@@ -16,7 +18,11 @@ async function bounded<T>(options: SnapshotReaderOptions, action: (db: SnapshotD
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([action((options.getDb ?? defaultDb)(), controller.signal), new Promise<never>((_, reject) => {
-      timer = setTimeout(() => { controller.abort(); reject(new Error("Ledger IO timed out")); }, ms);
+      timer = setTimeout(() => {
+        // Settle our classified timeout before abort listeners can reject the driver promise.
+        reject(new LedgerTimeoutError("Ledger IO timed out"));
+        controller.abort();
+      }, ms);
     })]);
   } finally { if (timer) clearTimeout(timer); }
 }
@@ -67,9 +73,13 @@ function readLedger<T>(name: "capital" | "manualHoldings", sql: string, map: (ro
       return { data, state: { status: name === "capital" && !data.length ? "partial" : "live", asOf,
         message: name === "capital" ? data.length ? "Operator-reported capital ledger." : "Contributed capital not recorded — book P&L unavailable."
           : "Operator-reported balances; latest report per label at snapshot time." } };
-    } catch {
-      try { (options.log ?? console.warn)("[portfolio_ledger] Read unavailable; page remains available."); } catch { /* fail soft */ }
-      return absent;
+    } catch (error) {
+      const timedOut = error instanceof LedgerTimeoutError;
+      try { (options.log ?? console.warn)(timedOut
+        ? "[portfolio_ledger] Read timed out; page remains available."
+        : "[portfolio_ledger] Read unavailable; page remains available."); } catch { /* fail soft */ }
+      return timedOut ? { ...absent, state: { ...absent.state,
+        message: `${name === "capital" ? "Contributed capital" : "Manual holdings"} ledger read timed out.` } } : absent;
     }
   };
 }

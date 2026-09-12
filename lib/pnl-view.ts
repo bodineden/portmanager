@@ -167,14 +167,22 @@ export function dailyChangeDetails(snapshots: readonly PortfolioSnapshot[], asOf
   if (!signature || !previousSignature) return absent("value-set evidence unavailable");
   if (signature !== previousSignature) return absent("holdings changed between days");
   if (![current, previous].every((row) => finite(row.contributedCapitalUsd) && finite(row.contributedCapitalThb))) return absent("contributed capital not recorded");
-  const usd = (current.totalValueUsd! - previous.totalValueUsd!) - (current.contributedCapitalUsd! - previous.contributedCapitalUsd!);
   const thb = (current.totalValueThb! - previous.totalValueThb!) - (current.contributedCapitalThb! - previous.contributedCapitalThb!);
-  if (!finite(usd) || !finite(thb)) return absent("adjusted change unavailable");
+  if (!finite(thb)) return absent("adjusted change unavailable");
+  // Snapshots store same-observation THB/USD mirrors, not a standalone FX column.
+  // Recover only THIS snapshot's rate; capital is a fallback for a zero-valued book.
+  const usdToThb = current.totalValueUsd! > 0
+    ? current.totalValueThb! / current.totalValueUsd!
+    : current.contributedCapitalThb! / current.contributedCapitalUsd!;
+  if (thb !== 0 && (!finite(usdToThb) || usdToThb <= 0)) return absent("snapshot FX unavailable");
   // Suppress floating-point cancellation noise, not genuine cent-level changes.
   const clean = (value: number, a: number, b: number) => Math.abs(value) <= Number.EPSILON * 16 * Math.max(1, Math.abs(a), Math.abs(b)) ? 0 : value;
-  const adjustedUsd = clean(usd, current.totalValueUsd!, current.contributedCapitalUsd!);
   const adjustedThb = clean(thb, current.totalValueThb!, current.contributedCapitalThb!);
-  const pct = previous.totalValueUsd! > 0 ? adjustedUsd / previous.totalValueUsd! * 100 : null;
+  // Exact known zero stays zero under every positive FX rate, including a full withdrawal.
+  const adjustedUsd = adjustedThb === 0 ? 0 : adjustedThb / usdToThb;
+  if (!finite(adjustedUsd)) return absent("adjusted change unavailable");
+  // THB-adjusted change / previous THB book value; not a USD investment return.
+  const pct = previous.totalValueThb! > 0 ? adjustedThb / previous.totalValueThb! * 100 : null;
   return { change: { usd: adjustedUsd, thb: adjustedThb, pct: finite(pct) ? pct : null, date: current.date, previousDate: previous.date }, reason: null };
 }
 export function dailyChange(snapshots: readonly PortfolioSnapshot[], asOf?: string): DailyValueChange | null {

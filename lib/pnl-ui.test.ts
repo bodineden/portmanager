@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PnlAssetTable } from "../app/pnl-asset-table";
 import { buildJoinedPortfolio, formatUsd, type JoinedPortfolio, type LiveResult } from "./live-data";
 import { aggregatePnl, type HoldingPnl } from "./pnl";
+import { oneUnpricedNft } from "./__fixtures__/nft-floors";
 
 const DATE = "2026-09-05T12:00:00.000Z";
 const live = <T>(data: T): LiveResult<T> => ({ data, state: { status: "live", asOf: DATE, message: "offline fixture" } });
@@ -82,6 +83,28 @@ beforeEach(() => { vi.stubGlobal("React", React); });
 afterEach(() => { vi.unstubAllGlobals(); });
 
 describe("rendered per-asset P&L honesty (offline fixtures)", () => {
+  it("renders an unpriceable NFT as its own dash row while the other five keep the book valued", () => {
+    const book = buildJoinedPortfolio({
+      t212Summary: live({ currency: "GBP", cashAvailable: 487, totalValue: 487, investmentsCurrentValue: 0 }),
+      t212Positions: live([]), manualHoldings: live([]), walletNative: live([]), walletTokens: live([]),
+      nfts: { data: oneUnpricedNft, state: { status: "partial", asOf: DATE, message: "One floor unpriced" } },
+      fiatFx: live({ usdToThb: 36, gbpToThb: 45, eurToThb: 40, asOf: DATE }), ethPrice: live(2400),
+    }, DATE);
+    const html = markup(book);
+    expect(rows(html)).toHaveLength(6);
+    const row = rowNamed(html, "wasteland-art");
+    expect(row).toContain('data-pnl-eligibility="unpriced"');
+    expect(cell(row, "value")).toBe("— — Unpriced");
+    expect(cell(row, "basis")).toBe("— — basis not recorded");
+    expect(cell(row, "pnl")).toBe("— — · — Excluded from P&L totals");
+    expect(text(row)).not.toMatch(/\$0|฿0|Dust/);
+    expect(Number.isFinite(book.totals.grandTotalUsd)).toBe(true);
+    for (const priced of oneUnpricedNft.filter((item) => item.floorEth !== null)) {
+      expect(cell(rowNamed(html, priced.collectionName), "value")).toContain(formatUsd(book.nfts.find((item) => item.collection === priced.collection)!.valueUsd));
+    }
+    expect(html).not.toMatch(/<(?:form|button|input|select)\b|contenteditable=/i);
+  });
+
   it("renders every joined holding once, excludes cash, retains provenance and adds no mutation controls", () => {
     const book = fixture();
     const original = structuredClone(book);

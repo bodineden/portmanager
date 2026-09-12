@@ -40,12 +40,51 @@ describe("adjusted adjacent-day book value change", () => {
     expect(dailyChange([snapshot("2026-09-11", 90000, 110000), snapshot("2026-09-10", 100000, 120000)], AS_OF))
       .toMatchObject({ usd: 0, thb: 0, pct: 0 });
   });
-  it("uses each day's own USD capital conversion, never today's FX for yesterday", () => {
+  it("converts the THB-adjusted change once at the current snapshot rate", () => {
     const before = snapshot("2026-09-10", 100000, 120000, 32);
     const after = snapshot("2026-09-11", 101000, 120000);
     const change = dailyChange([after, before], AS_OF)!;
     expect(change.thb).toBe(1000);
-    expect(change.usd).toBeCloseTo((101000 / FX - 100000 / 32) - (120000 / FX - 120000 / 32), 8);
+    expect(change.usd).toBeCloseTo(1000 / FX, 8);
+    // Percentage is THB-adjusted change / previous THB book value, not USD return.
+    expect(change.pct).toBe(1);
+  });
+  it("pins audit A3: FX 32 → 34 cannot turn an unchanged THB book into a USD gain", () => {
+    const before = snapshot("2026-09-10", 100000, 120000, 32);
+    const after = snapshot("2026-09-11", 100000, 120000, 34);
+    expect(valueSetSignature(before.holdings, before.sources)).toBe(valueSetSignature(after.holdings, after.sources));
+    // Verbatim audit numbers: raw USD value falls −183.82; the old bug showed +36.76 / +1.18%.
+    expect(after.totalValueUsd! - before.totalValueUsd!).toBeCloseTo(-183.82, 2);
+    expect(dailyChangeDetails([after, before], AS_OF)).toEqual({
+      change: { usd: 0, thb: 0, pct: 0, date: "2026-09-11", previousDate: "2026-09-10" }, reason: null,
+    });
+  });
+  it("removes cash flows in THB despite FX moves and preserves the remaining change's sign", () => {
+    const before = snapshot("2026-09-10", 100000, 120000, 32);
+    for (const flow of [-10000, 10000]) {
+      for (const movement of [-1000, 0, 1000]) {
+        const after = snapshot("2026-09-11", 100000 + flow + movement, 120000 + flow, 34);
+        const change = dailyChange([after, before], AS_OF)!;
+        expect(change.thb).toBe(movement);
+        expect(change.usd).toBeCloseTo(movement / 34, 8);
+        expect(change.pct).toBe(movement / 100000 * 100);
+      }
+    }
+  });
+  it("keeps a fully withdrawn book's known zero adjusted change without guessing an FX rate", () => {
+    const before = snapshot("2026-09-10", 100000, 100000, 32);
+    const after = snapshot("2026-09-11", 0, 0, 34);
+    expect(dailyChange([after, before], AS_OF)).toMatchObject({ usd: 0, thb: 0, pct: 0 });
+  });
+  it("uses only current capital mirrors for FX when the book is zero and refuses unknowable FX", () => {
+    const before = snapshot("2026-09-10", 100000, 120000, 32);
+    const after = snapshot("2026-09-11", 0, 120000, 34);
+    expect(dailyChange([after, before], AS_OF)?.usd).toBeCloseTo(-100000 / 34, 8);
+    expect(dailyChange([after, before], AS_OF)?.pct).toBe(-100);
+    const unknowable = snapshot("2026-09-11", 0, 0, 34);
+    expect(dailyChangeDetails([unknowable, before], AS_OF)).toEqual({ change: null, reason: "snapshot FX unavailable" });
+    const invalidMirror = { ...after, contributedCapitalUsd: -1 };
+    expect(dailyChangeDetails([invalidMirror, before], AS_OF).reason).toBe("snapshot FX unavailable");
   });
   it("provides an explicit missing-adjacent-day reason and no per-asset map across gaps", () => {
     const rows = [snapshot("2026-09-11", 100000, 120000), snapshot("2026-09-09", 100000, 120000)];

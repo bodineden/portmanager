@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { observedNftFloors, oneUnpricedNft } from "./__fixtures__/nft-floors";
 import {
   __resetSnapshotCacheForTests,
   amountFromRawUnits,
@@ -323,17 +324,62 @@ describe("buildJoinedPortfolio", () => {
     expect(portfolio.totals.grandTotalThb).toBeNull();
   });
 
-  it("does not present a partial NFT inventory as a complete total", () => {
+  it("retains a priced subtotal for partial NFT inventory while keeping its incomplete status explicit", () => {
     const inputs = fixtureInputs();
     inputs.nfts.state = state("partial", "fixture wallet page is incomplete");
     const portfolio = buildJoinedPortfolio(inputs, AS_OF);
 
     expect(portfolio.nfts).toHaveLength(2);
     expect(portfolio.nfts[0].valueEth).not.toBeNull();
+    expect(portfolio.totals.nftsEth).toBeCloseTo(0.1831154, 10);
+    expect(portfolio.totals.nftsUsd).toBeCloseTo(0.1831154 * 2000, 8);
+    expect(portfolio.totals.nftsThb).toBeCloseTo(0.1831154 * 2000 * 36, 8);
+    expect(Number.isFinite(portfolio.totals.grandTotalThb)).toBe(true);
+    expect(portfolio.sources.nfts).toEqual(inputs.nfts.state);
+    expect(portfolio.totals.pnlByClass.nfts.pnlCoverage.sourcesComplete).toBe(false);
+  });
+
+  it.each(["live", "partial"] as const)("sums five priced NFT collections when one of six has no floor (input %s)", (status) => {
+    const inputs = fixtureInputs();
+    inputs.nfts = { data: oneUnpricedNft, state: state(status) };
+    const portfolio = buildJoinedPortfolio(inputs, AS_OF);
+    expect(portfolio.nfts).toHaveLength(6);
+    expect(portfolio.nfts.reduce((sum, row) => sum + row.tokenCount, 0)).toBe(7);
+    const expectedEth = observedNftFloors.filter((row) => row.collection !== "wasteland-art")
+      .reduce((sum, row) => sum + row.floorEth! * row.tokenCount, 0);
+    expect(portfolio.totals.nftsEth).toBeCloseTo(expectedEth, 12);
+    expect(portfolio.totals.nftsUsd).toBeCloseTo(expectedEth * 2000, 8);
+    expect(portfolio.totals.nftsThb).toBeCloseTo(expectedEth * 2000 * 36, 8);
+    expect(portfolio.totals.grandTotalThb).toBeCloseTo(487 * 45 + expectedEth * 2000 * 36, 8);
+    expect(Number.isFinite(portfolio.totals.grandTotalUsd)).toBe(true);
+    expect(portfolio.sources.nfts.status).toBe("partial");
+    expect(portfolio.totals.pnlByClass.nfts.pnlCoverage).toMatchObject({ unpriced: 1, sourcesComplete: false });
+    expect(portfolio.nfts.find((row) => row.collection === "wasteland-art")).toMatchObject({
+      floorEth: null, valueEth: null, valueUsd: null, valueThb: null, costBasisUsd: null, pnlUsd: null, pnlEligibility: "unpriced",
+    });
+  });
+
+  it("keeps wholly unpriced NFT inventory unavailable, never a zero subtotal", () => {
+    const inputs = fixtureInputs();
+    inputs.nfts = { data: observedNftFloors.map((row) => ({ ...row, floorEth: null })), state: state("partial") };
+    const portfolio = buildJoinedPortfolio(inputs, AS_OF);
+    expect(portfolio.nfts).toHaveLength(6);
+    expect(portfolio.sources.nfts.status).toBe("unavailable");
+    for (const key of ["nftsEth", "nftsUsd", "nftsThb", "grandTotalUsd", "grandTotalThb"] as const) expect(portfolio.totals[key]).toBeNull();
+    expect(portfolio.nfts.every((row) => row.pnlEligibility === "unpriced")).toBe(true);
+  });
+
+  it("distinguishes resolved zero floors and a known empty NFT wallet from an unknown empty partial inventory", () => {
+    for (const data of [[], observedNftFloors.map((row) => ({ ...row, floorEth: 0 }))]) {
+      const inputs = fixtureInputs(); inputs.nfts = live(data);
+      const portfolio = buildJoinedPortfolio(inputs, AS_OF);
+      expect(portfolio.sources.nfts.status).toBe("live");
+      expect(portfolio.totals.nftsEth).toBe(0);
+    }
+    const inputs = fixtureInputs(); inputs.nfts = { data: [], state: state("partial") };
+    const portfolio = buildJoinedPortfolio(inputs, AS_OF);
+    expect(portfolio.sources.nfts.status).toBe("unavailable");
     expect(portfolio.totals.nftsEth).toBeNull();
-    expect(portfolio.totals.nftsUsd).toBeNull();
-    expect(portfolio.totals.nftsThb).toBeNull();
-    expect(portfolio.totals.grandTotalThb).toBeNull();
   });
 
   it("returns a complete unavailable shape without inventing zeroes", () => {
@@ -458,6 +504,35 @@ describe("Trading 212 normalisation", () => {
 });
 
 describe("getJoinedPortfolio", () => {
+  it.each(["all-priced", "one-stats-401", "no-floors", "wallet-401"] as const)("keeps OpenSea wallet failure distinct from collection pricing failures: %s", async (scenario) => {
+    vi.stubEnv("DATABASE_URL", "");
+    vi.stubEnv("OPENSEA_API_KEY", "opensea-test-only");
+    const statsCalls: string[] = [];
+    const otherFetch = walletNetworkFetchMock();
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("api.opensea.io/api/v2/chain/")) return scenario === "wallet-401" ? json({}, 401)
+        : json({ nfts: observedNftFloors.flatMap((row) => Array.from({ length: row.tokenCount }, () => ({ collection: row.collection }))) });
+      if (url.includes("api.opensea.io/api/v2/collections/")) {
+        const row = observedNftFloors.find((item) => url.endsWith(`/${item.collection}/stats`))!;
+        statsCalls.push(row.collection);
+        if (scenario === "no-floors" || (scenario === "one-stats-401" && row.collection === "wasteland-art")) return json({}, 401);
+        return json({ total: { floor_price: row.floorEth } });
+      }
+      return otherFetch(input, init);
+    }));
+    const book = await getJoinedPortfolio({ now: () => Date.parse(AS_OF) });
+    expect(book.sources.nfts.status).toBe(scenario === "all-priced" ? "live" : scenario === "one-stats-401" ? "partial" : "unavailable");
+    expect(book.nfts).toHaveLength(scenario === "wallet-401" ? 0 : 6);
+    expect(statsCalls).toHaveLength(scenario === "wallet-401" ? 0 : 6);
+    if (scenario === "wallet-401" || scenario === "no-floors") expect(book.totals.nftsUsd).toBeNull();
+    else {
+      const priced = observedNftFloors.filter((row) => scenario === "all-priced" || row.collection !== "wasteland-art");
+      expect(book.totals.nftsEth).toBeCloseTo(priced.reduce((sum, row) => sum + row.floorEth! * row.tokenCount, 0), 12);
+      expect(book.nfts.filter((row) => row.valueUsd === null)).toHaveLength(scenario === "all-priced" ? 0 : 1);
+    }
+  });
+
   it("wires the live endpoints with Basic auth and no-store fetches", async () => {
     vi.stubEnv("T212_API_KEY", "api-key");
     vi.stubEnv("T212_API_SECRET", "api-secret");

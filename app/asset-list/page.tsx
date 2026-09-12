@@ -95,8 +95,10 @@ export default async function AssetListPage() {
   const rawWalletNativeCount = portfolio.wallet.native.length;
   const rawWalletTokenCount = walletTokens.length;
   const positionCount = portfolio.sources.t212Positions.status === "unavailable" ? null : rawPositionCount;
-  const nftCollectionCount = portfolio.sources.nfts.status === "unavailable" ? null : portfolio.nfts.length;
-  const nftTokenCount = portfolio.sources.nfts.status === "unavailable" ? null : rawNftTokenCount;
+  // Unavailable NFT pricing can still carry known wallet rows. Do not hide them.
+  const nftInventoryUnavailable = portfolio.sources.nfts.status === "unavailable" && portfolio.nfts.length === 0;
+  const nftCollectionCount = nftInventoryUnavailable ? null : portfolio.nfts.length;
+  const nftTokenCount = nftInventoryUnavailable ? null : rawNftTokenCount;
   const walletNativeCount = portfolio.sources.walletNative.status === "unavailable" ? null : rawWalletNativeCount;
   const walletTokenCount = portfolio.sources.walletTokens.status === "unavailable" ? null : rawWalletTokenCount;
   const walletEntryCount = walletNativeCount === null || walletTokenCount === null
@@ -334,7 +336,7 @@ export default async function AssetListPage() {
               </div>
             </div>
 
-            {portfolio.sources.nfts.status === "unavailable" ? (
+            {nftInventoryUnavailable ? (
               <div className="asset-empty-state is-unavailable">
                 <span className="asset-empty-code">NFT / —</span>
                 <div>
