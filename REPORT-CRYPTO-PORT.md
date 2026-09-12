@@ -216,8 +216,19 @@ Server: `npm run start -- --hostname 127.0.0.1 --port 38151` with `T212_API_KEY`
 `unavailable`) and no `OPENSEA_API_KEY` (NFT source `unavailable`, expected).
 
 ```
-UI_CONTRACT_FINAL_SUMMARY
+PASS | UI contract summary — 503/503 checks passed     (exit 0, frozen commit d31e308, uncontended run)
+
+including
+PASS | desktop/mobile home allocation remains value-based even when P&L is unavailable — {"keys":["t212","crypto"],"allocation":["Stocks Port—Share unavailable · —P&L (recorded): — · 0 eligible","Crypto Port—Share unavailable · —P&L (recorded): — · 0 eligible"]}
+PASS | Mascot resting/occlusion summary — 10/10 checks passed at 1440×1000 and 390×844
+PASS | Mascot DOM assertion summary — 50/50
+PASS | Mascot 3D/video fallback summary — 65/65
+PASS | Mascot contract summary — 126/126
 ```
+
+Baseline context: no assertion was dropped — the loop/label/cardinality checks above were repointed in place,
+and the same five blocks (home, asset-list, portfolio, capital fixtures, dust fixtures) still run at both
+viewports. Run history for the one flaky assertion is in §9 flag 2.
 
 **Harness checks that needed updating:** the 9 listed in §5 (all label/key/cardinality assertions keyed to the
 old five-row model). Note the one-off failure in the first run is a documented timing flake, see §9.
@@ -265,14 +276,25 @@ value never becomes `0` and never hides the recorded subset.
    Second-order: with cash inside Stocks Port, "Stocks Port" is the whole T212 account rather than only
    securities; the asset-list KPI 02 `CASH AVAILABLE` still breaks the cash out separately, so the number is
    recoverable on that page.
-2. **One harness run failed once on a known mascot timing flake.** First full run: `502/503`, the only failure
-   being `desktop mascot fixture DOM new mood restarts a finite transient bubble without expanding —
-   page.waitForFunction: Timeout 20000ms exceeded`; the identical mobile assertion passed in the same run, and
-   `STATUS.md` records the same assertion family flaking before this change. The mascot implementation,
-   `lib/mascot*.ts`, `app/mascot-*`, and every mascot contract in the harness are byte-identical to `main`
-   (proved by hash), so this change cannot have caused it. A second harness attempt was invalidated by my own
-   concurrent `npm run build` overwriting `.next` under the running server (500s on server-rendered routes) —
-   that invalidated run is a harness-operator error, not a product defect. The clean final run's totals are in §8.
+2. **One mascot assertion is flaky on this host: `DOM new mood restarts a finite transient bubble without
+   expanding` (`page.waitForFunction: Timeout 20000ms exceeded`).** Five harness runs were attempted, four valid:
+
+   | run | tree | host load | result |
+   |---|---|---|---|
+   | A | pre-review-fix | concurrent builds | `502/503` — desktop viewport failed this assertion |
+   | B | — | concurrent `npm run build` under the live server | invalid (server-rendered routes 500'd); discarded |
+   | C | post-fix, pre-freeze | moderate | `503/503` |
+   | D | frozen `d31e308` | concurrent build + push | `502/503` — **mobile** viewport failed the same assertion |
+   | E | frozen `d31e308` | quiet | `503/503` exit 0 |
+
+   The failure moves between viewports and disappears on a quiet re-run, which is the signature of a timing flake
+   in a bubble that self-expires while the assertion polls. It cannot be caused by this change: `app/mascot-*`,
+   `lib/mascot*.ts`, every mascot asset and every mascot assertion body are byte-identical to `main` (SHA-proved,
+   §6); the only harness line I touched inside the mascot section is the class-legend cardinality 5 → 2, and that
+   check (`DOM resting occlusion leaves home class legend visible and hittable`) passed 10/10 in every run,
+   including both failing runs. `STATUS.md` also records this assertion family flaking before today. I did not
+   raise the 20 s timeout or weaken the assertion: the honest state is a known flake at roughly 1-in-2 loaded
+   runs, and a reviewer may want it hardened separately.
 3. **The ฿ figures in the class legend now depend on the manual-cash ledger being readable.** With the pot
    inside Stocks Port, a DB outage makes the whole Stocks Port row `—` (previously only the `cash` row went
    `—`). That is the honest outcome chosen over showing a partial account value, but it is a wider blast radius
