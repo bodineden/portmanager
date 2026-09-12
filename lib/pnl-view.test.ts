@@ -6,7 +6,7 @@ import type { PortfolioSnapshot } from "./pnl-history";
 import {
   basisChip, calendarDays, coverageLabel, dailyChange, eligibilityLabel, formatCalendarUsd, formatHoldingQuantity,
   formatPnlMoney, formatPnlPercent, formatSnapshotAsOf, formatViewThb, formatViewUsd,
-  historyLineSegments, historyPeriodRows, snapshotFiatUsd, valueAllocation,
+  historyLineSegments, historyPeriodRows, snapshotFiatUsd, valueAllocation, allocationPnl,
 } from "./pnl-view";
 
 const DATE = "2026-09-05T12:00:00.000Z";
@@ -105,10 +105,12 @@ describe("snapshot currency and value allocation", () => {
     const portfolio = book();
     expect(portfolio.totals.pnlUsd).toBeNull();
     const allocation = valueAllocation(portfolio);
-    expect(allocation.map(({ key }) => key)).toEqual(["t212", "cash", "nfts", "walletNative", "walletTokens"]);
-    expect(allocation.map(({ valueUsd }) => valueUsd)).toEqual([0, 608.75, 480, 600, 0]);
+    expect(allocation.map(({ key }) => key)).toEqual(["t212", "crypto"]);
+    expect(allocation.map(({ label }) => label)).toEqual(["Stocks Port", "Crypto Port"]);
+    expect(allocation.map(({ valueUsd }) => valueUsd)).toEqual([608.75, 1080]);
+    expect(allocation[1].valueThb).toBe(38_880);
     expect(allocation.reduce((sum, { sharePct }) => sum + sharePct!, 0)).toBeCloseTo(100);
-    expect(allocation[1].valueThb).toBe(21_915);
+    expect(allocation[0].valueThb).toBe(21_915);
   });
 
   it("keeps suppressed values in every class allocation and the authoritative account remainder", () => {
@@ -133,13 +135,13 @@ describe("snapshot currency and value allocation", () => {
     expect(portfolio.t212.totalValue).toBe(101.5);
     expect(portfolio.t212.investmentsCurrentValue).toBe(1.5);
     expect(portfolio.totals.t212Thb).toBe(3_654);
-    expect(allocation.map(({ valueUsd }) => valueUsd)).toEqual([1.5, 100, 0.5, 0.5, 0.5]);
+    expect(allocation.map(({ valueUsd }) => valueUsd)).toEqual([101.5, 1.5]);
     for (const rows of [portfolio.nfts, portfolio.wallet.native, portfolio.wallet.tokens]) {
       expect(rows.map((row) => row.valueUsd)).toEqual([0.5]);
       expect(rows.filter((row) => !shouldSuppressHolding(row))).toHaveLength(0);
     }
     expect(portfolio.totals.grandTotalUsd).toBe(103);
-    expect(allocation[0].valueThb).toBe(54);
+    expect(allocation[0].valueThb).toBe(3_654);
     expect(allocation.reduce((sum, { valueUsd }) => sum + valueUsd!, 0)).toBe(portfolio.totals.grandTotalUsd);
     expect(allocation.reduce((sum, { sharePct }) => sum + sharePct!, 0)).toBeCloseTo(100);
   });
@@ -155,8 +157,8 @@ describe("snapshot currency and value allocation", () => {
       nfts: live([]), walletNative: live([]), walletTokens: live([]), fiatFx: live(fx), ethPrice: live(2_400),
     }, DATE);
     const allocation = valueAllocation(portfolio);
-    expect(allocation.map(({ valueUsd }) => valueUsd)).toEqual([150, 10, 0, 0, 0]);
-    expect(allocation.map(({ valueThb }) => valueThb)).toEqual([5_400, 360, 0, 0, 0]);
+    expect(allocation.map(({ valueUsd }) => valueUsd)).toEqual([160, 0]);
+    expect(allocation.map(({ valueThb }) => valueThb)).toEqual([5_760, 0]);
     expect(allocation.reduce((sum, { valueUsd }) => sum + valueUsd!, 0)).toBe(160);
     expect(allocation.reduce((sum, { valueUsd }) => sum + valueUsd!, 0)).toBe(portfolio.totals.grandTotalUsd);
     expect(allocation.reduce((sum, { sharePct }) => sum + sharePct!, 0)).toBeCloseTo(100);
@@ -166,7 +168,7 @@ describe("snapshot currency and value allocation", () => {
     const portfolio = book();
     portfolio.totals.walletTokensUsd = null;
     const partial = valueAllocation(portfolio);
-    expect(partial.find(({ key }) => key === "walletTokens")!.valueUsd).toBeNull();
+    expect(partial.find(({ key }) => key === "crypto")!.valueUsd).toBeNull();
     expect(partial.every(({ sharePct }) => sharePct === null)).toBe(true);
     portfolio.totals.walletTokensUsd = 0;
     portfolio.totals.walletNativeUsd = 0;
@@ -177,13 +179,104 @@ describe("snapshot currency and value allocation", () => {
     expect(valueAllocation(portfolio).every(({ sharePct }) => sharePct === null)).toBe(true);
   });
 
+  it("merges recorded crypto P&L and every coverage bucket without changing the internal book", () => {
+    const portfolio = book();
+    const classes = portfolio.totals.pnlByClass;
+    Object.assign(classes.nfts, { pnlUsd: 15, costBasisUsd: 50, pnlCoverage: { ...coverage } });
+    Object.assign(classes.walletNative, { pnlUsd: -5, costBasisUsd: 40, pnlCoverage: { ...coverage, unreconciled: 2 } });
+    Object.assign(classes.walletTokens, { pnlUsd: null, costBasisUsd: null, pnlCoverage: { ...coverage, eligible: 0, unpriced: 3 } });
+    // Recorded-subset P&L stays visible even when the full crypto value is unknown.
+    portfolio.totals.walletTokensUsd = null;
+    const before = JSON.stringify(portfolio);
+    expect(allocationPnl(portfolio, "crypto")).toEqual({ pnlUsd: 10, costBasisUsd: 90,
+      pnlCoverage: { totalHoldings: 9, eligible: 2, notRecorded: 3, unreconciled: 2, dust: 3, unpriced: 3, status: "partial", sourcesComplete: true } });
+    expect(allocationPnl(portfolio, "t212")).toEqual(classes.t212);
+    expect(JSON.stringify(portfolio)).toBe(before);
+  });
+
+  it.each(["nfts", "walletNative", "walletTokens"] as const)("requires the %s subtotal separately for each currency", (key) => {
+    for (const currency of ["Usd", "Thb"] as const) {
+      const portfolio = book();
+      portfolio.totals[`${key}${currency}`] = null;
+      const crypto = valueAllocation(portfolio)[1];
+      expect(crypto[`value${currency}`]).toBeNull();
+      expect(formatViewUsd(crypto[`value${currency}`])).toBe("—");
+      expect(crypto[currency === "Usd" ? "valueThb" : "valueUsd"]).not.toBeNull();
+      if (currency === "Usd") expect(valueAllocation(portfolio).every((row) => row.sharePct === null)).toBe(true);
+    }
+  });
+
+  it("keeps all-unknown recorded crypto amounts null and known zero distinct", () => {
+    const portfolio = book();
+    for (const summary of Object.values(portfolio.totals.pnlByClass)) {
+      summary.pnlUsd = null;
+      summary.costBasisUsd = null;
+      summary.pnlCoverage.sourcesComplete = false;
+    }
+    expect(allocationPnl(portfolio, "crypto")).toMatchObject({ pnlUsd: null, costBasisUsd: null, pnlCoverage: { sourcesComplete: false } });
+    portfolio.totals.pnlByClass.walletTokens.pnlUsd = 0;
+    portfolio.totals.pnlByClass.walletTokens.costBasisUsd = 0;
+    expect(allocationPnl(portfolio, "crypto")).toMatchObject({ pnlUsd: 0, costBasisUsd: 0 });
+  });
+
+  it.each(["crypto", "cash"] as const)("does not let a positive sibling mask an invalid negative %s subtotal in allocation shares", (group) => {
+    const portfolio = book();
+    if (group === "crypto") portfolio.totals.walletTokensUsd = -1;
+    else { portfolio.t212.totalValue = 1000; portfolio.totals.manualUsd = -700; }
+    const allocation = valueAllocation(portfolio);
+    expect(allocation.every((row) => row.valueUsd !== null && row.valueUsd > 0)).toBe(true);
+    expect(allocation.every((row) => row.sharePct === null)).toBe(true);
+  });
+
+  it("withholds all shares when a finite constituent sum overflows the merged class value", () => {
+    const portfolio = book();
+    portfolio.totals.nftsUsd = Number.MAX_VALUE;
+    portfolio.totals.walletNativeUsd = Number.MAX_VALUE;
+    const allocation = valueAllocation(portfolio);
+    expect(allocation.find((row) => row.key === "crypto")?.valueUsd).toBeNull();
+    expect(allocation.every((row) => row.sharePct === null)).toBe(true);
+  });
+
+  it("requires both the account remainder and cash constituents for Stocks Port", () => {
+    for (const missing of ["account", "brokerCash", "manualUsd", "manualThb", "remainder"] as const) {
+      const portfolio = book();
+      if (missing === "account") portfolio.t212.totalValue = null;
+      if (missing === "brokerCash") portfolio.t212.cashAvailable = null;
+      if (missing === "manualUsd") portfolio.totals.manualUsd = null;
+      if (missing === "manualThb") portfolio.totals.manualThb = null;
+      if (missing === "remainder") portfolio.t212.totalValue = portfolio.t212.cashAvailable! - 1;
+      const stocks = valueAllocation(portfolio)[0];
+      const unknown = missing === "manualThb" ? stocks.valueThb : stocks.valueUsd;
+      expect(unknown).toBeNull();
+      expect(formatViewUsd(unknown)).toBe("—");
+      if (missing !== "manualThb") expect(valueAllocation(portfolio).every((row) => row.sharePct === null)).toBe(true);
+      // Cash cannot manufacture an eligible holding or recorded P&L.
+      expect(allocationPnl(portfolio, "t212")).toEqual(portfolio.totals.pnlByClass.t212);
+      expect(allocationPnl(portfolio, "t212").pnlCoverage.eligible).toBe(0);
+    }
+  });
+
+  it("withholds shares when one grouped crypto constituent is negative even if a sibling offsets it", () => {
+    for (const key of ["nftsUsd", "walletNativeUsd", "walletTokensUsd"] as const) {
+      const portfolio = book();
+      portfolio.totals[key] = -5;
+      const allocation = valueAllocation(portfolio);
+      expect(allocation.some((row) => row.valueUsd !== null && row.valueUsd >= 0)).toBe(true);
+      expect(allocation.every((row) => row.sharePct === null)).toBe(true);
+    }
+    // A negative account remainder must also stay fail-closed.
+    const portfolio = book();
+    portfolio.t212.totalValue = portfolio.t212.cashAvailable! - 1;
+    expect(valueAllocation(portfolio).every((row) => row.sharePct === null)).toBe(true);
+  });
+
   it("retains a directly known USD account value when its THB FX mirror is unavailable", () => {
     const portfolio = book();
     portfolio.t212.currency = "USD";
     portfolio.t212.totalValue = 487;
     portfolio.totals.t212Thb = null;
     portfolio.fx.usdToThb = null;
-    expect(valueAllocation(portfolio)[1]).toMatchObject({ valueUsd: 487, valueThb: null });
+    expect(valueAllocation(portfolio)[0]).toMatchObject({ valueUsd: 487, valueThb: null });
   });
 });
 

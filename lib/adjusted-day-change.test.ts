@@ -172,10 +172,10 @@ describe("compact snapshot holdings and book columns", () => {
     portfolio.manualHoldings[0].id = "next-report-uuid";
     expect(joinedHoldingsMap(portfolio)).toEqual(map);
   });
-  it("allocates broker cash and manual cash separately from stocks without double counting", () => {
+  it("folds broker cash and manual cash into Stocks Port without double counting", () => {
     const portfolio = book();
     const allocations = valueAllocation(portfolio);
-    expect(allocations.find((row) => row.key === "cash")?.valueThb).toBeCloseTo((2000 + 0.28) * 44.6154, 8);
+    expect(allocations.find((row) => row.key === "t212")?.valueThb).toBeCloseTo(portfolio.totals.t212Thb! + portfolio.totals.manualThb!, 8);
     expect(allocations.reduce((sum, row) => sum + row.valueThb!, 0)).toBeCloseTo(portfolio.totals.grandTotalThb!, 8);
     expect(allocations.reduce((sum, row) => sum + row.sharePct!, 0)).toBeCloseTo(100, 8);
   });

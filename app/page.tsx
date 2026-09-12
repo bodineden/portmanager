@@ -9,7 +9,7 @@ import { PnlAssetTable } from "./pnl-asset-table";
 import { BookPnlMetric } from "./book-pnl-metric";
 import { formatCurrency, formatThb, formatUsd, getJoinedPortfolio, type LiveSourceState } from "@/lib/live-data";
 import { readPortfolioSnapshotHistory } from "@/lib/pnl-history";
-import { coverageLabel, dailyChangeDetails, previousDayHoldings, valueDirection, formatPnlMoney, formatPnlPercent, formatSnapshotAsOf, formatHoldingQuantity, snapshotFiatUsd, valueAllocation } from "@/lib/pnl-view";
+import { coverageLabel, dailyChangeDetails, previousDayHoldings, valueDirection, formatPnlMoney, formatPnlPercent, formatSnapshotAsOf, formatHoldingQuantity, snapshotFiatUsd, valueAllocation, allocationPnl } from "@/lib/pnl-view";
 import { requireSession } from "@/lib/auth";
 import { shouldSuppressHolding } from "@/lib/dust-filter";
 import "./home.css";
@@ -33,7 +33,9 @@ export default async function Home() {
   const { change, reason: changeReason } = dailyChangeDetails(history, portfolio.asOf);
   const dayDirection = valueDirection(change?.usd);
   const valueSourcesComplete = Object.entries(sources).every(([key, source]) => key === "capital" || source.status === "live");
-  const classes = valueAllocation(portfolio);
+  const classes = valueAllocation(portfolio).map((item) => ({
+    ...item, pnl: allocationPnl(portfolio, item.key),
+  }));
   const walletAssetCount = [...wallet.native, ...wallet.tokens].filter((row) => !shouldSuppressHolding(row)).length;
   const positionCount = t212.investments.filter((row) => !shouldSuppressHolding(row)).length;
   const walletTokens = [...wallet.tokens].sort((left, right) => Number(right.priced) - Number(left.priced));
@@ -119,7 +121,7 @@ export default async function Home() {
                 <div><span><i className={`pnl-class-dot is-${item.key}`} />{item.label}</span><strong>{formatUsd(item.valueUsd)}</strong></div>
                 <div className="pnl-allocation-track"><span className={`is-${item.key}`} style={{ width: item.sharePct === null ? "0%" : `${item.sharePct}%` }} /></div>
                 <small>{item.sharePct === null ? "Share unavailable" : `${formatHoldingQuantity(item.sharePct, 1)}% of priced value`} · {formatThb(item.valueThb)}</small>
-                {item.key === "cash" ? <small className="pnl-class-pnl">Value only · no per-asset P&amp;L</small> : <small className="pnl-class-pnl">P&amp;L (recorded): {formatUsd(totals.pnlByClass[item.key].pnlCoverage.eligible > 0 ? totals.pnlByClass[item.key].pnlUsd : null)} · {totals.pnlByClass[item.key].pnlCoverage.eligible} eligible</small>}
+                <small className="pnl-class-pnl">P&amp;L (recorded): {formatUsd(item.pnl.pnlCoverage.eligible > 0 ? item.pnl.pnlUsd : null)} · {item.pnl.pnlCoverage.eligible} eligible</small>
               </div>)}</div>
               <p className="pnl-panel-note">Shares describe current class values; shares are unavailable when a class has no known subtotal.</p>
             </section>

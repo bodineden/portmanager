@@ -19,7 +19,10 @@ export async function auditCapitalFixtures(browser, url, viewport, check) {
       const hero = await page.locator(".pnl-hero-value").innerText();
       const expected = new Intl.NumberFormat("en-GB", { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 2 }).format((2000 + 9.62) * 44.6154 / 33.003871);
       assert(hero === expected, `full book hero ${hero} differs from ${expected}`);
-      assert(await page.locator(".pnl-class-values [data-value-class]").count() === 5, "cash allocation class missing");
+      assert(await page.locator(".pnl-class-values [data-value-class]").count() === 2, "allocation must contain exactly two grouped classes");
+      assert(await page.locator('[data-value-class="t212"] strong').innerText() === expected, "Stocks Port omits or double counts broker/manual cash");
+      assert(await page.locator('[data-value-class="cash"]').count() === 0, "cash must be included in Stocks Port, not a separate class");
+      assert(await page.locator('[data-value-class="crypto"] small').innerText() === "Crypto Port", "Crypto Port class missing");
       return "THB 120000 opening basis · full GBP 2000 pot included · book USD/THB/%";
     });
     await check(`${prefix} manual cash is value-only with no fabricated basis or P&L`, async () => {

@@ -5,15 +5,13 @@ import { deriveMascotState } from "@/lib/mascot";
 import { readPortfolioSnapshotHistory } from "@/lib/pnl-history";
 import { isNeonConfigured, listPortfolioValueSeries, type PortfolioValuePoint } from "@/lib/assets-db";
 import {
-  formatCurrency,
-  formatEth,
   formatThb,
   formatUsd,
   getJoinedPortfolio,
 } from "@/lib/live-data";
 import { PortfolioChart } from "./portfolio-chart";
 import "./portfolio.css";
-import { snapshotFiatUsd } from "@/lib/pnl-view";
+import { valueAllocation } from "@/lib/pnl-view";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -70,6 +68,7 @@ export default async function PortfolioPage() {
   const { available: snapshotHistoryAvailable } = await readPortfolioSnapshotHistory();
   const mascot = deriveMascotState({ ...portfolio, snapshotHistoryAvailable }, new Date());
 
+  const [stocks, crypto] = valueAllocation(portfolio);
   const liveDate = portfolio.asOf.slice(0, 10);
   // The database helper includes today. Its retired holdings are not the joined
   // live portfolio, so keep only dates strictly before the live snapshot date.
@@ -98,7 +97,7 @@ export default async function PortfolioPage() {
           <div className="page-title-group">
             <p className="eyebrow">READ-ONLY ANALYTICS / LIVE PORTFOLIO</p>
             <h1 className="page-title">Portfolio Value</h1>
-            <p className="page-subtitle">Live T212, NFT and wallet value, with the legacy series retained as separate historical context</p>
+            <p className="page-subtitle">Live Stocks Port and Crypto Port value, with the legacy series retained as separate historical context</p>
           </div>
           <div className="header-tools">
             <span className={`header-status ${liveValueAvailable && valueSourcesComplete ? "" : "is-partial"}`}>
@@ -119,18 +118,16 @@ export default async function PortfolioPage() {
               {liveValueAvailable && !valueSourcesComplete && <small>Known priced subtotal; source coverage is incomplete.</small>}
             </article>
             <article className="portfolio-kpi-card">
-              <span className="metric-index">02 / T212 LIVE</span>
-              <span className="metric-label">Account Total</span>
-              <strong className="metric-value">{formatUsd(snapshotFiatUsd(portfolio.t212.totalValue, portfolio.t212.currency, portfolio.fx))}</strong>
-              <small>
-                {formatThb(portfolio.totals.t212Thb)} · {formatCurrency(portfolio.t212.totalValue, portfolio.t212.currency)} in account
-              </small>
+              <span className="metric-index">02 / Stocks Port</span>
+              <span className="metric-label">Current Value</span>
+              <strong className="metric-value">{formatUsd(stocks.valueUsd)}</strong>
+              <small>{formatThb(stocks.valueThb)}</small>
             </article>
             <article className="portfolio-kpi-card">
-              <span className="metric-index">03 / NFT LIVE</span>
-              <span className="metric-label">Wallet Floor Value</span>
-              <strong className="metric-value">{formatUsd(portfolio.totals.nftsUsd)}</strong>
-              <small>{formatThb(portfolio.totals.nftsThb)} · {formatEth(portfolio.totals.nftsEth)}</small>
+              <span className="metric-index">03 / Crypto Port</span>
+              <span className="metric-label">Current Value</span>
+              <strong className="metric-value">{formatUsd(crypto.valueUsd)}</strong>
+              <small>{formatThb(crypto.valueThb)}</small>
             </article>
             <article className="portfolio-kpi-card legacy-edge">
               <span className="metric-index">04 / LEGACY CONTEXT</span>
@@ -177,7 +174,7 @@ export default async function PortfolioPage() {
                       <span className="ledger-date">{shortDate(liveDate)}</span>
                       <small>{formatAsOf(portfolio.asOf)} UTC</small>
                     </td>
-                    <td><span className="coverage-primary">T212 + NFT + wallet</span><small>Current live snapshot</small></td>
+                    <td><span className="coverage-primary">Stocks Port + Crypto Port</span><small>Current live snapshot</small></td>
                     <td className="numeric value-cell">{formatUsd(portfolio.totals.grandTotalUsd)}<small>{formatThb(portfolio.totals.grandTotalThb)}</small></td>
                     <td className="numeric muted">Not compared</td>
                   </tr>

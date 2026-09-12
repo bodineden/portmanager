@@ -68,6 +68,30 @@ beforeEach(() => vi.stubGlobal("React", React));
 afterEach(() => { vi.unstubAllGlobals(); vi.clearAllMocks(); });
 
 describe("render-only holding suppression", () => {
+  it("groups crypto values and eligible recorded P&L across every class render surface", async () => {
+    const portfolio = displayBoundaryBook();
+    const classes = portfolio.totals.pnlByClass;
+    Object.assign(classes.nfts, { pnlUsd: 2, costBasisUsd: 10, pnlCoverage: { ...classes.nfts.pnlCoverage, eligible: 1 } });
+    Object.assign(classes.walletNative, { pnlUsd: -1, costBasisUsd: 20, pnlCoverage: { ...classes.walletNative.pnlCoverage, eligible: 1 } });
+    const before = JSON.stringify(portfolio);
+    vi.mocked(getJoinedPortfolio).mockResolvedValue(portfolio);
+    const home = renderToStaticMarkup(await Home());
+    const registry = renderToStaticMarkup(await AssetListPage());
+    const portfolioHtml = renderToStaticMarkup(await PortfolioPage());
+    expect(text(home.match(/<section class="panel pnl-allocation">[\s\S]*?<\/section>/)![0]))
+      .toContain("P&L (recorded): US$1.00 · 2 eligible");
+    expect(text(registry)).toContain("Stocks Port and Crypto Port in one live registry");
+    expect(registry).toMatch(/03 \/ Crypto Port<\/span><strong[^>]*>US\$9\.50<\/strong>/);
+    // Stocks Port carries the account remainder plus broker cash and the manual cash pot.
+    expect(registry).toMatch(/01 \/ Stocks Port<\/span><strong[^>]*>US\$101\.75<\/strong><small>฿3,663\.00<\/small>/);
+    expect(text(portfolioHtml)).toContain("02 / Stocks Port Current Value");
+    expect(portfolioHtml).toMatch(/02 \/ Stocks Port<\/span><span[^>]*>Current Value<\/span><strong[^>]*>US\$101\.75<\/strong>/);
+    expect(portfolioHtml).toMatch(/02 \/ Stocks Port[\s\S]*?<small>฿3,663\.00<\/small>/);
+    expect(portfolioHtml).toMatch(/03 \/ Crypto Port<\/span><span[^>]*>Current Value<\/span><strong[^>]*>US\$9\.50<\/strong>/);
+    expect(text(portfolioHtml)).toContain("Stocks Port + Crypto Port");
+    for (const html of [home, registry, portfolioHtml]) expect(html).not.toMatch(/T212 stocks|T212 LIVE|NFT PORT|NFT LIVE/);
+    expect(JSON.stringify(portfolio)).toBe(before);
+  });
   it.each(["all-suppressed", "genuinely-empty"] as const)("uses neutral empty-view copy for %s inventory while preserving full portfolio value and book P&L", async (scenario) => {
     const portfolio = scenario === "all-suppressed" ? dustBook("empty") : buildJoinedPortfolio({
       t212Summary: live({ currency: "USD", cashAvailable: 0, totalValue: 0, investmentsCurrentValue: 0 }),
@@ -179,11 +203,10 @@ describe("render-only holding suppression", () => {
     expect(text(home)).not.toMatch(/all rows|Every joined holding/);
     expect(home).toContain('data-manual-cash="true"');
     expect(home).toContain("Operator cash");
-    expect(home).toMatch(/data-value-class="nfts">[\s\S]*?<strong>US\$1\.50<\/strong>/);
-    expect(home).toMatch(/data-value-class="walletNative">[\s\S]*?<strong>US\$1\.50<\/strong>/);
-    expect(home).toMatch(/data-value-class="walletTokens">[\s\S]*?<strong>US\$6\.50<\/strong>/);
+    expect(home).toMatch(/data-value-class="crypto">[\s\S]*?<strong>US\$9\.50<\/strong>/);
+    expect([...home.matchAll(/data-value-class="([^"]+)"/g)].map((match) => match[1])).toEqual(["t212", "crypto"]);
     expect(registry).toMatch(/id="asset-registry-total"[^>]*>US\$111\.25<\/h2>/);
-    expect(text(registry)).toContain("1 T212 · 1 NFT · 3 wallet assets");
+    expect(text(registry)).toContain("1 Stocks Port · 4 Crypto Port assets");
     expect(text(registry)).toContain("1 POSITIONS");
     expect(text(registry)).toContain("1 COLLECTIONS · 2 TOKENS");
     expect(text(registry)).toContain("3 ASSETS");

@@ -106,12 +106,19 @@ export function snapshotFiatUsd(
 }
 
 export type ValueAllocation = {
-  key: PnlClass | "cash";
+  key: PnlClass | "crypto";
   label: string;
   valueUsd: number | null;
   valueThb: number | null;
   sharePct: number | null;
 };
+
+/** Missing class subtotals must not become a partial whole-class value. */
+function completeValueSum(values: (number | null)[]): number | null {
+  if (!values.every(finite)) return null;
+  const sum = values.reduce<number>((total, value) => total + value!, 0);
+  return finite(sum) ? sum : null;
+}
 
 /** Value includes cash and excluded holdings; it never uses P&L subset sums. */
 export function valueAllocation(portfolio: JoinedPortfolio): ValueAllocation[] {
@@ -123,17 +130,43 @@ export function valueAllocation(portfolio: JoinedPortfolio): ValueAllocation[] {
   // Account remainder, not a second sum of positions: account total is authoritative.
   const stocksUsd = finite(accountUsd) && finite(brokerCashUsd) && accountUsd >= brokerCashUsd ? accountUsd - brokerCashUsd : null;
   const stocksThb = finite(totals.t212Thb) && finite(brokerCashThb) && totals.t212Thb >= brokerCashThb ? totals.t212Thb - brokerCashThb : null;
+  const cashUsd = completeValueSum([brokerCashUsd, totals.manualUsd]);
+  const cashThb = completeValueSum([brokerCashThb, totals.manualThb]);
   const values: Omit<ValueAllocation, "sharePct">[] = [
-    { key: "t212", label: "T212 stocks", valueUsd: stocksUsd, valueThb: stocksThb },
-    { key: "cash", label: "Cash", valueUsd: finite(brokerCashUsd) && finite(totals.manualUsd) ? brokerCashUsd + totals.manualUsd : null,
-      valueThb: finite(brokerCashThb) && finite(totals.manualThb) ? brokerCashThb + totals.manualThb : null },
-    { key: "nfts", label: "NFTs", valueUsd: totals.nftsUsd, valueThb: totals.nftsThb },
-    { key: "walletNative", label: "Wallet native", valueUsd: totals.walletNativeUsd, valueThb: totals.walletNativeThb },
-    { key: "walletTokens", label: "Wallet tokens", valueUsd: totals.walletTokensUsd, valueThb: totals.walletTokensThb },
+    { key: "t212", label: "Stocks Port",
+      valueUsd: completeValueSum([stocksUsd, cashUsd]), valueThb: completeValueSum([stocksThb, cashThb]) },
+    { key: "crypto", label: "Crypto Port",
+      valueUsd: completeValueSum([totals.nftsUsd, totals.walletNativeUsd, totals.walletTokensUsd]),
+      valueThb: completeValueSum([totals.nftsThb, totals.walletNativeThb, totals.walletTokensThb]) },
   ];
-  const complete = values.every(({ valueUsd }) => finite(valueUsd) && valueUsd >= 0);
+  // Every constituent class stays individually fail-closed: a negative subtotal must
+  // never be masked by a positive sibling before shares are derived.
+  const complete = [stocksUsd, cashUsd, totals.nftsUsd, totals.walletNativeUsd, totals.walletTokensUsd]
+    .every((value) => finite(value) && value >= 0)
+    && values.every(({ valueUsd }) => finite(valueUsd) && valueUsd >= 0);
   const sum = complete ? values.reduce((total, { valueUsd }) => total + valueUsd!, 0) : null;
   return values.map((value) => ({ ...value, sharePct: finite(sum) && sum > 0 ? value.valueUsd! / sum * 100 : null }));
+}
+
+/** Display grouping only: recorded-subset sums are independent of value completeness. */
+export function allocationPnl(portfolio: JoinedPortfolio, key: ValueAllocation["key"]) {
+  // Cash contributes value only: no recorded basis, P&L or eligible holdings.
+  if (key !== "crypto") return portfolio.totals.pnlByClass[key];
+  const classes = ["nfts", "walletNative", "walletTokens"] as const;
+  const summaries = classes.map((name) => portfolio.totals.pnlByClass[name]);
+  const recordedSum = (field: "pnlUsd" | "costBasisUsd") => {
+    const known = summaries.map((summary) => summary[field]).filter(finite);
+    return known.length ? completeValueSum(known) : null;
+  };
+  const count = (field: "totalHoldings" | "eligible" | "notRecorded" | "unreconciled" | "dust" | "unpriced") =>
+    summaries.reduce((sum, summary) => sum + summary.pnlCoverage[field], 0);
+  const pnlCoverage: PnlCoverage = {
+    totalHoldings: count("totalHoldings"), eligible: count("eligible"), notRecorded: count("notRecorded"),
+    unreconciled: count("unreconciled"), dust: count("dust"), unpriced: count("unpriced"),
+    status: summaries.every((summary) => summary.pnlCoverage.status === "complete") ? "complete" : "partial",
+    sourcesComplete: summaries.every((summary) => summary.pnlCoverage.sourcesComplete),
+  };
+  return { pnlUsd: recordedSum("pnlUsd"), costBasisUsd: recordedSum("costBasisUsd"), pnlCoverage };
 }
 
 function utcDate(value: string): string | null {

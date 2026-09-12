@@ -15,7 +15,7 @@ import {
   type SourceStatus,
 } from "@/lib/live-data";
 import "./asset-list.css";
-import { snapshotFiatUsd } from "@/lib/pnl-view";
+import { snapshotFiatUsd, valueAllocation } from "@/lib/pnl-view";
 import { shouldSuppressHolding } from "@/lib/dust-filter";
 
 export const dynamic = "force-dynamic";
@@ -94,6 +94,7 @@ export default async function AssetListPage() {
     valueThb: formatThb(holding.valueThb),
     priced: holding.priced,
   }));
+  const [stocks, crypto] = valueAllocation(portfolio);
   const positionCount = positions.length;
   const nftInventoryUnavailable = portfolio.sources.nfts.status === "unavailable";
   const nftCollectionCount = nfts.length;
@@ -127,7 +128,7 @@ export default async function AssetListPage() {
           <div className="page-title-group">
             <p className="eyebrow">LIVE PORTFOLIO / READ-ONLY REGISTRY</p>
             <h1 className="page-title">Asset List</h1>
-            <p className="page-subtitle">Trading 212, NFTs, native coin, and ERC-20 tokens in one live registry</p>
+            <p className="page-subtitle">Stocks Port and Crypto Port in one live registry</p>
           </div>
           <div className="header-tools">
             <span className="header-meta">
@@ -154,9 +155,9 @@ export default async function AssetListPage() {
 
           <section className="asset-registry-kpis" aria-label="Live registry summary">
             <article className="panel asset-registry-kpi is-primary">
-              <span className="asset-kpi-index">01 / T212 ACCOUNT</span>
-              <strong className="numeric">{formatUsd(snapshotFiatUsd(portfolio.t212.totalValue, accountCurrency, portfolio.fx))}</strong>
-              <small>{formatThb(portfolio.totals.t212Thb)} · {formatCurrency(portfolio.t212.totalValue, accountCurrency)} in account</small>
+              <span className="asset-kpi-index">01 / Stocks Port</span>
+              <strong className="numeric">{formatUsd(stocks.valueUsd)}</strong>
+              <small>{formatThb(stocks.valueThb)}</small>
             </article>
             <article className="panel asset-registry-kpi">
               <span className="asset-kpi-index">02 / CASH AVAILABLE</span>
@@ -164,14 +165,14 @@ export default async function AssetListPage() {
               <small>{formatCurrency(portfolio.t212.cashAvailable, accountCurrency)} in account · cash has no P&L</small>
             </article>
             <article className="panel asset-registry-kpi">
-              <span className="asset-kpi-index">03 / NFT PORT</span>
-              <strong className="numeric">{formatUsd(portfolio.totals.nftsUsd)}</strong>
-              <small>{formatThb(portfolio.totals.nftsThb)} · {formatEth(portfolio.totals.nftsEth)}</small>
+              <span className="asset-kpi-index">03 / Crypto Port</span>
+              <strong className="numeric">{formatUsd(crypto.valueUsd)}</strong>
+              <small>{formatThb(crypto.valueThb)}</small>
             </article>
             <article className="panel asset-registry-kpi">
               <span className="asset-kpi-index">04 / LIVE REGISTRY</span>
               <strong className="numeric">{formatCount(liveEntryCount)}</strong>
-              <small>{formatCount(positionCount)} T212 · {formatCount(nftCollectionCount)} NFT · {formatCount(walletEntryCount)} wallet assets</small>
+              <small>{formatCount(positionCount)} Stocks Port · {formatCount(nftCollectionCount + walletEntryCount)} Crypto Port assets</small>
             </article>
           </section>
 

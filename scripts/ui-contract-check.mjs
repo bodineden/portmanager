@@ -449,10 +449,15 @@ async function checkPnlContract(page) {
     const allocation = page.locator(".pnl-allocation");
     const text = compactText((await allocation.textContent()) ?? "");
     requireCondition(/Allocation by class/i.test(text), "value allocation title is missing");
-    for (const label of ["T212", "NFT", "native", "tokens"]) {
+    for (const label of ["Stocks Port", "Crypto Port"]) {
       requireCondition(new RegExp(label, "i").test(text), `allocation class ${label} is missing`);
     }
     requireCondition(/value|USD/i.test(text), "allocation is not identified as current value");
+    const labels = await allocation.locator(".pnl-allocation-item > div:first-child > span").allTextContents();
+    requireCondition(JSON.stringify(labels.map(compactText)) === JSON.stringify(["Stocks Port", "Crypto Port"]), "allocation must contain exactly the two grouped classes in order");
+    const keys = await page.locator("[data-value-class]").evaluateAll((rows) => rows.map((row) => row.dataset.valueClass));
+    requireCondition(JSON.stringify(keys) === JSON.stringify(["t212", "crypto"]), "value-class keys must be exactly t212/crypto");
+    return JSON.stringify({ keys, allocation: await allocation.locator(".pnl-allocation-item").allTextContents() });
   });
 
   await check("home calendar displays recorded coverage or an honest empty month", async () => {
@@ -530,7 +535,7 @@ async function checkHomeContract(page) {
       return Boolean(secondary && (element.compareDocumentPosition(secondary) & Node.DOCUMENT_POSITION_FOLLOWING));
     });
     requireCondition(usdFirst, "THB precedes USD in the value hero");
-    for (const label of ["T212", "NFT", "native", "tokens"]) {
+    for (const label of ["Stocks Port", "Crypto Port"]) {
       requireCondition(new RegExp(label, "i").test(text), `class mini-value ${label} is missing`);
     }
     const strip = page.locator(".pnl-metric-strip");
@@ -638,8 +643,9 @@ async function checkAssetWalletContract(page) {
     const rowsBefore = await panel.locator("tr[data-wallet-kind]").allTextContents();
     const totalsBefore = await panel.locator("tfoot").allTextContents();
     const summary = compactText((await page.locator(".asset-registry-kpi").last().textContent()) ?? "");
-    const match = summary.match(/([\d,]+)\s+wallet assets?\b/i);
-    requireCondition(match && parseGroupedCount(match[1], "registry wallet count") === rowCount, "registry wallet summary differs from displayed rows");
+    const match = summary.match(/([\d,]+)\s+Crypto Port assets?\b/i);
+    const nftCount = await page.locator(".asset-nft-table tbody tr").count();
+    requireCondition(match && parseGroupedCount(match[1], "registry crypto count") === rowCount + nftCount, "registry crypto summary differs from displayed NFT and wallet rows");
     requireCondition(compactText((await panel.locator(".asset-wallet-count .panel-count").textContent()) ?? "") === `${rowCount} ASSETS`, "registry header differs from displayed rows");
     await assertWalletRows(panel, 5);
     await assertWalletTotals(panel, 5, 6, await readWalletInventoryExpectation(page));
@@ -1635,7 +1641,7 @@ async function auditDustFixtures(browser, fixtureUrl, viewport) {
             requireCondition(compactText(await nfts.locator(".panel-count").innerText()) === `${collections} COLLECTIONS · ${tokens} TOKENS`, "NFT header counts suppressed collections/tokens");
             const summary = page.locator(".asset-registry-kpi").last();
             requireCondition(compactText(await summary.locator("strong").innerText()) === String(positions + collections + walletCount), "registry grand entry count differs from DOM");
-            requireCondition(compactText(await summary.locator("small").innerText()) === `${positions} T212 · ${collections} NFT · ${walletCount} wallet assets`, "registry class summary differs from displayed rows");
+            requireCondition(compactText(await summary.locator("small").innerText()) === `${positions} Stocks Port · ${collections + walletCount} Crypto Port assets`, "registry class summary differs from displayed rows");
           }
           if (walletCount === 0) {
             requireCondition(compactText(await wallet.locator(surface === "home" ? ".home-empty strong" : ".asset-empty-state strong").innerText()) === "No wallet holdings to display in this snapshot.", "neutral wallet empty copy changed");
@@ -1697,11 +1703,11 @@ async function auditDustFixtures(browser, fixtureUrl, viewport) {
             requireCondition(portfolio.sources.nfts.status === (scenario === "inventory" ? "partial" : "live"), "NFT status conflates incomplete inventory and missing individual price");
             requireCondition(portfolio.totals.pnlCoverage.status === (scenario === "inventory" ? "partial" : "complete"), "suppression caused partial P&L or inventory incompleteness disappeared");
             if (surface === "home") {
-              for (const [key, value] of [["t212", 1.999], ["cash", 0.25], ["nfts", 1.999], ["walletNative", 1.999], ["walletTokens", 1.999]]) {
+              for (const [key, value] of [["t212", 1.999 + 0.25], ["crypto", 1.999 * 3]]) {
                 requireCondition(compactText(await page.locator(`[data-value-class="${key}"] strong`).innerText()) === expectedUsd(value), `${key} class value differs from full joined holdings`);
               }
               const allocationValues = await page.locator(".pnl-allocation-item > div:first-child > strong").allTextContents();
-              requireCondition(JSON.stringify(allocationValues.map(compactText)) === JSON.stringify([1.999, 0.25, 1.999, 1.999, 1.999].map(expectedUsd)), "allocation values differ from full joined class sums");
+              requireCondition(JSON.stringify(allocationValues.map(compactText)) === JSON.stringify([1.999 + 0.25, 1.999 * 3].map(expectedUsd)), "allocation values differ from full joined class sums");
             }
             return "$8.246 / ฿296.856 hero/book = $4.25 displayed + four $0.999 holdings ($3.996 < $4); all 13 recording identities retained";
           } else if (scenario === "empty") {
@@ -1752,7 +1758,7 @@ async function auditDustFixtures(browser, fixtureUrl, viewport) {
               for (const key of [...unavailableClasses, ethOutage ? "ethPrice" : "fiatFx"]) {
                 requireCondition(compactText(await page.locator(`[data-source-key="${key}"] .live-source-badge`).innerText()) === "unavailable", `${key} failed dependency is missing its unavailable source badge`);
               }
-              for (const key of ethOutage ? ["nfts", "walletNative"] : ["t212", "nfts", "walletNative", "walletTokens"]) {
+              for (const key of ethOutage ? ["crypto"] : ["t212", "crypto"]) {
                 const valueClass = page.locator(`[data-value-class="${key}"]`);
                 requireCondition(compactText(await valueClass.locator(":scope > span:last-child").innerText()) === "—", `${key} renders a zero THB class subtotal`);
                 if (ethOutage) requireCondition(compactText(await valueClass.locator("strong").innerText()) === "—", `${key} renders a zero USD class subtotal`);
@@ -2346,9 +2352,9 @@ async function auditMascotInteractions(browser, viewport) {
     });
     await check(`${prefix} DOM resting occlusion leaves home class legend visible and hittable`, async () => {
       await assertMascotResting(page);
-      requireCondition(await page.locator(".pnl-class-values [data-value-class]").count() === 5, "home class legend does not contain its five classes including cash");
-      for (const key of ["t212", "cash", "nfts", "walletNative", "walletTokens"]) requireCondition(await page.locator(`.pnl-class-values [data-value-class="${key}"]`).count() === 1, `missing or duplicate value class ${key}`);
-      return assertHomeMascotOcclusion(page, ".pnl-class-values [data-value-class] > small, .pnl-class-values [data-value-class] > strong, .pnl-class-values [data-value-class] > span:not(.pnl-class-dot)", "five-class legend labels and USD/THB values");
+      requireCondition(await page.locator(".pnl-class-values [data-value-class]").count() === 2, "home class legend does not contain exactly Stocks Port and Crypto Port");
+      for (const key of ["t212", "crypto"]) requireCondition(await page.locator(`.pnl-class-values [data-value-class="${key}"]`).count() === 1, `missing or duplicate value class ${key}`);
+      return assertHomeMascotOcclusion(page, ".pnl-class-values [data-value-class] > small, .pnl-class-values [data-value-class] > strong, .pnl-class-values [data-value-class] > span:not(.pnl-class-dot)", "two-class legend labels and USD/THB values");
     });
     await check(`${prefix} DOM WebGL 3D click expands the live viewer; panel stays expanded`, async () => {
       await page.locator("[data-mascot-toggle]").click();
