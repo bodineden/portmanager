@@ -11,6 +11,7 @@ import { aggregatePnl, deriveOnchainPnl, deriveT212Pnl, type AcquisitionEvidence
 import { isNeonConfigured } from "./assets-db";
 import { calculateBookPnl, latestManualHoldings, sumContributedCapital, type BookCapital, type BookPnl, type CapitalEvent, type ManualHoldingReport } from "./capital";
 import { ensureLedgerSchema, readCapitalEvents, readManualHoldings } from "./capital-db";
+import { readBasisEvidence } from "./basis-db";
 import { recordPortfolioSnapshot } from "./pnl-history";
 import { shouldSuppressHolding } from "./dust-filter";
 
@@ -1350,7 +1351,7 @@ let snapshotGeneration = 0;
 async function fetchPortfolioSnapshot(asOf: string): Promise<FetchedPortfolioSnapshot> {
   await ensureLedgerSchema();
   const wallet = process.env.NFT_WALLET || DEFAULT_NFT_WALLET;
-  const [t212, nfts, fiatFx, ethPrice, walletNative, walletTokens, manualHoldings, capitalEvents] = await Promise.all([
+  const [t212, nfts, fiatFx, ethPrice, walletNative, walletTokens, manualHoldings, capitalEvents, basisEvidence] = await Promise.all([
     fetchT212Sources(),
     fetchNftSource(),
     fetchFiatFxSource(),
@@ -1359,6 +1360,7 @@ async function fetchPortfolioSnapshot(asOf: string): Promise<FetchedPortfolioSna
     fetchWalletTokenSource(wallet),
     readManualHoldings(asOf),
     readCapitalEvents(asOf),
+    readBasisEvidence(asOf).catch(() => ({})), // Evidence outages must not break other sources.
   ]);
 
   return {
@@ -1372,6 +1374,7 @@ async function fetchPortfolioSnapshot(asOf: string): Promise<FetchedPortfolioSna
       walletTokens,
       manualHoldings,
       capitalEvents,
+      basisEvidence,
     },
     asOf,
   };
