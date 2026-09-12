@@ -72,7 +72,7 @@ export function coverageLabel(coverage: PnlCoverage): string {
 const BASIS_CHIPS: Record<BasisStatus, { label: BasisStatus; description: string }> = {
   "t212-live": { label: "t212-live", description: "Recorded Trading 212 average cost" },
   "onchain-derived": { label: "onchain-derived", description: "Audited acquisition evidence with historical payment value" },
-  "arrival-priced": { label: "arrival-priced", description: "Funding arrival priced at its arrival-date ETH/USD under the owner rule" },
+  "arrival-priced": { label: "arrival-priced", description: "Funding arrivals priced at their arrival-date ETH/USD, weighted average (owner rule 2026-09-11; convention extended 2026-09-12)" },
   "airdrop-free": { label: "airdrop-free", description: "Verified acquisition with no payment; percentage is unavailable for zero basis" },
   "not-recorded": { label: "not-recorded", description: "Basis not recorded; excluded from recorded P&L" },
 };

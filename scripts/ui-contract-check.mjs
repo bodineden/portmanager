@@ -1628,7 +1628,7 @@ async function auditBasisEvidenceFixtures(browser, fixtureUrl, viewport) {
           requireCondition(text.includes(holding.pnlEligibility === "eligible" ? "Included in recorded P&L" : "Basis not recorded · excluded from P&L"), `${id} eligibility copy changed`);
           if (holding.basisStatus === "arrival-priced") {
             const note = await row.locator(".basis-chip").getAttribute("title");
-            requireCondition(/funding arrival.*arrival-date ETH\/USD under the owner rule/i.test(note ?? ""), "arrival chip fails to distinguish the owner rule from a purchase");
+            requireCondition((note ?? "").includes(": funding arrivals priced at their arrival-date ETH/USD, weighted average (owner rule 2026-09-11; convention extended 2026-09-12); "), "arrival chip fails to state the weighted-average owner convention exactly");
           }
         }
       });

@@ -219,7 +219,10 @@ export function deriveOnchainPnl(holding: OnchainHolding, usdToThb: number | nul
           || ![1, 8453, 42161, 4663].includes(holding.chainId) || !noPayment || lot.acquiredAssetCount !== 1) {
           return unknown("Funding-arrival rule requires native ETH and no payment outflows");
         }
-        const arrivalUsd = historicalPaymentUsd({ assetId: "native", amountRaw: lot.quantityRaw,
+        // Accept the brief's exact DefiLlama coin ID only on this native-arrival path.
+        const arrivalAsset = lot.nativePrice?.assetId === "ethereum:0x0000000000000000000000000000000000000000"
+          ? lot.nativePrice.assetId : "native";
+        const arrivalUsd = historicalPaymentUsd({ assetId: arrivalAsset, amountRaw: lot.quantityRaw,
           decimals: 18, historicalPrice: lot.nativePrice }, lot.acquiredAt);
         if (arrivalUsd === null) return unknown("No historical ETH/USD price at funding arrival");
         basis += arrivalUsd;
@@ -245,7 +248,7 @@ export function deriveOnchainPnl(holding: OnchainHolding, usdToThb: number | nul
     }
     if (quantity !== rawUnits(holding.quantityRaw)) return unknown("Acquisitions do not account for the entire current holding");
     return recorded(basis, holding.valueUsd! - basis, arrivalPriced ? "arrival-priced" : purchased ? "onchain-derived" : "airdrop-free",
-      `${evidence.source}: ${arrivalPriced ? "funding arrival priced at arrival-date ETH/USD under the owner rule" : purchased ? "clean purchase; historical USD payment price" : "verified mint/claim/airdrop — no payment leg"}; ${evidence.lots.length} acquisition(s); ${evidence.lots[0].acquiredAt.slice(0, 10)}`, usdToThb);
+      `${evidence.source}: ${arrivalPriced ? "funding arrivals priced at their arrival-date ETH/USD, weighted average (owner rule 2026-09-11; convention extended 2026-09-12)" : purchased ? "clean purchase; historical USD payment price" : "verified mint/claim/airdrop — no payment leg"}; ${evidence.lots.length} acquisition(s); ${evidence.lots[0].acquiredAt.slice(0, 10)}`, usdToThb);
   } catch {
     return unknown("Acquisition derivation failed; invalid evidence");
   }

@@ -37,6 +37,18 @@ const purchaseEvidence = (): pnl.AcquisitionEvidence => {
 };
 
 describe("on-chain conservative classification", () => {
+  it("consumes the exact WAC lot coin ID and labels the declared convention precisely", () => {
+    const holding = { kind: "native" as const, chainId: 4663, assetId: "native", decimals: 18,
+      quantityRaw: "100000000000000000", valueUsd: 250, asOf: AS_OF };
+    const evidence: pnl.AcquisitionEvidence = { source: "rpc", chainId: 4663, assetId: "native", decimals: 18,
+      complete: true, hasDisposals: false, lots: [{ ...freeEvidence().lots[0], quantityRaw: holding.quantityRaw,
+        operation: "funding-arrival", nativePrice: { provider: "defillama-historical",
+          assetId: "ethereum:0x0000000000000000000000000000000000000000", timestamp: "2026-06-01T12:00:00.000Z", priceUsd: 2000 } }] };
+    expect(pnl.deriveOnchainPnl(holding, 36, evidence)).toMatchObject({ costBasisUsd: 200, basisStatus: "arrival-priced",
+      pnlEligibility: "eligible", basisNote: "rpc: funding arrivals priced at their arrival-date ETH/USD, weighted average (owner rule 2026-09-11; convention extended 2026-09-12); 1 acquisition(s); 2026-06-01" });
+    evidence.lots[0].nativePrice!.assetId = "base:0x0000000000000000000000000000000000000000";
+    expect(pnl.deriveOnchainPnl(holding, 36, evidence).basisStatus).toBe("not-recorded");
+  });
   it.each(["airdrop", "claim", "mint"] as const)("verifies %s only with all no-payment evidence", (operation) => {
     const evidence = freeEvidence(); evidence.lots[0].operation = operation;
     expect(pnl.deriveOnchainPnl(tokenHolding, 36, evidence).basisStatus).toBe("airdrop-free");

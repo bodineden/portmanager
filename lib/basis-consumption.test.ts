@@ -141,6 +141,6 @@ describe("native ETH funding arrivals", () => {
     expect(deriveOnchainPnl(native, 36, arrivals())).toMatchObject({ costBasisUsd: 3200, pnlUsd: 1300,
       costBasisThb: 115200, pnlThb: 46800, basisStatus: "arrival-priced", pnlEligibility: "eligible" });
     expect(basisChip("arrival-priced")).toEqual({ label: "arrival-priced",
-      description: "Funding arrival priced at its arrival-date ETH/USD under the owner rule" });
+      description: "Funding arrivals priced at their arrival-date ETH/USD, weighted average (owner rule 2026-09-11; convention extended 2026-09-12)" });
   });
 });

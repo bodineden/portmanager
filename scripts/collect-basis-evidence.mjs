@@ -40,6 +40,8 @@ const hex = value => `0x${BigInt(value).toString(16)}`;
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const sum = values => values.reduce((total, raw) => total + BigInt(raw), 0n);
 const fail = message => { throw new Error(message); };
+class AuditedRejection extends Error {}
+const rejectAcquisition = message => { throw new AuditedRejection(message); };
 const isRaw = value => typeof value === 'string' && DIGITS.test(value);
 export function units(raw, decimals) {
   if (!isRaw(raw) || !Number.isInteger(decimals) || decimals < 0 || decimals > 36) fail('invalid raw units/decimals');
@@ -150,7 +152,7 @@ export function validateEvidence(holding, evidence) {
       const noPayment = BigInt(lot.nativeOutflowRaw) === 0n && lot.tokenOutflows.length === 0;
       if (lot.operation === 'funding-arrival') {
         if (kind !== 'native' || !noPayment) fail('funding-arrival is native ETH only');
-        basisUsd += pricedUsd(lot.quantityRaw, 18, lot.nativePrice, 'native', lot.acquiredAt);
+        basisUsd += pricedUsd(lot.quantityRaw, 18, lot.nativePrice, lot.nativePrice?.assetId === LLAMA_ETH ? LLAMA_ETH : 'native', lot.acquiredAt);
       } else if (['mint', 'claim', 'airdrop'].includes(lot.operation)) {
         if (kind === 'native' || !noPayment) fail('unproven free acquisition');
       } else if (lot.operation === 'purchase') {
@@ -230,30 +232,31 @@ export function proveSeaportPurchase(tx, receipt, contract, tokenIds) {
   const settlementLogs = receipt.logs.filter(l => SEAPORT.has(l.address?.toLowerCase())
     && typeof l.topics?.[0] === 'string' && l.topics[0].toLowerCase() === ORDER_FULFILLED);
   const settlements = settlementLogs.map(l => decodeSeaportOrder(l.data));
-  if (!settlements.length || settlements.some(s => s.recipient !== WALLET)) fail('missing/other-recipient order settlement');
+  if (!settlements.length) fail('missing order settlement');
+  if (settlements.some(s => s.recipient !== WALLET)) rejectAcquisition('other-recipient order settlement');
   rejectUnsupportedWalletEvents(receipt, new Set(settlementLogs));
   const offers = settlements.flatMap(s => s.offer);
-  if (offers.some(o => o.itemType !== 2 || o.token !== contract || o.amount !== '1')) fail('multi-asset/non-ERC721 order');
+  if (offers.some(o => o.itemType !== 2 || o.token !== contract || o.amount !== '1')) rejectAcquisition('multi-asset/non-ERC721 order');
   const expected = [...tokenIds].sort().join(',');
-  if (offers.map(o => o.identifier).sort().join(',') !== expected) fail('order acquired IDs mismatch');
+  if (offers.map(o => o.identifier).sort().join(',') !== expected) rejectAcquisition('order acquired IDs mismatch');
   const flows = walletTransfers(receipt);
   if (flows.filter(t => t.to === WALLET).some(t => t.kind !== 'nft' || t.contract !== contract)
-    || flows.some(t => t.kind === 'nft' && t.from === WALLET)) fail('other acquired asset or NFT disposal in purchase');
-  if (flows.filter(t => t.kind === 'nft' && t.to === WALLET).map(t => t.tokenId).sort().join(',') !== expected) fail('receipt acquired IDs mismatch');
+    || flows.some(t => t.kind === 'nft' && t.from === WALLET)) rejectAcquisition('other acquired asset or NFT disposal in purchase');
+  if (flows.filter(t => t.kind === 'nft' && t.to === WALLET).map(t => t.tokenId).sort().join(',') !== expected) rejectAcquisition('receipt acquired IDs mismatch');
   const payments = settlements.flatMap(s => s.consideration);
   if (payments.some(p => ![0, 1].includes(p.itemType) || p.recipient === WALLET || p.identifier !== '0'
-    || p.itemType === 0 && p.token !== ZERO || BigInt(p.amount) <= 0n)) fail('unsupported order consideration');
+    || p.itemType === 0 && p.token !== ZERO || BigInt(p.amount) <= 0n)) rejectAcquisition('unsupported order consideration');
   const native = sum(payments.filter(p => p.itemType === 0).map(p => p.amount));
-  if (native !== BigInt(tx.value)) fail('msg.value differs from decoded ETH consideration; refund/extra-leg ambiguous');
+  if (native !== BigInt(tx.value)) rejectAcquisition('msg.value differs from decoded ETH consideration; refund/extra-leg ambiguous');
   const tokenPayments = [];
   for (const token of new Set(payments.filter(p => p.itemType === 1).map(p => p.token))) {
     const expectedAmount = sum(payments.filter(p => p.token === token && p.itemType === 1).map(p => p.amount));
     const paid = sum(flows.filter(t => t.kind === 'token' && t.from === WALLET && t.contract === token).map(t => t.quantityRaw));
-    if (paid !== expectedAmount) fail('ERC20 consideration differs from observed wallet outflows');
+    if (paid !== expectedAmount) rejectAcquisition('ERC20 consideration differs from observed wallet outflows');
     tokenPayments.push({ assetId: token, amountRaw: paid.toString() });
   }
-  if (flows.some(t => t.kind === 'token' && t.from === WALLET && !tokenPayments.some(p => p.assetId === t.contract))) fail('extra ERC20 outflow');
-  if ((native > 0n ? 1 : 0) + tokenPayments.length !== 1) fail('not a single-payment purchase');
+  if (flows.some(t => t.kind === 'token' && t.from === WALLET && !tokenPayments.some(p => p.assetId === t.contract))) rejectAcquisition('extra ERC20 outflow');
+  if ((native > 0n ? 1 : 0) + tokenPayments.length !== 1) rejectAcquisition('not a single-payment purchase');
   return { nativeOutflowRaw: native.toString(), tokenPayments, acquiredAssetCount: offers.length };
 }
 
@@ -360,9 +363,21 @@ export class SourceClient {
   async transaction(chain, hash) {
     if (!HASH.test(hash)) fail('invalid transaction hash');
     return this.cached(`${chain.id}:${hash}`, async () => {
-      const [tx, receipt] = await Promise.all([
+      let [tx, receipt] = await Promise.all([
         this.rpc(chain.rpc, 'eth_getTransactionByHash', [hash]), this.rpc(chain.rpc, 'eth_getTransactionReceipt', [hash]),
       ]);
+      // PublicNode can return null for Ethereum history that is present on dRPC.
+      // Accept only the correct chain and a receipt canonical on the PRIMARY RPC.
+      if ((!tx || !receipt) && chain.id === 1) {
+        const archive = 'https://eth.drpc.org';
+        await this.cached(`archive:${archive}`, async () => {
+          if (Number(BigInt(await this.rpc(archive, 'eth_chainId', []))) !== chain.id) fail('archive chain identity mismatch');
+          console.log(`SOURCE supplemental Ethereum transaction history: ${archive}; chainId=${chain.id}`);
+        });
+        [tx, receipt] = await Promise.all([
+          this.rpc(archive, 'eth_getTransactionByHash', [hash]), this.rpc(archive, 'eth_getTransactionReceipt', [hash]),
+        ]);
+      }
       if (!tx || !receipt || receipt.status !== '0x1' || receipt.transactionHash !== hash
         || tx.hash !== hash || tx.blockHash !== receipt.blockHash) fail(`missing/failed/reorged receipt ${hash}`);
       const block = await this.cached(`${chain.id}:block:${receipt.blockNumber}`, () => this.rpc(chain.rpc, 'eth_getBlockByNumber', [receipt.blockNumber, false]));
@@ -435,13 +450,14 @@ async function scanRh(client, chain) {
 export function proveFreeMint(tx, receipt, contract) {
   if (receipt.status !== '0x1' || receipt.transactionHash !== tx.hash) fail('mint has failed/unproven receipt');
   if (tx.from?.toLowerCase() !== WALLET || typeof tx.value !== 'string'
-    || !RPC_QUANTITY.test(tx.value) || BigInt(tx.value) !== 0n) {
+    || !RPC_QUANTITY.test(tx.value)) {
     fail('mint is not a wallet-initiated zero-value transaction; payment/gift ambiguous');
   }
+  if (BigInt(tx.value) !== 0n) rejectAcquisition('mint has proved native payment');
   rejectUnsupportedWalletEvents(receipt);
   const flows = walletTransfers(receipt), incoming = flows.filter(t => t.to === WALLET);
   if (!incoming.length || incoming.some(t => t.contract !== contract || t.from !== ZERO)) fail('not a decoded zero-address mint');
-  if (flows.some(t => t.from === WALLET)) fail('mint has payment/unproven receipt');
+  if (flows.some(t => t.from === WALLET)) rejectAcquisition('mint has payment/unproven receipt');
   return { operation: 'mint', nativeOutflowRaw: '0', tokenOutflows: [], allPaymentLegsObserved: true };
 }
 function emptyEvidence(holding) {
@@ -570,6 +586,7 @@ export async function scoutTokens(client, chain) {
 
 export async function acquireHolding(client, chain, holding, sales) {
   const evidence = emptyEvidence(holding), reasons = [...holding.errors];
+  let reauditedRejected = false;
   const flows = holding.transfers ?? [];
   if (['nft', 'token'].includes(holding.kind) && flows.some(flow => flow.kind !== holding.kind)) {
     reasons.push('target Transfer shape does not match holding kind');
@@ -583,7 +600,8 @@ export async function acquireHolding(client, chain, holding, sales) {
   for (const [hash, arrivals] of acquisitionGroups) {
     if (holding.kind === 'nft' && arrivals.length > 1) client.risk(`${holdingKey(holding)} observed batch ${hash}: ${arrivals.length} units (even if excluded)`);
   }
-  if (reasons.length) return { holding, evidence: { ...evidence, complete: false, hasDisposals: true }, reasons };
+  if (reasons.length) return { holding, evidence: { ...evidence, complete: false, hasDisposals: true }, reasons,
+    reauditedRejected: holding.errors.length === 0 && Array.isArray(holding.transfers) };
   for (const [hash, arrivals] of acquisitionGroups) {
     try {
       if (holding.kind === 'token' && arrivals.some(t => t.from !== ZERO)) fail('ERC20 non-mint inflow lacks supported decoded purchase/claim semantics');
@@ -617,13 +635,20 @@ export async function acquireHolding(client, chain, holding, sales) {
         fail('ERC20 non-mint inflow lacks supported decoded purchase/claim semantics');
       }
       const native = await client.nativeFlows(chain, proofOfTx);
-      if (native.outflowRaw !== lot.nativeOutflowRaw || native.inflowRaw !== '0') fail('historical trace has extra native payment/refund; all payment legs not clean');
+      if (!isRaw(native?.outflowRaw) || !isRaw(native?.inflowRaw)) fail('historical native flows unavailable/invalid raw units');
+      if (BigInt(native.outflowRaw) !== BigInt(lot.nativeOutflowRaw) || BigInt(native.inflowRaw) !== 0n) {
+        rejectAcquisition('historical trace has extra native payment/refund; all payment legs not clean');
+      }
       evidence.lots.push(lot);
-    } catch (error) { reasons.push(`${hash}: ${error.message}`); }
+    } catch (error) {
+      // Missing source legs cannot revoke stored evidence. A proved contradiction can.
+      if (error instanceof AuditedRejection) reauditedRejected = true;
+      reasons.push(`${hash}: ${error.message}`);
+    }
   }
   evidence.complete = reasons.length === 0;
   if (reasons.length) evidence.hasDisposals = true;
-  return { holding, evidence, reasons };
+  return { holding, evidence, reasons, reauditedRejected };
 }
 
 /** Bridge-data decoding is a provenance hint verified in the successful tx,
@@ -669,65 +694,198 @@ export function proveBlockscoutFunding(indexed, proof, head) {
   return { from: indexedFrom.toLowerCase(), to: indexedTo.toLowerCase(), quantityRaw: indexed.value, blockNumber: receipt.blockNumber };
 }
 
-async function nativeHolding(client, chain) {
-  const holding = { kind: 'native', chainId: chain.id, assetId: 'native', decimals: 18, quantityRaw: null, errors: [] };
-  const evidence = emptyEvidence(holding), reasons = [], bridges = [];
-  try { holding.quantityRaw = BigInt(await client.rpc(chain.rpc, 'eth_getBalance', [WALLET, chain.head])).toString(); }
-  catch (error) { reasons.push(`native balance unavailable: ${error.message}`); }
-  if (!chain.scout) {
-    // eth_getLogs is not native transaction history. RH explicitly disables
-    // debug_traceTransaction/trace_filter; never relabel destination receipts
-    // as funding. Any future bridge carry needs full source AND destination
-    // reconciliation; till then this key is excluded, not assigned spot basis.
-    try { await client.rpc(chain.rpc, 'trace_filter', [{ fromBlock: '0x0', toBlock: chain.head, toAddress: [WALLET], count: 1 }]); }
-    catch (error) { client.risk(`RH native history unavailable: ${error.message}`); }
-    reasons.push('RH complete native history unavailable; bridge carry/spends/returns cannot be reconciled; destination arrivals NOT new funding');
-  } else {
-    try {
-      const [transactions, internals] = await Promise.all([
-        client.pages(`${chain.scout}/addresses/${WALLET}/transactions`),
-        client.pages(`${chain.scout}/addresses/${WALLET}/internal-transactions`),
-      ]);
-      const bounded = transactions.filter(t => t.block_number <= Number(BigInt(chain.head)));
-      let outflow = 0n, gas = 0n;
-      for (const tx of bounded) {
-        const from = tx.from?.hash?.toLowerCase(), to = tx.to?.hash?.toLowerCase();
-        if (from === WALLET) {
-          gas += BigInt(tx.fee?.value ?? '0');
-          if (tx.status === 'ok' && BigInt(tx.value) > 0n) {
-            outflow += BigInt(tx.value);
-            const bridge = decodedInternalBridge(tx);
-            if (bridge) {
-              const proof = await client.transaction(chain, tx.hash);
-              if (BigInt(proof.tx.value).toString() !== tx.value) fail('bridge RPC value does not match explorer');
-              bridges.push({ sourceChainId: chain.id, ...bridge, valueRaw: tx.value, acquiredAt: proof.acquiredAt });
-            } else reasons.push(`${tx.hash}: native outflow not proved same-wallet tracked bridge`);
-          }
-          continue;
-        }
-        if (to !== WALLET || tx.status !== 'ok' || BigInt(tx.value) === 0n) continue;
-        try {
-          const proof = await client.transaction(chain, tx.hash);
-          const bound = proveBlockscoutFunding(tx, proof, chain.head);
-          const senderCode = await client.rpc(chain.rpc, 'eth_getCode', [bound.from, bound.blockNumber]);
-          if (senderCode !== '0x' || proof.tx.input !== '0x' || !Array.isArray(proof.receipt.logs) || proof.receipt.logs.length) {
-            fail('contract/bridge/complex arrival not an external funding proof');
-          }
-          // Owner convention: a proved direct inbound external ETH arrival is a cash exchange.
-          evidence.lots.push({ transactionHash: tx.hash, acquiredAt: proof.acquiredAt, quantityRaw: bound.quantityRaw,
-            operation: 'funding-arrival', success: true, allPaymentLegsObserved: true, acquiredAssetCount: 1,
-            nativeOutflowRaw: '0', tokenOutflows: [], nativePrice: await client.price(proof.acquiredAt) });
-        } catch (error) { reasons.push(`${tx.hash}: ${error.message}`); }
-      }
-      const internalValue = internals.filter(t => t.success && t.block_number <= Number(BigInt(chain.head)) && BigInt(t.value) > 0n);
-      if (internalValue.length) reasons.push(`${internalValue.length} internal native transfer(s): return/bridge attribution unproved, NOT new funding`);
-      if (outflow > 0n || gas > 0n) reasons.push(`original arrivals changed: outflow=${outflow}; observed gas=${gas}; ${bridges.length} decoded same-wallet bridge(s); no residual-lot selection`);
-      await client.save(`native-${chain.id}-history.json`, { holding, transactions, internals, bridges, originalArrivalLots: evidence.lots });
-    } catch (error) { reasons.push(`Blockscout/RPC history unavailable: ${error.message}`); client.risk(`chain ${chain.id} native history: ${error.message}`); }
+/** Owner-approved pooled WAC, not surviving acquisition lots or tax basis.
+ * All eligible observed funding is included. One missing price fails the pool.
+ * Internal bridges are separately audited and never enter this function twice.
+ */
+export function nativeArrivalBasis(holding, arrivals) {
+  if (!Array.isArray(arrivals) || !arrivals.length) fail('no proven funding arrivals');
+  const seen = new Set();
+  let totalRaw = 0n, totalUsd = 0, latest;
+  for (const arrival of arrivals) {
+    if (!SUPPORTED_CHAINS.has(arrival.chainId) || typeof arrival.transactionHash !== 'string'
+      || !HASH.test(arrival.transactionHash) || typeof arrival.acquiredAt !== 'string'
+      || !Number.isFinite(Date.parse(arrival.acquiredAt)) || Date.parse(arrival.acquiredAt) > Date.now()
+      || !isRaw(arrival.quantityRaw) || BigInt(arrival.quantityRaw) <= 0n) fail('invalid funding arrival');
+    const key = `${arrival.chainId}:${arrival.transactionHash.toLowerCase()}:${arrival.index ?? 'direct'}`;
+    if (seen.has(key)) fail('duplicate funding arrival');
+    seen.add(key);
+    totalRaw += BigInt(arrival.quantityRaw);
+    totalUsd += pricedUsd(arrival.quantityRaw, 18, arrival.nativePrice, 'native', arrival.acquiredAt);
+    if (!latest || Date.parse(arrival.acquiredAt) > Date.parse(latest.acquiredAt)) latest = arrival;
   }
-  evidence.complete = reasons.length === 0;
-  evidence.hasDisposals = reasons.length > 0;
-  return { holding, evidence, reasons, bridges };
+  const totalEth = units(totalRaw.toString(), 18), wacUsd = totalUsd / totalEth;
+  if (!Number.isFinite(totalUsd) || !Number.isFinite(totalEth) || !(wacUsd > 0) || !Number.isFinite(wacUsd)) fail('invalid arrival WAC');
+  const evidence = emptyEvidence(holding);
+  // complete/hasDisposals describe this convention-sized holding lot, NOT an
+  // assertion that the wallet never spent ETH or that RH history is complete.
+  evidence.lots = [{ operation: 'funding-arrival', quantityRaw: holding.quantityRaw,
+    transactionHash: latest.transactionHash, acquiredAt: latest.acquiredAt,
+    nativeOutflowRaw: '0', tokenOutflows: [], allPaymentLegsObserved: true, success: true, acquiredAssetCount: 1,
+    nativePrice: { provider: 'defillama-historical', assetId: LLAMA_ETH, timestamp: latest.acquiredAt, priceUsd: wacUsd } }];
+  return { evidence, arrivalCount: arrivals.length, totalRaw: totalRaw.toString(), totalEth, totalUsd, wacUsd };
+}
+
+/** Complete paginated indexer discovery; every candidate is kept in the audit.
+ * Direct simple external funding is priced under the owner rule. Complex
+ * internal arrivals without funding attribution stay excluded, never guessed.
+ */
+export async function collectNativeHistory(client, chain) {
+  const arrivals = [], bridges = [], excluded = [];
+  if (!chain.scout) {
+    try { await client.rpc(chain.rpc, 'trace_filter', [{ fromBlock: '0x0', toBlock: chain.head, toAddress: [WALLET], count: 1 }]); }
+    catch (error) { client.risk(`chain ${chain.id} native history unavailable: ${error.message}`); }
+    client.risk(`chain ${chain.id}: no exhaustive native index; source-chain bridge receipts are supplementary, not full RH funding history`);
+    return { arrivals, bridges, excluded };
+  }
+  let transactions = [], internals = [];
+  for (const endpoint of ['transactions', 'internal-transactions']) {
+    try {
+      const items = await client.pages(`${chain.scout}/addresses/${WALLET}/${endpoint}`);
+      if (endpoint === 'transactions') transactions = items; else internals = items;
+      console.log(`SOURCE Blockscout ${chain.id} ${endpoint}: ${items.length}; pagination exhausted`);
+    } catch (error) { client.risk(`chain ${chain.id} ${endpoint}: ${error.message}`); }
+  }
+  for (const indexed of transactions) {
+    const from = indexed.from?.hash?.toLowerCase(), to = indexed.to?.hash?.toLowerCase();
+    try {
+      if (blockNumber(indexed.block_number, 'indexed block') > BigInt(chain.head)) continue;
+      if (from === WALLET && indexed.status === 'ok' && isRaw(indexed.value) && BigInt(indexed.value) > 0n) {
+        // Every native-valued source outflow is probed for bridge provenance,
+        // not just one router or a list of manually selected transaction hashes.
+        bridges.push({ sourceChainId: chain.id, transactionHash: indexed.hash, indexed });
+        continue;
+      }
+      if (to !== WALLET || from === WALLET || indexed.status !== 'ok' || indexed.value === '0') continue;
+      const proof = await client.transaction(chain, indexed.hash);
+      const bound = proveBlockscoutFunding(indexed, proof, chain.head);
+      if (!Number.isFinite(Date.parse(proof.acquiredAt)) || Date.parse(proof.acquiredAt) > Date.now()) fail('invalid/future arrival date');
+      // The canonical transaction already proves sender, recipient and ETH value.
+      // Sender code at that old block adds no arrival proof and may be pruned.
+      // Known same-wallet bridge payouts are removed before pooling below.
+      if (proof.tx.input !== '0x' || !Array.isArray(proof.receipt.logs) || proof.receipt.logs.length) {
+        fail('contract/bridge/complex arrival not an external funding proof');
+      }
+      arrivals.push({ chainId: chain.id, transactionHash: indexed.hash, acquiredAt: proof.acquiredAt,
+        quantityRaw: bound.quantityRaw, included: true, reason: 'external funding; owner arrival convention', nativePrice: null });
+    } catch (error) { excluded.push({ chainId: chain.id, transactionHash: indexed.hash, reason: error.message }); }
+  }
+  for (const indexed of internals) {
+    const hash = indexed.transaction_hash;
+    try {
+      if (indexed.to?.hash?.toLowerCase() !== WALLET || indexed.from?.hash?.toLowerCase() === WALLET
+        || indexed.success !== true || indexed.value === '0') continue;
+      if (!HASH.test(hash) || !isRaw(indexed.value) || BigInt(indexed.value) <= 0n) fail('invalid internal arrival identity/amount');
+      if (blockNumber(indexed.block_number, 'internal block') > BigInt(chain.head)) continue;
+      const proof = await client.transaction(chain, hash);
+      if (BigInt(proof.receipt.blockNumber) !== blockNumber(indexed.block_number, 'internal block')) fail('internal receipt block mismatch');
+      if (!Number.isFinite(Date.parse(proof.acquiredAt)) || Date.parse(proof.acquiredAt) > Date.now()) fail('invalid/future internal date');
+      arrivals.push({ chainId: chain.id, transactionHash: hash, index: indexed.index, acquiredAt: proof.acquiredAt,
+        quantityRaw: indexed.value, included: false, reason: 'internal arrival: funding vs return/bridge attribution unproven', nativePrice: null });
+    } catch (error) { excluded.push({ chainId: chain.id, transactionHash: hash, reason: error.message }); }
+  }
+  for (const arrival of arrivals) {
+    try { arrival.nativePrice = await client.price(arrival.acquiredAt); }
+    catch (error) {
+      // Do NOT silently drop an expensive/unpriced funding leg from the WAC.
+      client.risk(`arrival ${arrival.transactionHash} historical price unavailable: ${error.message}`);
+      arrival.reason += `; missing historical quote: ${error.message}`;
+    }
+  }
+  await client.save(`native-${chain.id}-history.json`, { transactions, internals, arrivals, bridges, excluded });
+  return { arrivals, bridges, excluded };
+}
+
+/** LI.FI is transaction discovery only; neither its spot quote nor its amount
+ * is evidence without a canonical source receipt and proved native delivery.
+ */
+export async function collectBridgeArrivals(client, chains, bridges, indexedArrivals = []) {
+  const arrivals = [], excluded = [], seen = new Set();
+  for (const bridge of bridges) {
+    try {
+      if (!HASH.test(bridge.transactionHash)) fail('invalid source bridge hash');
+      const chain = chains.find(c => c.id === bridge.sourceChainId);
+      const proof = await client.transaction(chain, bridge.transactionHash);
+      if (proof.tx.from?.toLowerCase() !== WALLET || proof.tx.to?.toLowerCase() !== bridge.indexed.to?.hash?.toLowerCase()
+        || proof.tx.input !== bridge.indexed.raw_input || BigInt(proof.tx.value).toString() !== bridge.indexed.value
+        || BigInt(proof.receipt.blockNumber) !== blockNumber(bridge.indexed.block_number, 'bridge block')
+        || BigInt(proof.receipt.blockNumber) > BigInt(chain.head)) fail('source bridge RPC/indexer mismatch');
+      const status = await client.request(`https://li.quest/v1/status?txHash=${bridge.transactionHash}&fromChain=${chain.id}`);
+      const receiving = status.receiving;
+      if (status.status !== 'DONE' || status.fromAddress?.toLowerCase() !== WALLET || status.toAddress?.toLowerCase() !== WALLET
+        || status.sending?.txHash?.toLowerCase() !== bridge.transactionHash.toLowerCase()
+        || status.sending?.chainId !== chain.id || !HASH.test(receiving?.txHash)) fail('bridge destination not proven by status');
+      const matches = indexedArrivals.filter(a => a.chainId === receiving.chainId
+        && a.transactionHash.toLowerCase() === receiving.txHash.toLowerCase());
+      // Known bridge provenance disqualifies matching funding even if its native
+      // delivery cannot be proved. Do this before any destination-source reads.
+      for (const arrival of matches) {
+        arrival.included = false;
+        arrival.reason = 'same-wallet bridge provenance; native delivery unproven';
+      }
+      const destination = chains.find(c => c.id === receiving.chainId && SUPPORTED_CHAINS.has(c.id));
+      if (!destination) fail(`bridge destination ${receiving.chainId} unavailable/untracked`);
+      if (receiving.token?.address?.toLowerCase() !== ZERO || !isRaw(receiving.amount) || BigInt(receiving.amount) <= 0n) fail('bridge did not deliver native ETH');
+      const delivered = await client.transaction(destination, receiving.txHash);
+      if (BigInt(delivered.receipt.blockNumber) > BigInt(destination.head)
+        || !Number.isFinite(Date.parse(delivered.acquiredAt)) || Date.parse(delivered.acquiredAt) > Date.now()
+        || Date.parse(delivered.acquiredAt) < Date.parse(proof.acquiredAt)) fail('invalid destination arrival block/date');
+      let flow;
+      if (destination.id !== 4663 && delivered.tx.to?.toLowerCase() === WALLET
+        && delivered.tx.from?.toLowerCase() !== WALLET && delivered.tx.input === '0x'
+        && typeof delivered.tx.value === 'string' && RPC_QUANTITY.test(delivered.tx.value)
+        && Array.isArray(delivered.receipt.logs) && delivered.receipt.logs.length === 0) {
+        // A canonical simple transfer to a nondelegated EOA proves native delivery
+        // without relying on the non-RH payment-flow helper's zero inflow default.
+        const code = await client.rpc(destination.rpc, 'eth_getCode', [WALLET, delivered.receipt.blockNumber]);
+        if (code !== '0x') fail('delegated bridge recipient needs full historical trace');
+        flow = { inflowRaw: BigInt(delivered.tx.value).toString(), outflowRaw: '0' };
+      } else flow = await client.nativeFlows(destination, delivered);
+      if (!isRaw(flow?.inflowRaw) || !isRaw(flow?.outflowRaw)
+        || BigInt(flow.inflowRaw) !== BigInt(receiving.amount) || BigInt(flow.outflowRaw) !== 0n) fail('native delivery differs from status or has extra outflow');
+      const key = `${destination.id}:${receiving.txHash.toLowerCase()}`;
+      if (seen.has(key)) fail('duplicate bridge destination');
+      seen.add(key);
+      const arrival = { chainId: destination.id, transactionHash: receiving.txHash, acquiredAt: delivered.acquiredAt,
+        quantityRaw: receiving.amount, sourceChainId: chain.id, sourceTransactionHash: bridge.transactionHash,
+        included: false, reason: 'verified same-wallet bridge: original funding counted once, not a new cash exchange', nativePrice: null };
+      if (matches.length) {
+        for (const match of matches) Object.assign(match, { reason: arrival.reason,
+          sourceChainId: chain.id, sourceTransactionHash: bridge.transactionHash });
+      } else arrivals.push(arrival);
+      // Diagnostic quote only. No bridge-arrival quote enters the funding WAC.
+      arrival.nativePrice = await client.price(delivered.acquiredAt);
+    } catch (error) { excluded.push({ sourceChainId: bridge.sourceChainId, transactionHash: bridge.transactionHash, reason: error.message }); }
+  }
+  return { arrivals, excluded };
+}
+
+/** Same CoinGecko quote and < $1 rule as live-data/dust-filter, for display
+ * eligibility ONLY. Basis always uses fetched historical funding prices.
+ */
+export async function sizeNativeRows(client, chains, funding) {
+  let spot = null;
+  try { spot = (await client.request('https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd')).ethereum?.usd; }
+  catch { /* Unknown spot must not turn into dust or a zero basis. */ }
+  const rows = [];
+  for (const chain of chains) {
+    const holding = { kind: 'native', chainId: chain.id, assetId: 'native', decimals: 18, quantityRaw: null };
+    const row = { holding, evidence: { ...emptyEvidence(holding), complete: false }, reasons: [] };
+    try {
+      const raw = await client.rpc(chain.rpc, 'eth_getBalance', [WALLET, chain.head]);
+      if (typeof raw !== 'string' || !RPC_QUANTITY.test(raw)) fail('native balance unavailable');
+      holding.quantityRaw = BigInt(raw).toString();
+      if (!(spot > 0) || !Number.isFinite(spot)) fail('current ETH/USD unavailable for non-dust classification');
+      holding.valueUsd = units(holding.quantityRaw, 18) * spot;
+      if (!Number.isFinite(holding.valueUsd)) fail('invalid native current value');
+      if (holding.valueUsd < 1) fail('dust: current native value below USD 1; no evidence row');
+      const basis = nativeArrivalBasis(holding, funding);
+      row.evidence = basis.evidence;
+      row.wac = { arrivalCount: basis.arrivalCount, totalRaw: basis.totalRaw, totalEth: basis.totalEth, totalUsd: basis.totalUsd, wacUsd: basis.wacUsd };
+    } catch (error) { row.reasons.push(error.message); }
+    rows.push(row);
+  }
+  return rows;
 }
 
 function managedBasisKey(key) {
@@ -737,11 +895,12 @@ function managedBasisKey(key) {
     || /^nft:4663:.*$/.test(key)
   );
 }
-export function managedInvalidationKeys(oldRows, accepted) {
-  if (!Array.isArray(oldRows) || !Array.isArray(accepted)) fail('invalid invalidation inventory');
+export function managedInvalidationKeys(oldRows, accepted, reauditedRejected = []) {
+  if (!Array.isArray(oldRows) || !Array.isArray(accepted) || !Array.isArray(reauditedRejected)) fail('invalid invalidation inventory');
   const acceptedKeys = new Set(accepted.map(row => holdingKey(row.holding)));
+  const rejected = new Set(reauditedRejected);
   return [...new Set(oldRows.map(row => row?.holding_key)
-    .filter(key => managedBasisKey(key) && !acceptedKeys.has(key)))];
+    .filter(key => managedBasisKey(key) && rejected.has(key) && !acceptedKeys.has(key)))];
 }
 
 export async function writeEvidence(sql, accepted, invalidateKeys) {
@@ -781,6 +940,21 @@ function canonical(value) {
   return value;
 }
 export const evidenceChecksum = evidence => createHash('sha256').update(JSON.stringify(canonical(evidence))).digest('hex');
+
+export async function verifyFinalCanonicality(client, chains, rows) {
+  // Pin check after lengthy history reads: a reorg invalidates all affected keys.
+  for (const chain of chains) {
+    try {
+      const block = await client.rpc(chain.rpc, 'eth_getBlockByNumber', [chain.head, false]);
+      if (block.hash !== chain.headHash) fail('pinned block reorged');
+    } catch (error) {
+      client.risk(`chain ${chain.id} final canonicality: ${error.message}`);
+      // No deletion may be authorized by a run whose final canonicality failed.
+      for (const row of rows) row.reauditedRejected = false;
+      for (const row of rows.filter(r => r.holding.chainId === chain.id || r.holding.kind === 'native')) { row.evidence.complete = false; row.reasons.push(error.message); }
+    }
+  }
+}
 
 async function collectBasisEvidence({ outDir } = {}) {
   const startedAt = new Date().toISOString();
@@ -825,8 +999,9 @@ async function collectBasisEvidence({ outDir } = {}) {
     if (nfts || recovered.length) holdings.push(...await nftHoldings(client, rh, [...(nfts ?? []), ...recovered], logs));
     holdings.push(...tokenInventory.filter(t => !recovered.some(n => n.contract.toLowerCase() === t.contract)));
   }
+  const nativeHistory = [];
   for (const chain of chains) {
-    rows.push(await nativeHolding(client, chain));
+    nativeHistory.push(await collectNativeHistory(client, chain));
     if (chain.scout) {
       try {
         const tokens = await scoutTokens(client, chain);
@@ -835,6 +1010,23 @@ async function collectBasisEvidence({ outDir } = {}) {
       } catch (error) { client.risk(`Blockscout ${chain.id} token inventory unavailable: ${error.message}`); }
     }
   }
+  const indexedArrivals = nativeHistory.flatMap(h => h.arrivals);
+  const bridgeHistory = await collectBridgeArrivals(client, chains, nativeHistory.flatMap(h => h.bridges), indexedArrivals);
+  const arrivals = [...indexedArrivals, ...bridgeHistory.arrivals]
+    .sort((a, b) => Date.parse(a.acquiredAt) - Date.parse(b.acquiredAt) || a.transactionHash.localeCompare(b.transactionHash));
+  const excludedArrivals = [...nativeHistory.flatMap(h => h.excluded), ...bridgeHistory.excluded];
+  const funding = arrivals.filter(a => a.included);
+  rows.push(...await sizeNativeRows(client, chains, funding));
+  console.log('ARRIVAL TABLE (only included external funding enters pooled WAC)\n' +
+    ['chain | date | transactionHash | ETH | historical USD/ETH | USD value | included? | reason',
+      ...arrivals.map(a => [a.chainId, a.acquiredAt, a.transactionHash, units(a.quantityRaw, 18), a.nativePrice?.priceUsd ?? 'unknown',
+        a.nativePrice ? units(a.quantityRaw, 18) * a.nativePrice.priceUsd : 'unknown', a.included, a.reason].join(' | '))].join('\n'));
+  const wac = rows.find(r => r.wac)?.wac ?? null;
+  console.log('NATIVE WAC ARITHMETIC ' + JSON.stringify(wac));
+  console.log('ARRIVAL COUNTS ' + JSON.stringify(CHAINS.map(c => ({ chainId: c.id, observed: arrivals.filter(a => a.chainId === c.id).length,
+    funding: funding.filter(a => a.chainId === c.id).length }))));
+  console.log('EXCLUDED ARRIVAL CANDIDATES ' + JSON.stringify(excludedArrivals, null, 2));
+  await client.save('native-arrivals.json', { arrivals, excludedArrivals, wac });
   // Missing chain balances still occupy explicit audit rows, not zero balances.
   for (const config of CHAINS.filter(c => !chains.some(live => live.id === c.id))) {
     const holding = { kind: 'native', chainId: config.id, assetId: 'native', decimals: 18, quantityRaw: null };
@@ -846,15 +1038,13 @@ async function collectBasisEvidence({ outDir } = {}) {
     rows.push(await acquireHolding(client, chains.find(c => c.id === holding.chainId), holding, sales));
     await client.save('candidate-evidence.json', rows);
   }
-  // Pin check after lengthy history reads: a reorg invalidates all affected keys.
-  for (const chain of chains) {
+  await verifyFinalCanonicality(client, chains, rows);
+  for (const row of rows.filter(r => r.holding.kind === 'native' && r.evidence.complete)) {
     try {
-      const block = await client.rpc(chain.rpc, 'eth_getBlockByNumber', [chain.head, false]);
-      if (block.hash !== chain.headHash) fail('pinned block reorged');
-    } catch (error) {
-      client.risk(`chain ${chain.id} final canonicality: ${error.message}`);
-      for (const row of rows.filter(r => r.holding.chainId === chain.id)) { row.evidence.complete = false; row.reasons.push(error.message); }
-    }
+      const chain = chains.find(c => c.id === row.holding.chainId);
+      const current = await client.rpc(chain.rpc, 'eth_getBalance', [WALLET, 'latest']);
+      if (typeof current !== 'string' || !RPC_QUANTITY.test(current) || BigInt(current).toString() !== row.holding.quantityRaw) fail('native balance changed during collection; rerun required');
+    } catch (error) { row.evidence.complete = false; row.reasons.push(error.message); }
   }
   rows.sort((a, b) => holdingKey(a.holding).localeCompare(holdingKey(b.holding)));
   if (new Set(rows.map(r => holdingKey(r.holding))).size !== rows.length) fail('duplicate holding keys');
@@ -864,10 +1054,12 @@ async function collectBasisEvidence({ outDir } = {}) {
   }
   const accepted = rows.filter(row => row.gate.ok && !row.reasons.length);
   const sql = await database();
-  const oldRows = await sql.query('SELECT holding_key FROM basis_evidence ORDER BY holding_key');
-  // A run that reaches this write phase has completed its collection attempt.
-  // Any prior managed key not accepted now is stale, including failed inventory scopes.
-  const invalidateKeys = managedInvalidationKeys(oldRows, accepted);
+  const oldRows = await sql.query('SELECT holding_key,source,collected_at,evidence FROM basis_evidence ORDER BY holding_key');
+  await client.save('db-before.json', oldRows);
+  // Omitted inventory or unavailable payment proofs are NOT a re-audit rejection.
+  // In particular, a native-only success cannot delete earlier NFT evidence.
+  const invalidateKeys = managedInvalidationKeys(oldRows, accepted,
+    rows.filter(r => r.reauditedRejected).map(r => holdingKey(r.holding)));
   const write = await writeEvidence(sql, accepted, invalidateKeys);
   const readback = await sql.query('SELECT holding_key,source,collected_at,evidence FROM basis_evidence ORDER BY holding_key');
   for (const row of accepted) {
@@ -880,11 +1072,19 @@ async function collectBasisEvidence({ outDir } = {}) {
       row.evidence.lots.length, row.evidence.source, row.gate.basisUsd ?? 'unknown', write.written.includes(holdingKey(row.holding)) ? 'yes' : 'no', row.reasons.join('; ') || 'verified'].join(' | '))].join('\n');
   console.log('\nFULL AUDIT TABLE\n' + table);
   console.log(`\nWRITTEN_ROW_COUNT=${write.written.length}; DB_READBACK_COUNT=${readback.length}; INVALIDATED_COUNT=${write.invalidated.length}; AUDITED_HOLDING_COUNT=${rows.length}`);
-  const stamps = readback.map(row => ({ holding_key: row.holding_key, source: row.source, collected_at: row.collected_at, evidence_sha256: evidenceChecksum(row.evidence) }));
+  const stamps = readback.map(row => {
+    const e = row.evidence, kind = row.holding_key.split(':')[0];
+    const derived = validateEvidence({ kind, chainId: e.chainId, assetId: e.assetId, contract: e.assetId,
+      decimals: e.decimals, quantityRaw: sum(e.lots.map(l => l.quantityRaw)).toString() }, e);
+    return { holding_key: row.holding_key, source: row.source, collected_at: row.collected_at,
+      lot_count: e.lots.length, derived_basis_usd: derived.basisUsd, evidence_sha256: evidenceChecksum(e) };
+  });
+  console.log('WRITTEN KEYS ' + JSON.stringify(write.written));
+  console.log('EXCLUDED KEYS ' + JSON.stringify(rows.filter(r => !write.written.includes(holdingKey(r.holding))).map(r => holdingKey(r.holding))));
   console.log('NEON SELECT READBACK (SHA-256 of recursively key-sorted evidence JSON)\n' + JSON.stringify(stamps, null, 2));
   console.log('RAW LOTS (excluded candidates are NOT stored/current holding basis)\n' + JSON.stringify(rows.filter(r => r.evidence.lots.length).map(r => ({ holding_key: holdingKey(r.holding), written: write.written.includes(holdingKey(r.holding)), lots: r.evidence.lots })), null, 2));
   const summary = { startedAt, completedAt: new Date().toISOString(), chains, auditCount: rows.length, writtenCount: write.written.length,
-    databaseCount: readback.length, invalidated: write.invalidated, risks: client.risks, rows, readback: stamps };
+    databaseCount: readback.length, invalidated: write.invalidated, risks: client.risks, arrivals, excludedArrivals, wac, rows, readback: stamps };
   await client.save('summary.json', summary);
   await client.save('db-readback.json', readback);
   await writeOwnerOnly(path.join(outDir, 'audit.txt'), table + '\n');

@@ -78,6 +78,7 @@ describe("honest presentation formatting", () => {
       .toBe("Complete P&L (3 of 3 holdings have recorded basis)");
     expect(coverageLabel({ ...coverage, eligible: 0, unreconciled: 1 })).toContain("unreconciled holdings are excluded");
     expect(basisChip("not-recorded")).toEqual({ label: "not-recorded", description: "Basis not recorded; excluded from recorded P&L" });
+    expect(basisChip("arrival-priced")).toEqual({ label: "arrival-priced", description: "Funding arrivals priced at their arrival-date ETH/USD, weighted average (owner rule 2026-09-11; convention extended 2026-09-12)" });
     expect(basisChip("airdrop-free").description).toContain("percentage is unavailable for zero basis");
     for (const status of ["not-recorded", "unreconciled"] as const) {
       expect(eligibilityLabel(status)).toContain("excluded from P&L");

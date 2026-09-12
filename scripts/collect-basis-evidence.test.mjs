@@ -13,6 +13,168 @@ const lot = { transactionHash: hash, acquiredAt: at, quantityRaw: '2', operation
   allPaymentLegsObserved: true, acquiredAssetCount: 2, nativeOutflowRaw: '30000000000000000', nativePrice: price, tokenOutflows: [] };
 const evidence = { source: 'opensea-v2', chainId: 4663, assetId: 'example', decimals: 0, complete: true, hasDisposals: false, lots: [lot] };
 
+describe('funding history source fallbacks', () => {
+const hash = '0x'+'a'.repeat(64), blockHash='0x'+'b'.repeat(64), from='0x'+'c'.repeat(40);
+const at = '2026-09-01T12:00:00.000Z';
+const indexed = {hash, status:'ok', block_number:16, value:'100', from:{hash:from}, to:{hash:collector.WALLET}};
+const tx = {hash,from,to:collector.WALLET,value:'0x64',input:'0x',blockNumber:'0x10',blockHash};
+const receipt = {transactionHash:hash,status:'0x1',blockNumber:'0x10',blockHash,logs:[]};
+it('funding proof does not depend on unrelated pruned sender-code state',async()=>{
+  const client = {pages:async url=>url.endsWith('/internal-transactions')?[]:[indexed],
+    transaction:async()=>({tx,receipt,acquiredAt:at}),
+    rpc:async()=>{throw new Error('historical sender code pruned')},
+    price:async()=>({provider:'defillama-historical',assetId:'native',timestamp:at,priceUsd:2000}),save:async()=>{},risk:()=>{}};
+  const result=await collector.collectNativeHistory(client,{id:42161,head:'0x20',scout:'https://example.test'});
+  assert.equal(result.arrivals.filter(a=>a.included).length,1);
+  assert.equal(result.excluded.length,0);
+});
+it('falls back for missing Ethereum history and binds archive receipts to primary canonical blocks',async()=>{
+  const calls=[];
+  const client=new collector.SourceClient({request:async(url,options)=>{
+    const {method}=JSON.parse(options.body); calls.push([url,method]);
+    if(method==='eth_chainId') return {result:'0x1'};
+    if(method==='eth_getBlockByNumber') return {result:{hash:blockHash,timestamp:'0x'+BigInt(Date.parse(at)/1000).toString(16)}};
+    if(url==='https://eth.drpc.org') return {result:method==='eth_getTransactionByHash'?tx:receipt};
+    return {result:null};
+  }});
+  const proof=await client.transaction({id:1,rpc:'https://ethereum-rpc.publicnode.com'},hash);
+  assert.equal(proof.acquiredAt,at);
+  assert.ok(calls.some(([url,method])=>url==='https://eth.drpc.org'&&method==='eth_chainId'));
+  assert.ok(calls.some(([url,method])=>url==='https://ethereum-rpc.publicnode.com'&&method==='eth_getBlockByNumber'));
+});
+});
+
+describe('native weighted-average arrival convention', () => {
+  it('prices the current raw balance at ALL funding arrivals weighted by ETH, stamped at the latest', () => {
+    const arrivals = [
+      { chainId: 1, transactionHash: hash, acquiredAt: at, quantityRaw: '1000000000000000000', nativePrice: price },
+      { chainId: 8453, transactionHash: '0x' + 'b'.repeat(64), acquiredAt: '2026-09-02T12:00:00.000Z',
+        quantityRaw: '3000000000000000000', nativePrice: { ...price, timestamp: '2026-09-02T12:00:00.000Z', priceUsd: 1500 } },
+    ];
+    const native = { kind: 'native', chainId: 4663, assetId: 'native', decimals: 18, quantityRaw: '123456789012345678' };
+    assert.equal(typeof collector.nativeArrivalBasis, 'function');
+    const result = collector.nativeArrivalBasis(native, arrivals);
+    assert.equal(result.wacUsd, 1750);
+    assert.equal(result.arrivalCount, 2);
+    assert.equal(result.totalEth, 4);
+    assert.equal(result.totalUsd, 7000);
+    assert.deepEqual(result.evidence.lots, [{ operation: 'funding-arrival', quantityRaw: native.quantityRaw,
+      transactionHash: arrivals[1].transactionHash, acquiredAt: arrivals[1].acquiredAt,
+      nativeOutflowRaw: '0', tokenOutflows: [], allPaymentLegsObserved: true, success: true, acquiredAssetCount: 1,
+      nativePrice: { provider: 'defillama-historical', assetId: `ethereum:${collector.ZERO}`,
+        timestamp: arrivals[1].acquiredAt, priceUsd: 1750 } }]);
+    assert.equal(collector.validateEvidence(native, result.evidence).ok, true);
+  });
+});
+
+describe('native history collection', () => {
+  it('audits every inbound candidate despite gas/spends, and never promotes unproved internal returns to funding', async () => {
+    const indexed = { hash, status: 'ok', block_number: 16, value: '1000000000000000000',
+      from: { hash: seller }, to: { hash: collector.WALLET } };
+    const proof = { tx: { hash, from: seller, to: collector.WALLET, value: '0xde0b6b3a7640000', input: '0x', blockNumber: '0x10' },
+      receipt: { transactionHash: hash, status: '0x1', blockNumber: '0x10', logs: [] }, acquiredAt: at };
+    const internalHash = '0x' + 'f'.repeat(64);
+    const client = { pages: async url => url.endsWith('/internal-transactions')
+      ? [{ transaction_hash: internalHash, block_number: 16, value: '10', index: 1, success: true, from: { hash: seller }, to: { hash: collector.WALLET } }]
+      : [indexed, { ...indexed, hash: '0x' + 'c'.repeat(64), from: indexed.to, to: indexed.from }],
+      transaction: async (chain, txHash) => txHash === hash ? proof : { ...proof, tx: { ...proof.tx, hash: txHash }, receipt: { ...proof.receipt, transactionHash: txHash } },
+      rpc: async () => '0x', price: async () => price, risk: () => {}, save: async () => {} };
+    assert.equal(typeof collector.collectNativeHistory, 'function');
+    const result = await collector.collectNativeHistory(client, { id: 1, head: '0x20', scout: 'https://example.test' });
+    assert.equal(result.arrivals.length, 2);
+    assert.equal(result.arrivals.filter(a => a.included).length, 1);
+    assert.match(result.arrivals.find(a => !a.included).reason, /internal.*unproven/i);
+    assert.equal(collector.nativeArrivalBasis({ kind: 'native', chainId: 1, assetId: 'native', decimals: 18, quantityRaw: '1' },
+      result.arrivals.filter(a => a.included)).wacUsd, 2500);
+  });
+});
+
+describe('native bridge collection', () => {
+  for (const destinationChainId of [1, 8453, 42161, 4663]) {
+    it(`counts original funding once after a verified same-wallet bridge to ${destinationChainId}`, async () => {
+      const f = bridgeFundingFixture(destinationChainId);
+      const result = await collector.collectBridgeArrivals(f.client, f.chains, f.bridges, f.arrivals);
+      assert.deepEqual(result.excluded, []);
+      const all = [...f.arrivals, ...result.arrivals];
+      assert.equal(all.filter(a => a.chainId === destinationChainId && a.transactionHash === f.destinationHash).length, 1);
+      const destination = all.find(a => a.transactionHash === f.destinationHash);
+      assert.equal(destination.included, false);
+      assert.match(destination.reason, /verified same-wallet bridge/);
+      const basis = collector.nativeArrivalBasis(f.holding, all.filter(a => a.included));
+      assert.equal(basis.arrivalCount, 1);
+      assert.equal(basis.wacUsd, 1000);
+    });
+  }
+  it('quarantines a known bridge destination when its native delivery cannot be proved', async () => {
+    for (const failure of ['receipt unavailable', 'trace unavailable', 'wrong amount', 'non-native token', 'delegated recipient']) {
+      const f = bridgeFundingFixture();
+      if (failure === 'receipt unavailable') {
+        const transaction = f.client.transaction;
+        f.client.transaction = async (chain, txHash) => {
+          if (txHash.toLowerCase() === f.destinationHash) throw new Error(failure);
+          return transaction(chain, txHash);
+        };
+      } else if (failure === 'trace unavailable') {
+        f.delivered.tx.to = seller;
+        f.delivered.tx.input = '0x1234';
+        f.client.nativeFlows = async () => { throw new Error(failure); };
+      } else if (failure === 'wrong amount') f.status.receiving.amount = '999999999999999999';
+      else if (failure === 'non-native token') f.status.receiving.token.address = paymentToken;
+      else f.client.rpc = async () => '0xef0100';
+      const result = await collector.collectBridgeArrivals(f.client, f.chains, f.bridges, f.arrivals);
+      assert.equal(result.arrivals.length, 0, failure);
+      assert.equal(result.excluded.length, 1, failure);
+      assert.equal(f.arrivals[1].included, false, failure);
+      assert.match(f.arrivals[1].reason, /bridge.*unproven/i);
+      assert.equal(collector.nativeArrivalBasis(f.holding, f.arrivals.filter(a => a.included)).wacUsd, 1000);
+    }
+  });
+  it('requires same-wallet provenance before excluding a direct funding candidate', async () => {
+    const f = bridgeFundingFixture();
+    f.status.toAddress = seller;
+    const result = await collector.collectBridgeArrivals(f.client, f.chains, f.bridges, f.arrivals);
+    assert.equal(result.excluded.length, 1);
+    assert.equal(f.arrivals[1].included, true);
+  });
+  it('binds both live receipts and native delivery, excluding same-wallet bridges from pooled funding', async () => {
+    const destHash = '0x' + 'd'.repeat(64);
+    const source = { id: 1, head: '0x20' }, rh = { id: 4663, head: '0x30' };
+    const indexed = { value: '100', raw_input: '0x1234', to: { hash: seller }, block_number: 16 };
+    const status = { status: 'DONE', fromAddress: collector.WALLET, toAddress: collector.WALLET,
+      sending: { txHash: hash, chainId: 1 }, receiving: { txHash: destHash, chainId: 4663, amount: '90', token: { address: collector.ZERO } } };
+    const client = { request: async () => status,
+      transaction: async chain => ({ tx: { from: collector.WALLET, to: seller, value: '0x64', input: '0x1234' },
+        receipt: { blockNumber: chain.id === 1 ? '0x10' : '0x21' }, acquiredAt: at }),
+      nativeFlows: async () => ({ outflowRaw: '0', inflowRaw: '90' }), price: async () => price };
+    assert.equal(typeof collector.collectBridgeArrivals, 'function');
+    const result = await collector.collectBridgeArrivals(client, [source, rh], [{ sourceChainId: 1, transactionHash: hash, indexed }]);
+    assert.equal(result.arrivals.length, 1);
+    assert.equal(result.arrivals[0].included, false);
+    assert.equal(result.arrivals[0].transactionHash, destHash);
+    assert.equal(result.arrivals[0].quantityRaw, '90');
+    client.nativeFlows = async () => ({ outflowRaw: '0', inflowRaw: '89' });
+    const rejected = await collector.collectBridgeArrivals(client, [source, rh], [{ sourceChainId: 1, transactionHash: hash, indexed }]);
+    assert.equal(rejected.arrivals.length, 0);
+    assert.match(rejected.excluded[0].reason, /delivery/);
+  });
+});
+
+describe('native current-balance sizing', () => {
+  it('uses exact live raw balances and the unchanged USD-one dust boundary, not WAC for dust', async () => {
+    assert.equal(typeof collector.sizeNativeRows, 'function');
+    const amounts = ['500000000000000', '499999999999999', '123456789012345678'];
+    let count = 0;
+    const client = { request: async () => ({ ethereum: { usd: 2000 } }), rpc: async () => '0x' + BigInt(amounts[count++]).toString(16) };
+    const funding = [{ chainId: 1, transactionHash: hash, acquiredAt: at, quantityRaw: '1000000000000000000', nativePrice: price }];
+    const rows = await collector.sizeNativeRows(client, [{ id: 1 }, { id: 8453 }, { id: 4663 }], funding);
+    assert.equal(rows[0].evidence.lots[0].quantityRaw, amounts[0]);
+    assert.equal(rows[1].evidence.lots.length, 0);
+    assert.match(rows[1].reasons[0], /dust/);
+    assert.equal(rows[2].evidence.lots[0].quantityRaw, amounts[2]);
+    assert.equal(rows[2].evidence.lots[0].nativePrice.priceUsd, 2500);
+  });
+});
+
 describe('collector honesty boundary', () => {
   it('rejects aggregate USD overflow even when each payment leg is finite', () => {
     const item = { ...lot, quantityRaw: '1', acquiredAssetCount: 1,
@@ -117,6 +279,137 @@ function tokenPurchaseFixture() {
   fixture.receipt.logs.at(-1).data = tokenOrderData();
   return fixture;
 }
+
+function bridgeFundingFixture(destinationChainId = 8453) {
+  const sourceChainId = destinationChainId === 1 ? 8453 : 1;
+  const destinationHash = '0x' + 'd'.repeat(64), sourceHash = '0x' + 'b'.repeat(64);
+  const arrivedAt = '2026-09-02T12:00:00.000Z', amount = '1000000000000000000';
+  const chains = [{ id: sourceChainId, head: '0x20' }, { id: destinationChainId, head: '0x30' }];
+  const indexed = { value: amount, raw_input: '0x1234', to: { hash: seller }, block_number: 16 };
+  const source = { tx: { hash: sourceHash, from: collector.WALLET, to: seller, value: '0xde0b6b3a7640000', input: '0x1234' },
+    receipt: { transactionHash: sourceHash, status: '0x1', blockNumber: '0x10', logs: [] }, acquiredAt: at };
+  const delivered = { tx: { hash: destinationHash, from: seller, to: collector.WALLET, value: '0xde0b6b3a7640000', input: '0x' },
+    receipt: { transactionHash: destinationHash, status: '0x1', blockNumber: '0x21', logs: [] }, acquiredAt: arrivedAt };
+  const status = { status: 'DONE', fromAddress: collector.WALLET, toAddress: collector.WALLET,
+    sending: { txHash: sourceHash, chainId: sourceChainId },
+    receiving: { txHash: destinationHash.toUpperCase(), chainId: destinationChainId, amount, token: { address: collector.ZERO } } };
+  const client = new collector.SourceClient({ request: async () => status });
+  client.transaction = async (chain, txHash) => txHash.toLowerCase() === sourceHash ? source : delivered;
+  client.rpc = async () => '0x';
+  client.price = async acquiredAt => ({ ...price, timestamp: acquiredAt, priceUsd: 3000 });
+  if (destinationChainId === 4663) client.nativeFlows = async () => ({ outflowRaw: '0', inflowRaw: amount });
+  const arrivals = [
+    { chainId: sourceChainId, transactionHash: hash, acquiredAt: at, quantityRaw: amount,
+      included: true, nativePrice: { ...price, priceUsd: 1000 } },
+    { chainId: destinationChainId, transactionHash: destinationHash, acquiredAt: arrivedAt, quantityRaw: amount,
+      included: true, nativePrice: { ...price, timestamp: arrivedAt, priceUsd: 3000 } },
+  ];
+  return { client, chains, status, delivered, arrivals, destinationHash,
+    bridges: [{ sourceChainId, transactionHash: sourceHash, indexed }],
+    holding: { kind: 'native', chainId: destinationChainId, assetId: 'native', decimals: 18, quantityRaw: '123456789012345678' } };
+}
+
+function acquisitionFixture() {
+  const proof = { ...tokenPurchaseFixture(), acquiredAt: at };
+  const acquired = { ...holding, contract: nftContract, errors: [],
+    transfers: [1, 2].map(id => ({ contract: nftContract, from: seller, to: collector.WALLET,
+      kind: 'nft', tokenId: String(id), quantityRaw: '1', log: { transactionHash: hash } })) };
+  const sales = [1, 2].map(id => ({ transaction: hash, buyer: collector.WALLET,
+    nft: { collection: 'example', identifier: String(id) } }));
+  const client = { transaction: async () => proof, call: async () => '0x' + word(6),
+    price: async (timestamp, assetId) => ({ ...price, assetId, timestamp }),
+    nativeFlows: async () => ({ outflowRaw: '0', inflowRaw: '0' }), risk: () => {} };
+  return { proof, acquired, sales, client, chain: { id: 4663, head: '0x99', headHash: hash } };
+}
+
+describe('audited rejection authorization', () => {
+  for (const [label, native] of [
+    ['extra payment', { outflowRaw: '1', inflowRaw: '0' }],
+    ['refund', { outflowRaw: '0', inflowRaw: '1' }],
+  ]) {
+    it(`invalidates previously accepted NFT evidence after a proved native ${label}`, async () => {
+      const f = acquisitionFixture();
+      const accepted = await collector.acquireHolding(f.client, f.chain, f.acquired, f.sales);
+      assert.equal(collector.validateEvidence(f.acquired, accepted.evidence).ok, true);
+      f.client.nativeFlows = async () => native;
+      const rejected = await collector.acquireHolding(f.client, f.chain, f.acquired, f.sales);
+      assert.equal(rejected.evidence.complete, false);
+      assert.match(rejected.reasons.join(' '), /extra native payment\/refund/);
+      assert.equal(rejected.reauditedRejected, true);
+      const key = collector.holdingKey(f.acquired);
+      assert.deepEqual(collector.managedInvalidationKeys([{ holding_key: key }], [],
+        rejected.reauditedRejected ? [key] : []), [key]);
+    });
+  }
+  it('invalidates a purchase whose canonical settlement proves an extra token payment', async () => {
+    const f = acquisitionFixture();
+    f.proof.receipt.logs[2].data = '0x' + word(3000001);
+    const rejected = await collector.acquireHolding(f.client, f.chain, f.acquired, f.sales);
+    assert.match(rejected.reasons.join(' '), /ERC20 consideration differs/);
+    assert.equal(rejected.reauditedRejected, true);
+  });
+  it('invalidates a previously free mint when the canonical transaction proves native payment', async () => {
+    const f = acquisitionFixture();
+    f.acquired.transfers.forEach(t => { t.from = collector.ZERO; });
+    f.proof.receipt.logs = f.proof.receipt.logs.slice(0, 2).map(log => ({ ...log,
+      topics: [log.topics[0], '0x' + addrWord(collector.ZERO), ...log.topics.slice(2)] }));
+    const accepted = await collector.acquireHolding(f.client, f.chain, f.acquired, []);
+    assert.equal(collector.validateEvidence(f.acquired, accepted.evidence).ok, true);
+    f.proof.tx.value = '0x1';
+    const rejected = await collector.acquireHolding(f.client, f.chain, f.acquired, []);
+    assert.equal(rejected.evidence.complete, false);
+    assert.equal(rejected.reauditedRejected, true);
+  });
+  it('preserves unauditable NFT keys when a source leg or provenance is unavailable', async () => {
+    for (const missing of ['transaction', 'nativeFlows', 'price', 'decimals', 'sales', 'history', 'unknown wallet event', 'malformed native flows']) {
+      const f = acquisitionFixture();
+      if (['transaction', 'nativeFlows', 'price'].includes(missing)) f.client[missing] = async () => { throw new Error('source unavailable'); };
+      else if (missing === 'decimals') f.client.call = async () => null;
+      else if (missing === 'sales') f.sales = [];
+      else if (missing === 'history') { f.acquired.errors = ['history unavailable']; delete f.acquired.transfers; }
+      else if (missing === 'unknown wallet event') f.proof.receipt.logs.push({ address: nftContract,
+        topics: [unknownTopic, '0x' + addrWord(collector.WALLET)], data: '0x' });
+      else f.client.nativeFlows = async () => ({ outflowRaw: 1, inflowRaw: '0' });
+      const result = await collector.acquireHolding(f.client, f.chain, f.acquired, f.sales);
+      assert.equal(result.evidence.complete, false, missing);
+      assert.notEqual(result.reauditedRejected, true, missing);
+      const key = collector.holdingKey(f.acquired);
+      assert.deepEqual(collector.managedInvalidationKeys([{ holding_key: key }], [],
+        result.reauditedRejected ? [key] : []), [], missing);
+    }
+  });
+  for (const failure of ['replacement branch', 'head unavailable']) {
+    it(`revokes all invalidation authorization after final canonicality fails: ${failure}`, async () => {
+      const f = acquisitionFixture();
+      f.acquired.transfers.push({ ...f.acquired.transfers[0], from: collector.WALLET, to: seller },
+        { ...f.acquired.transfers[0], log: { transactionHash: '0x' + 'e'.repeat(64) } });
+      const rejected = await collector.acquireHolding(f.client, f.chain, f.acquired, f.sales);
+      assert.equal(rejected.reauditedRejected, true);
+      const other = { holding: { kind: 'token', chainId: 1, assetId: paymentToken },
+        evidence: { complete: false }, reasons: ['audited rejection'], reauditedRejected: true };
+      const native = { holding: { kind: 'native', chainId: 8453, assetId: 'native' },
+        evidence: { complete: true }, reasons: [], reauditedRejected: true };
+      const rows = [rejected, other, native];
+      f.client.rpc = async () => {
+        if (failure === 'head unavailable') throw new Error(failure);
+        return { hash: '0x' + 'f'.repeat(64) };
+      };
+      await collector.verifyFinalCanonicality(f.client, [f.chain], rows);
+      assert.ok(rows.every(row => row.reauditedRejected === false));
+      assert.equal(native.evidence.complete, false);
+      assert.match(rejected.reasons.join(' '), /reorged|head unavailable/);
+      assert.deepEqual(collector.managedInvalidationKeys(rows.map(row => ({ holding_key: collector.holdingKey(row.holding) })), [],
+        rows.filter(row => row.reauditedRejected).map(row => collector.holdingKey(row.holding))), []);
+    });
+  }
+  it('keeps genuine rejection authorization when the final pinned head remains canonical', async () => {
+    const f = acquisitionFixture();
+    const row = { holding: f.acquired, evidence: { complete: false }, reasons: [], reauditedRejected: true };
+    f.client.rpc = async () => ({ hash: f.chain.headHash });
+    await collector.verifyFinalCanonicality(f.client, [f.chain], [row]);
+    assert.equal(row.reauditedRejected, true);
+  });
+});
 
 describe('decoded settlement proof', () => {
   it('checks full call traces for delegated wallet extra payments and refunds', () => {
@@ -330,12 +623,12 @@ describe('writer and bridge boundaries', () => {
     await assert.rejects(() => collector.writeEvidence(sql, [{ holding, evidence: { ...evidence, complete: false } }], []), /refusing/);
     assert.equal(queries, 0);
   });
-  it('invalidates every prior managed key not accepted, even when an inventory scope failed', () => {
-    const acceptedKey = collector.holdingKey(holding);
-    const stale = [`token:1:${paymentToken}`, `token:4663:${paymentToken}`, 'nft:4663:missing-inventory', 'native:42161:native',
-      'token:1:', 'nft:4663:', 'native:1:malformed-prior-asset'];
-    const oldRows = [acceptedKey, ...stale, `token:999:${paymentToken}`, 'manual:4663:preserve'].map(holding_key => ({ holding_key }));
-    assert.deepEqual(collector.managedInvalidationKeys(oldRows, [{ holding, evidence }]).sort(), stale.sort());
+  it('invalidates only explicitly re-audited rejected keys and preserves failed/omitted scopes', () => {
+    const stale = `token:1:${paymentToken}`;
+    const oldRows = [collector.holdingKey(holding), stale, 'nft:4663:g00fyz', 'nft:4663:relic-machines',
+      'native:42161:native', 'manual:4663:preserve'].map(holding_key => ({ holding_key }));
+    assert.deepEqual(collector.managedInvalidationKeys(oldRows, [{ holding, evidence }], [stale]), [stale]);
+    assert.deepEqual(collector.managedInvalidationKeys(oldRows, [{ holding, evidence }], []), []);
   });
   it('keeps upserts and all invalidations in one SQL transaction, including delete-only runs', async () => {
     const stale = `token:1:${paymentToken}`;
