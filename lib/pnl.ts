@@ -2,7 +2,7 @@ import { shouldSuppressHolding } from "./dust-filter";
 import type { FiatRates, NormalizedT212Position } from "./live-data";
 
 /** Recorded does not mean free. Only verified no-payment acquisitions are free. */
-export type BasisStatus = "t212-live" | "onchain-derived" | "airdrop-free" | "not-recorded";
+export type BasisStatus = "t212-live" | "onchain-derived" | "arrival-priced" | "airdrop-free" | "not-recorded";
 /** Mutually exclusive coverage buckets; unpriced is not also counted as dust. */
 export type PnlEligibility = "eligible" | "not-recorded" | "dust" | "unpriced" | "unreconciled";
 
@@ -138,10 +138,15 @@ export type AcquisitionLot = {
   transactionHash: string;
   acquiredAt: string;
   quantityRaw: string;
-  operation: "purchase" | "mint" | "claim" | "airdrop" | "transfer" | "bridge" | "exchange-deposit" | "wrapper" | "unknown";
+  operation: "purchase" | "funding-arrival" | "mint" | "claim" | "airdrop" | "transfer" | "bridge" | "exchange-deposit" | "wrapper" | "unknown";
   success: boolean;
   allPaymentLegsObserved: boolean;
+  /** Pinned collector contract: number of units of evidence.assetId in this lot.
+   * A collector must not put a mixed-asset payment into this single-asset shape. */
   acquiredAssetCount: number;
+  /** Optional explicit unit identities; reject any contradiction of the single-asset lot.
+   * Existing collector rows use evidence.assetId for every unit, without this field. */
+  acquiredAssetIds?: string[];
   nativeOutflowRaw: string;
   nativePrice: HistoricalUsdPrice | null;
   tokenOutflows: { assetId: string; amountRaw: string; decimals: number; historicalPrice: HistoricalUsdPrice | null }[];
@@ -184,21 +189,43 @@ export function deriveOnchainPnl(holding: OnchainHolding, usdToThb: number | nul
     let quantity = BigInt(0);
     let basis = 0;
     let purchased = false;
+    let arrivalPriced = false;
     const seen = new Set<string>();
     for (const lot of evidence.lots) {
       if (!/^0x[0-9a-fA-F]{64}$/.test(lot.transactionHash) || seen.has(lot.transactionHash.toLowerCase())
         || !Number.isFinite(Date.parse(lot.acquiredAt))
         || (holding.asOf !== undefined && (!Number.isFinite(Date.parse(holding.asOf)) || Date.parse(lot.acquiredAt) > Date.parse(holding.asOf)))
         || lot.success !== true
-        || lot.allPaymentLegsObserved !== true || lot.acquiredAssetCount !== 1) {
+        || lot.allPaymentLegsObserved !== true || !Number.isSafeInteger(lot.acquiredAssetCount) || lot.acquiredAssetCount < 1) {
         return unknown("Incomplete, failed, duplicate or multi-asset acquisition transaction");
+      }
+      if (lot.acquiredAssetIds !== undefined
+        && (!Array.isArray(lot.acquiredAssetIds) || lot.acquiredAssetIds.length !== lot.acquiredAssetCount
+          || !lot.acquiredAssetIds.every((assetId) => typeof assetId === "string" && assetId.toLowerCase() === evidence.assetId.toLowerCase()))) {
+        return unknown("Mixed or incomplete asset identities in acquisition transaction");
       }
       seen.add(lot.transactionHash.toLowerCase());
       const acquired = rawUnits(lot.quantityRaw);
       if (acquired <= BigInt(0)) return unknown("Invalid acquired quantity");
+      if (lot.acquiredAssetCount > 1 && acquired !== BigInt(lot.acquiredAssetCount) * BigInt(10) ** BigInt(holding.decimals)) {
+        return unknown("Batch unit count does not reconcile with acquired quantity");
+      }
       quantity += acquired;
       const nativePaid = rawUnits(lot.nativeOutflowRaw);
       const noPayment = nativePaid === BigInt(0) && lot.tokenOutflows.length === 0;
+      if (lot.operation === "funding-arrival") {
+        // Owner rule: native ETH funding is cash→ETH at arrival, not a purchase.
+        if (holding.kind !== "native" || holding.assetId !== "native" || holding.decimals !== 18
+          || ![1, 8453, 42161, 4663].includes(holding.chainId) || !noPayment || lot.acquiredAssetCount !== 1) {
+          return unknown("Funding-arrival rule requires native ETH and no payment outflows");
+        }
+        const arrivalUsd = historicalPaymentUsd({ assetId: "native", amountRaw: lot.quantityRaw,
+          decimals: 18, historicalPrice: lot.nativePrice }, lot.acquiredAt);
+        if (arrivalUsd === null) return unknown("No historical ETH/USD price at funding arrival");
+        basis += arrivalUsd;
+        arrivalPriced = true;
+        continue;
+      }
       const free = holding.kind !== "native" && ["mint", "claim", "airdrop"].includes(lot.operation) && noPayment;
       if (free) continue;
       if (lot.operation !== "purchase" || noPayment || (nativePaid > BigInt(0) ? 1 : 0) + lot.tokenOutflows.length !== 1) {
@@ -210,12 +237,15 @@ export function deriveOnchainPnl(holding: OnchainHolding, usdToThb: number | nul
       if (payment.assetId.toLowerCase() === holding.assetId.toLowerCase()) return unknown("Self-payment/wrapper is not a clean purchase");
       const paidUsd = historicalPaymentUsd(payment, lot.acquiredAt);
       if (paidUsd === null) return unknown("No clean historical USD payment-asset price at acquisition");
+      // Each same-asset unit receives paidUsd / acquiredAssetCount. The exact
+      // quantity gate retains ALL units, so their aggregate is the full payment
+      // once, not paidUsd/count for the collection or a rounded divide×multiply.
       basis += paidUsd;
       purchased = true;
     }
     if (quantity !== rawUnits(holding.quantityRaw)) return unknown("Acquisitions do not account for the entire current holding");
-    return recorded(basis, holding.valueUsd! - basis, purchased ? "onchain-derived" : "airdrop-free",
-      `${evidence.source}: ${purchased ? "clean purchase; historical USD payment price" : "verified mint/claim/airdrop — no payment leg"}; ${evidence.lots.length} acquisition(s); ${evidence.lots[0].acquiredAt.slice(0, 10)}`, usdToThb);
+    return recorded(basis, holding.valueUsd! - basis, arrivalPriced ? "arrival-priced" : purchased ? "onchain-derived" : "airdrop-free",
+      `${evidence.source}: ${arrivalPriced ? "funding arrival priced at arrival-date ETH/USD under the owner rule" : purchased ? "clean purchase; historical USD payment price" : "verified mint/claim/airdrop — no payment leg"}; ${evidence.lots.length} acquisition(s); ${evidence.lots[0].acquiredAt.slice(0, 10)}`, usdToThb);
   } catch {
     return unknown("Acquisition derivation failed; invalid evidence");
   }

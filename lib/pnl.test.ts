@@ -98,7 +98,11 @@ describe("on-chain conservative classification", () => {
     if (issue === "wrong-asset") evidence.assetId = "another-asset";
     if (issue === "partial-quantity") lot.quantityRaw = "1";
     if (issue === "duplicate") evidence.lots.push({ ...lot });
-    if (issue === "multi-asset") lot.acquiredAssetCount = 2;
+    if (issue === "multi-asset") {
+      // Count now means units of THIS asset, not distinct assets: spell out the mixed transaction.
+      lot.acquiredAssetCount = 2;
+      lot.acquiredAssetIds = [evidence.assetId, "another-asset"];
+    }
     if (issue === "failed") lot.success = false;
     if (issue === "bad-units") lot.nativeOutflowRaw = "1.2";
     if (issue === "stale-price") lot.nativePrice!.timestamp = AS_OF;

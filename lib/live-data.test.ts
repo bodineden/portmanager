@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import * as basisDb from "./basis-db";
 import { shouldSuppressHolding } from "./dust-filter";
 import { joinedHoldingsMap, valueSetSignature } from "./holding-values";
 import { observedNftFloors, oneUnpricedNft } from "./__fixtures__/nft-floors";
@@ -734,6 +735,29 @@ describe("Trading 212 normalisation", () => {
 });
 
 describe("getJoinedPortfolio", () => {
+  it.each([false, true])("consumes basis cache without adding a source, and isolates reader rejection=%s", async (reject) => {
+    vi.stubEnv("DATABASE_URL", "");
+    vi.stubEnv("T212_API_KEY", "api-key");
+    vi.stubEnv("T212_API_SECRET", "api-secret");
+    vi.stubGlobal("fetch", walletNetworkFetchMock());
+    const reader = vi.spyOn(basisDb, "readBasisEvidence");
+    if (reject) reader.mockRejectedValue(new Error("synthetic reader unavailable"));
+    else reader.mockResolvedValue({ "native:1:native": { source: "rpc", chainId: 1, assetId: "native", decimals: 18,
+      complete: true, hasDisposals: false, lots: [{ transactionHash: `0x${"a".repeat(64)}`, acquiredAt: AS_OF,
+        quantityRaw: BigInt("0x2c6bb0e600f7b").toString(), operation: "funding-arrival", success: true,
+        allPaymentLegsObserved: true, acquiredAssetCount: 1, nativeOutflowRaw: "0", tokenOutflows: [],
+        nativePrice: { provider: "defillama-historical", assetId: "native", timestamp: AS_OF, priceUsd: 1500 } }] } });
+    const book = await getJoinedPortfolio({ now: () => Date.parse(AS_OF) });
+    expect(reader).toHaveBeenCalledExactlyOnceWith(AS_OF);
+    const row = book.wallet.native.find((holding) => holding.chainId === 1)!;
+    expect(row).toMatchObject({ basisStatus: reject ? "not-recorded" : "arrival-priced",
+      pnlEligibility: reject ? "not-recorded" : "eligible" });
+    expect(row.valueUsd).toBe(row.amount * 2000);
+    expect(row.costBasisUsd).toBe(reject ? null : row.amount * 1500);
+    expect(book.t212.cashAvailable).toBe(487);
+    expect(Object.keys(book.sources).sort()).toEqual(["capital", "ethPrice", "fiatFx", "manualHoldings", "nfts",
+      "t212Positions", "t212Summary", "walletNative", "walletTokens"]);
+  });
   it.each([
     { reservedForOrders: 50, inPies: 0 },
     { reservedForOrders: 0, inPies: 50 },

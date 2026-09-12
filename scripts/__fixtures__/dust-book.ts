@@ -54,7 +54,27 @@ export function dustBook(scenario: string) {
       [`token:1:${TOKEN}`]: evidence(1, TOKEN, "1000000000000000000", 18),
     },
   };
-  if (scenario === "unreconciled") {
+  if (scenario === "basis" || scenario === "basis-missing") {
+    // Synthetic-but-valid chain evidence through the real engine, never patched P&L.
+    inputs.t212Summary = live({ currency: "USD", totalValue: 0, cashAvailable: 0, investmentsCurrentValue: 0 });
+    inputs.t212Positions = live([]);
+    inputs.nfts = live([{ collection: "collection-one", collectionName: "COLLECTION-ONE", tokenCount: 2, floorEth: 0.03 }]);
+    inputs.walletNative = live([{ chainId: 1, chainName: "Ethereum", symbol: "NATIVE-ONE", amount: 1.5, amountRaw: "1500000000000000000" }]);
+    inputs.walletTokens!.data = inputs.walletTokens!.data!.slice(0, 1); // No evidence: visible negative control.
+    inputs.manualHoldings = live([]);
+    const arrival = evidence(1, "native", "1000000000000000000", 18);
+    arrival.lots = ["1000000000000000000", "500000000000000000"].map((quantityRaw, index) => ({
+      ...arrival.lots[0], transactionHash: `0x${String(index + 1).repeat(64)}`, quantityRaw, operation: "funding-arrival",
+      nativePrice: { provider: "defillama-historical", assetId: "native", timestamp: ACQUIRED, priceUsd: index === 0 ? 600 : 1000 },
+    }));
+    const batch = evidence(4663, "collection-one", "2", 0);
+    Object.assign(batch.lots[0], { operation: "purchase", acquiredAssetCount: 2,
+      acquiredAssetIds: ["collection-one", "collection-one"], nativeOutflowRaw: "20000000000000000",
+      nativePrice: { provider: "defillama-historical", assetId: "native", timestamp: ACQUIRED, priceUsd: 2000 } });
+    inputs.basisEvidence = scenario === "basis-missing" ? {} : {
+      "native:1:native": arrival, "nft:4663:collection-one": batch,
+    };
+  } else if (scenario === "unreconciled") {
     inputs.t212Summary = live({ currency: "USD", totalValue: 100, cashAvailable: 0, investmentsCurrentValue: 100 });
     inputs.t212Positions = normalizeT212Positions(browserFixture.unreconciledT212Positions, "USD", AS_OF);
     inputs.nfts = live([]);

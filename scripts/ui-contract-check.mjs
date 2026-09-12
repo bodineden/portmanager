@@ -367,7 +367,7 @@ async function checkPnlContract(page) {
       return "no joined rows; unavailable/empty state remains explicit";
     }
     for (const row of rows) {
-      requireCondition(["t212-live", "onchain-derived", "airdrop-free", "not-recorded"].includes(row.status), `invalid basisStatus ${row.status}`);
+      requireCondition(["t212-live", "onchain-derived", "arrival-priced", "airdrop-free", "not-recorded"].includes(row.status), `invalid basisStatus ${row.status}`);
       requireCondition(["eligible", "not-recorded", "unreconciled"].includes(row.eligibility), `invalid pnlEligibility ${row.eligibility}`);
       requireCondition(row.value.length > 0 && row.basis.length > 0 && row.pnl.length > 0, "P&L row omits value/basis/P&L cells");
       requireCondition(row.text.includes(row.status), `basisStatus chip ${row.status} is not visible`);
@@ -1576,6 +1576,80 @@ async function auditPopulatedFixtures(browser, fixtureUrl, viewport) {
   }
 }
 
+async function auditBasisEvidenceFixtures(browser, fixtureUrl, viewport) {
+  const page = await browser.newPage({ viewport: { width: viewport.width, height: viewport.height } });
+  const browserErrors = [];
+  page.on("pageerror", (error) => browserErrors.push(`page: ${error.message}`));
+  page.on("console", (message) => captureBrowserConsole(browserErrors, message));
+  const prefix = `${viewport.name} basis evidence`;
+  let positiveValue;
+  try {
+    for (const scenario of ["basis", "basis-missing"]) {
+      const positive = scenario === "basis";
+      const label = `${prefix} ${positive ? "positive" : "fail-closed"}`;
+      if (!await check(`${label} renders real joined inputs`, async () => {
+        const response = await page.goto(`${fixtureUrl}/?scenario=dust-${scenario}-home`, { waitUntil: "networkidle", timeout: 15_000 });
+        requireCondition(response?.ok(), `fixture HTTP ${response?.status() ?? "unavailable"}`);
+        await page.locator(".pnl-asset-table").waitFor();
+      })) continue;
+      const book = await page.evaluate(() => window.__dustFixturePortfolio);
+      await check(`${label} pins basis amounts, coverage identities and unchanged source cardinality`, async () => {
+        const rows = [book.wallet.native[0], book.nfts[0], book.wallet.tokens[0]];
+        const expected = positive ? [[1100, 400, "arrival-priced", "eligible"], [40, 20, "onchain-derived", "eligible"], [null, null, "not-recorded", "not-recorded"]]
+          : Array.from({ length: 3 }, () => [null, null, "not-recorded", "not-recorded"]);
+        requireCondition(JSON.stringify(rows.map((row) => [row.costBasisUsd, row.pnlUsd, row.basisStatus, row.pnlEligibility])) === JSON.stringify(expected), "derived lot basis/P&L/provenance differs");
+        requireCondition(book.nfts[0].tokenCount === 2 && (positive ? book.nfts[0].costBasisUsd / 2 === 20 : book.nfts[0].costBasisUsd === null), "batch payment was not allocated once across its two units");
+        const c = book.totals.pnlCoverage;
+        requireCondition(c.totalHoldings === 3 && c.eligible === (positive ? 2 : 0) && c.notRecorded === (positive ? 1 : 3)
+          && c.dust === 0 && c.unpriced === 0 && c.unreconciled === 0 && c.status === "partial" && c.sourcesComplete === true, "coverage counts or source completeness differ");
+        requireCondition(c.eligible + c.notRecorded + c.dust + c.unpriced + c.unreconciled === c.totalHoldings, "coverage bucket identity changed");
+        const keys = ["capital", "ethPrice", "fiatFx", "manualHoldings", "nfts", "t212Positions", "t212Summary", "walletNative", "walletTokens"];
+        requireCondition(JSON.stringify(Object.keys(book.sources).sort()) === JSON.stringify(keys), "basis cache added/lost a source");
+        requireCondition(book.totals.costBasisUsd === (positive ? 1140 : null) && book.totals.pnlUsd === (positive ? 420 : null), "recorded summary includes unknown basis or doubles the batch");
+        requireCondition(book.totals.grandTotalUsd === 1561, "basis changed the independent full book valuation");
+        if (positive) positiveValue = book.totals.grandTotalUsd;
+        else requireCondition(book.totals.grandTotalUsd === positiveValue, "removing evidence changed full book value");
+        return JSON.stringify({ rows: expected, coverage: c });
+      });
+      await check(`${label} displays provenance chips, exact values and honest no-evidence exclusions`, async () => {
+        const ids = ["native:1", "nft:collection-one", "token:1:0x0000000000000000000000000000000000000001"];
+        const rows = [book.wallet.native[0], book.nfts[0], book.wallet.tokens[0]];
+        requireCondition(await page.locator('.pnl-asset-table tbody tr').count() === 3, "fixture market row count differs");
+        for (const [index, id] of ids.entries()) {
+          const row = page.locator(`.pnl-asset-table tr[data-holding-id="${id}"]`);
+          const holding = rows[index];
+          requireCondition(await row.getAttribute("data-basis-status") === holding.basisStatus, `${id} basis attribute differs`);
+          requireCondition(await row.getAttribute("data-pnl-eligibility") === holding.pnlEligibility, `${id} eligibility attribute differs`);
+          requireCondition(await row.locator(".basis-chip").isVisible() && compactText(await row.locator(".basis-chip").innerText()) === holding.basisStatus, `${id} provenance chip not visible`);
+          for (const [cell, value] of [["basis", holding.costBasisUsd], ["pnl", holding.pnlUsd]]) {
+            requireCondition(await row.locator(`[data-pnl-cell="${cell}"]`).evaluate((element) => element.firstChild?.textContent) === expectedUsd(value), `${id} ${cell} differs from derived amount/null`);
+          }
+          const text = compactText(await row.innerText());
+          requireCondition(text.includes(holding.pnlEligibility === "eligible" ? "Included in recorded P&L" : "Basis not recorded · excluded from P&L"), `${id} eligibility copy changed`);
+          if (holding.basisStatus === "arrival-priced") {
+            const note = await row.locator(".basis-chip").getAttribute("title");
+            requireCondition(/funding arrival.*arrival-date ETH\/USD under the owner rule/i.test(note ?? ""), "arrival chip fails to distinguish the owner rule from a purchase");
+          }
+        }
+      });
+      await check(`${label} preserves summary coverage copy and thinking mascot priority`, async () => {
+        const summary = page.locator("[data-pnl-summary]");
+        requireCondition(await summary.getAttribute("data-pnl-state") === (positive ? "partial" : "none"), "summary state differs from recorded subset");
+        requireCondition((await summary.innerText()).includes(positive ? "Partial P&L (2 of 3 holdings have recorded basis)" : "No recorded cost basis yet — P&L unavailable"), "coverageLabel summary copy changed");
+        requireCondition(compactText(await page.locator(".pnl-coverage .pnl-metric-line > strong").innerText()) === `${positive ? 2 : 0} / 3`, "coverage widget numerator/denominator differs");
+        await assertMascot(page, "thinking");
+        const toggle = page.locator("[data-mascot-toggle]");
+        if (await toggle.getAttribute("aria-expanded") !== "true") await toggle.click();
+        requireCondition(compactText(await page.locator("[data-mascot-bubble]").innerText()) === "Still mapping cost basis. Where I have no clean acquisition record I won't guess a number.", "no-evidence holding lost the unchanged thinking copy/priority");
+      });
+      await checkNoMutationControls(page, label);
+    }
+    await check(`${prefix} controls keep browser console clean`, async () => {
+      requireCondition(browserErrors.length === 0, browserErrors.join(" | "));
+    });
+  } finally { await page.close(); }
+}
+
 async function auditDustFixtures(browser, fixtureUrl, viewport) {
   const page = await browser.newPage({ viewport: { width: viewport.width, height: viewport.height } });
   const browserErrors = [];
@@ -2605,6 +2679,7 @@ try {
         await auditCapitalFixtures(browser, fixtureServer.url, viewport, check);
         await auditPopulatedFixtures(browser, fixtureServer.url, viewport);
         await auditDustFixtures(browser, fixtureServer.url, viewport);
+        await auditBasisEvidenceFixtures(browser, fixtureServer.url, viewport);
         await auditMascotFixtures(browser, fixtureServer.url, viewport);
         await auditMascotReducedMotion(browser, `${fixtureServer.url}/?scenario=portfolio-mascot-excited`, viewport, "fixture");
         await auditMascotLoading(browser, fixtureServer.url, viewport);
