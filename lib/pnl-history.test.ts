@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { __resetSnapshotCacheForTests, getJoinedPortfolio, buildJoinedPortfolio, type JoinedPortfolio, type JoinedPortfolioInputs, type LiveResult } from "./live-data";
-import { VALUE_SOURCE_KEYS } from "./holding-values";
+import { joinedHoldingsMap, valueSetSignature, VALUE_SOURCE_KEYS } from "./holding-values";
 import { oneUnpricedNft } from "./__fixtures__/nft-floors";
 import * as history from "./pnl-history";
 
@@ -57,7 +57,7 @@ describe("daily snapshot recorder", () => {
     expect(getDb).not.toHaveBeenCalled();
   });
 
-  it("records only displayed NFTs and tokens without price-only partial status or suppressed map entries", async () => {
+  it("records the full NFT/token inventory and values while coverage counts only displayable holdings", async () => {
     const book = portfolio({
       nfts: live(oneUnpricedNft),
       walletTokens: live([
@@ -76,11 +76,15 @@ describe("daily snapshot recorder", () => {
     expect(coverage).toMatchObject({ totalHoldings: 6, eligible: 0, notRecorded: 6, unpriced: 0, dust: 0, status: "partial" });
     expect(coverage.eligible + coverage.notRecorded + coverage.unreconciled + coverage.dust + coverage.unpriced).toBe(coverage.totalHoldings);
     const holdings = JSON.parse(String(params[16]));
-    expect(holdings).not.toHaveProperty("nft:wasteland-art");
-    expect(holdings).not.toHaveProperty("token:1:unpriced");
-    expect(holdings).not.toHaveProperty("token:1:dust");
-    expect(Object.values(holdings)).toHaveLength(6);
-    expect(Object.values(holdings).every((value) => typeof value === "number" && value >= 1)).toBe(true);
+    expect(holdings).toHaveProperty("nft:wasteland-art", null);
+    expect(holdings).toHaveProperty("token:1:unpriced", null);
+    expect(holdings).toHaveProperty("token:1:dust", 0.02);
+    expect(Object.values(holdings)).toHaveLength(9);
+    expect(holdings).toEqual(joinedHoldingsMap(book));
+    expect(coverage.valueSetSignature).toBe(valueSetSignature(holdings, book.sources));
+    expect(params[1]).toBe(book.totals.grandTotalUsd);
+    expect(book.totals.walletTokensUsd).toBe(0.02);
+    expect(book.totals.walletTokensThb).toBe(0.72);
     expect(history.mapPortfolioSnapshotRow({ snapshot_date: "2026-09-05", total_value_usd: params[1], total_value_thb: params[2], coverage, holdings })?.coverage).toMatchObject({ totalHoldings: 6, dust: 0, unpriced: 0 });
   });
 

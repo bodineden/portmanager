@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { shouldSuppressHolding } from "./dust-filter";
+import { joinedHoldingsMap, valueSetSignature } from "./holding-values";
 import { observedNftFloors, oneUnpricedNft } from "./__fixtures__/nft-floors";
 import {
   __resetSnapshotCacheForTests,
@@ -194,27 +196,27 @@ describe("buildJoinedPortfolio", () => {
         + `USDG=${usdgThb} THB; grand=${expectedGrand} THB`,
     );
 
-    expect(nativeEth).toBeCloseTo(0.24970377340424574, 14);
-    expect(portfolio.wallet.native.map((row) => row.chainId)).toEqual([1, 42161, 4663]);
+    expect(nativeEth).toBeCloseTo(0.24980279787309148, 14);
+    expect(portfolio.wallet.native.map((row) => row.chainId)).toEqual([1, 8453, 42161, 4663]);
     expect(arbitrum?.amount).toBe(0.248395962372228);
     expect(arbitrum?.valueUsd).toBeCloseTo(496.791924744456, 12);
-    expect(portfolio.totals.walletNativeUsd).toBeCloseTo(499.4075468084915, 12);
-    expect(portfolio.totals.walletNativeThb).toBeCloseTo(17_978.67168510569, 10);
+    expect(portfolio.totals.walletNativeUsd).toBeCloseTo(499.605595746183, 12);
+    expect(portfolio.totals.walletNativeThb).toBeCloseTo(17_985.801446862588, 10);
     expect(portfolio.wallet.tokens.find((row) => row.symbol === "USDG")).toMatchObject({
       amount: 1.475469,
       priced: true,
       valueUsd: 1.475469,
       valueThb: 53.116884,
     });
-    expect(portfolio.wallet.tokens.find((row) => row.symbol === "CAT")).toBeUndefined();
-    expect(portfolio.wallet.tokens).toHaveLength(1);
+    expect(portfolio.wallet.tokens.find((row) => row.symbol === "CAT")).toMatchObject({ valueUsd: null, priced: false });
+    expect(portfolio.wallet.tokens).toHaveLength(2);
     expect(portfolio.sources.walletTokens.status).toBe("live");
     expect(portfolio.totals.pnlCoverage).toMatchObject({ dust: 0, unpriced: 0 });
     expect(portfolio.totals.walletTokensUsd).toBe(1.475469);
     expect(portfolio.totals.walletTokensThb).toBe(53.116884);
-    expect(portfolio.totals.walletUsd).toBeCloseTo(500.8830158084915, 12);
-    expect(portfolio.totals.walletThb).toBeCloseTo(18_031.78856910569, 10);
-    expect(portfolio.totals.grandTotalThb).toBeCloseTo(53_131.09736910569, 10);
+    expect(portfolio.totals.walletUsd).toBeCloseTo(501.081064746183, 12);
+    expect(portfolio.totals.walletThb).toBeCloseTo(18_038.918330862588, 10);
+    expect(portfolio.totals.grandTotalThb).toBeCloseTo(53_138.22713086259, 10);
   });
 
   it("keeps a wholly unpriced non-empty wallet null rather than inventing zero", () => {
@@ -239,12 +241,13 @@ describe("buildJoinedPortfolio", () => {
     expect(portfolio.totals.walletUsd).toBeNull();
     expect(portfolio.totals.walletThb).toBeNull();
     expect(portfolio.totals.grandTotalThb).toBeNull();
-    expect(portfolio.wallet.tokens).toEqual([]);
+    expect(portfolio.wallet.tokens).toMatchObject([{ symbol: "CAT", valueUsd: null }]);
+    expect(portfolio.wallet.tokens.filter((row) => !shouldSuppressHolding(row))).toEqual([]);
     expect(portfolio.sources.walletTokens.status).toBe("unavailable");
     expect(portfolio.totals.pnlCoverage).toMatchObject({ dust: 0, unpriced: 0 });
   });
 
-  it("applies the strict boundary to every market class before totals and coverage", () => {
+  it("preserves full market inventories and totals while the strict boundary limits display rows and coverage", () => {
     const inputs = fixtureInputs();
     const values = [null, 0, 0.99, 1, 1.01];
     inputs.t212Summary = live({ currency: "USD", cashAvailable: 5, totalValue: 100, investmentsCurrentValue: 95 });
@@ -266,15 +269,32 @@ describe("buildJoinedPortfolio", () => {
     })));
 
     const portfolio = buildJoinedPortfolio(inputs, AS_OF);
+    for (const rows of [portfolio.t212.investments, portfolio.nfts, portfolio.wallet.tokens]) {
+      expect(rows.map((row) => row.valueUsd)).toEqual([null, 0, 0.99, 1, 1.01]);
+    }
+    expect(portfolio.wallet.native.map((row) => row.valueUsd)).toEqual([0, 0.99, 1, 1.01]);
     for (const rows of [portfolio.t212.investments, portfolio.nfts, portfolio.wallet.native, portfolio.wallet.tokens]) {
-      expect(rows.map((row) => row.valueUsd)).toEqual([1, 1.01]);
+      const displayed = rows.filter((row) => !shouldSuppressHolding(row));
+      const suppressed = rows.filter(shouldSuppressHolding);
+      expect(displayed.map((row) => row.valueUsd)).toEqual([1, 1.01]);
+      expect(displayed.length).toBeLessThan(rows.length);
+      const fullValue = rows.reduce((sum, row) => sum + (row.valueUsd ?? 0), 0);
+      const displayedValue = displayed.reduce((sum, row) => sum + row.valueUsd!, 0);
+      expect(fullValue).toBe(3);
+      expect(displayedValue).toBe(2.01);
+      expect(fullValue - displayedValue).toBeCloseTo(0.99, 12);
+      expect(suppressed.filter((row) => row.valueUsd !== null).every((row) => row.valueUsd! < 1)).toBe(true);
+      expect(fullValue - displayedValue).toBeCloseTo(suppressed.reduce((sum, row) => sum + (row.valueUsd ?? 0), 0), 12);
     }
     expect(portfolio.t212).toMatchObject({ cashAvailable: 5, totalValue: 100, investmentsCurrentValue: 95 });
     expect(portfolio.totals.t212Thb).toBe(100 * 36);
-    expect(portfolio.totals.nftsUsd).toBe(2.01);
-    expect(portfolio.totals.walletNativeUsd).toBe(2.01);
-    expect(portfolio.totals.walletTokensUsd).toBe(2.01);
-    expect(portfolio.totals.grandTotalUsd).toBeCloseTo(100 + 3 * 2.01, 12);
+    expect(portfolio.totals.nftsUsd).toBe(3);
+    expect(portfolio.totals.walletNativeUsd).toBe(3);
+    expect(portfolio.totals.walletTokensUsd).toBe(3);
+    expect(portfolio.totals.nftsEth).toBeCloseTo(0.0015, 12);
+    expect(portfolio.totals).toMatchObject({ nftsThb: 108, walletNativeThb: 108, walletTokensThb: 108,
+      walletUsd: 6, walletThb: 216, grandTotalThb: 3924 });
+    expect(portfolio.totals.grandTotalUsd).toBeCloseTo(109, 12);
     expect(portfolio.totals.pnlCoverage).toMatchObject({ totalHoldings: 8, eligible: 2, notRecorded: 6, dust: 0, unpriced: 0 });
     for (const name of ["t212Positions", "nfts", "walletNative", "walletTokens"] as const) {
       expect(portfolio.sources[name].status).toBe("live");
@@ -283,7 +303,7 @@ describe("buildJoinedPortfolio", () => {
     expect(coverage.eligible + coverage.notRecorded + coverage.unreconciled + coverage.dust + coverage.unpriced).toBe(coverage.totalHoldings);
   });
 
-  it("keeps a known small-value class live at zero after all its rows are omitted", () => {
+  it("keeps small market values in live totals with no displayable rows or coverage exclusions", () => {
     const inputs = fixtureInputs();
     inputs.t212Summary = live({ currency: "USD", cashAvailable: 5, totalValue: 5.25, investmentsCurrentValue: 0.25 });
     inputs.t212Positions = live([{ ticker: "SMALL", name: "Small", quantity: 1, averagePrice: 0,
@@ -296,12 +316,17 @@ describe("buildJoinedPortfolio", () => {
       amountRaw: "1", decimals: 0, amount: 1, priceUsd,
     })));
     const portfolio = buildJoinedPortfolio(inputs, AS_OF);
-    expect([portfolio.t212.investments, portfolio.nfts, portfolio.wallet.native, portfolio.wallet.tokens]).toEqual([[], [], [], []]);
+    for (const rows of [portfolio.t212.investments, portfolio.nfts, portfolio.wallet.native, portfolio.wallet.tokens]) {
+      expect(rows.length).toBeGreaterThan(0);
+      expect(rows.filter((row) => !shouldSuppressHolding(row))).toEqual([]);
+    }
     expect(portfolio.t212).toMatchObject({ totalValue: 5.25, investmentsCurrentValue: 0.25 });
     expect(portfolio.totals.t212Thb).toBe(5.25 * 36);
-    expect(portfolio.totals).toMatchObject({ nftsEth: 0, nftsUsd: 0, nftsThb: 0, walletNativeUsd: 0,
-      walletNativeThb: 0, walletTokensUsd: 0, walletTokensThb: 0, walletUsd: 0, walletThb: 0, grandTotalUsd: 5.25,
+    expect(portfolio.totals).toMatchObject({ nftsEth: 0.0001, nftsUsd: 0.2, nftsThb: 7.2, walletNativeUsd: 0.2,
+      walletNativeThb: 7.2, walletTokensUsd: 0.25, walletTokensThb: 9, walletUsd: 0.45, walletThb: 16.2,
       pnlCoverage: { totalHoldings: 0, eligible: 0, dust: 0, unpriced: 0, status: "complete", sourcesComplete: true } });
+    expect(portfolio.totals.grandTotalUsd).toBeCloseTo(5.9, 12);
+    expect(portfolio.totals.grandTotalThb).toBeCloseTo(212.4, 12);
     for (const name of ["t212Positions", "nfts", "walletNative", "walletTokens"] as const) expect(portfolio.sources[name].status).toBe("live");
   });
 
@@ -313,8 +338,8 @@ describe("buildJoinedPortfolio", () => {
     inputs.t212Positions = live([{ ticker: "UNKNOWN", name: "Unknown", quantity: 1, averagePrice: null,
       currentPrice: null, ppl: null, currency: "GBP", pplCurrency: "GBP", valueNative: null, valueAccount: null }]);
     const portfolio = buildJoinedPortfolio(inputs, AS_OF);
-    expect(portfolio.wallet.native).toEqual([]);
-    expect(portfolio.t212.investments).toEqual([]);
+    expect(portfolio.wallet.native).toMatchObject([{ chainId: 1, valueUsd: null }]);
+    expect(portfolio.t212.investments).toMatchObject([{ ticker: "UNKNOWN", valueUsd: null }]);
     expect(portfolio.sources.walletNative.status).toBe("unavailable");
     expect(portfolio.sources.t212Positions.status).toBe("unavailable");
     expect(portfolio.t212).toMatchObject({ totalValue: 487, investmentsCurrentValue: 0 });
@@ -437,10 +462,11 @@ describe("buildJoinedPortfolio", () => {
     const portfolio = buildJoinedPortfolio(inputs, AS_OF);
     const withoutSmallRow = buildJoinedPortfolio({ ...inputs, t212Positions: live(inputs.t212Positions.data!.slice(0, 1)) }, AS_OF);
 
-    expect(portfolio.t212.investments.map((row) => row.valueUsd)).toEqual([100]);
+    expect(portfolio.t212.investments.map((row) => row.valueUsd)).toEqual([100, 0.5]);
+    expect(portfolio.t212.investments.filter((row) => !shouldSuppressHolding(row)).map((row) => row.valueUsd)).toEqual([100]);
     expect(portfolio.t212).toMatchObject({ cashAvailable: 10, totalValue: 160.5, investmentsCurrentValue: 100.5 });
     expect(portfolio.totals.t212Thb).toBe(160.5 * 36);
-    expect(portfolio.t212).toEqual(withoutSmallRow.t212);
+    expect(portfolio.t212.investments.filter((row) => !shouldSuppressHolding(row))).toEqual(withoutSmallRow.t212.investments);
     expect(portfolio.totals).toEqual(withoutSmallRow.totals);
     expect(portfolio.sources.t212Positions.status).toBe("live");
   });
@@ -460,8 +486,10 @@ describe("buildJoinedPortfolio", () => {
     inputs.ethPrice = { data: payload === "stale" ? 2_000 : null, state: state("unavailable") };
 
     const portfolio = buildJoinedPortfolio(inputs, AS_OF);
-    expect(portfolio.nfts).toEqual([]);
-    expect(portfolio.wallet.native).toEqual([]);
+    expect(portfolio.nfts).toHaveLength(floors.length);
+    expect(portfolio.wallet.native).toHaveLength(floors.length);
+    expect(portfolio.nfts.filter((row) => !shouldSuppressHolding(row))).toEqual([]);
+    expect(portfolio.wallet.native.filter((row) => !shouldSuppressHolding(row))).toEqual([]);
     expect(portfolio.fx.ethToUsd).toBeNull();
     for (const name of ["nfts", "walletNative"] as const) expect(portfolio.sources[name].status).toBe("unavailable");
     for (const key of ["nftsEth", "nftsUsd", "nftsThb", "walletNativeUsd", "walletNativeThb", "walletUsd", "walletThb", "grandTotalUsd", "grandTotalThb"] as const) {
@@ -485,7 +513,10 @@ describe("buildJoinedPortfolio", () => {
       : { data: payload === "stale" ? inputs.fiatFx.data : null, state: state("unavailable") };
 
     const portfolio = buildJoinedPortfolio(inputs, AS_OF);
-    expect([portfolio.t212.investments, portfolio.nfts, portfolio.wallet.native, portfolio.wallet.tokens]).toEqual([[], [], [], []]);
+    for (const rows of [portfolio.t212.investments, portfolio.nfts, portfolio.wallet.native, portfolio.wallet.tokens]) {
+      expect(rows.length).toBeGreaterThan(0);
+      expect(rows.filter((row) => !shouldSuppressHolding(row))).toEqual([]);
+    }
     expect(portfolio.t212).toMatchObject({ totalValue: 0.999, investmentsCurrentValue: 0.999 });
     expect(portfolio.fx.usdToThb).toBeNull();
     for (const name of ["t212Positions", "nfts", "walletNative", "walletTokens"] as const) expect(portfolio.sources[name].status).toBe("unavailable");
@@ -502,16 +533,18 @@ describe("buildJoinedPortfolio", () => {
     inputs.fiatFx = unavailable();
     const portfolio = buildJoinedPortfolio(inputs, AS_OF);
     expect(portfolio.sources.nfts.status).toBe("unavailable");
-    expect(portfolio.nfts).toEqual([]);
+    expect(portfolio.nfts).toHaveLength(1);
+    expect(portfolio.nfts.filter((row) => !shouldSuppressHolding(row))).toEqual([]);
     for (const key of ["t212Thb", "nftsThb", "grandTotalUsd", "grandTotalThb"] as const) expect(portfolio.totals[key]).toBeNull();
   });
 
-  it("omits NFT rows and preserves a whole-class outage when CoinGecko is unavailable", () => {
+  it("retains NFT inventory and preserves a whole-class outage when CoinGecko is unavailable", () => {
     const inputs = fixtureInputs();
     inputs.ethPrice = unavailable();
     const portfolio = buildJoinedPortfolio(inputs, AS_OF);
 
-    expect(portfolio.nfts).toEqual([]);
+    expect(portfolio.nfts).toHaveLength(2);
+    expect(portfolio.nfts.filter((row) => !shouldSuppressHolding(row))).toEqual([]);
     expect(portfolio.sources.nfts.status).toBe("unavailable");
     expect(portfolio.totals.nftsEth).toBeNull();
     expect(portfolio.totals.nftsUsd).toBeNull();
@@ -538,8 +571,9 @@ describe("buildJoinedPortfolio", () => {
     const inputs = fixtureInputs();
     inputs.nfts = { data: oneUnpricedNft, state: state(status) };
     const portfolio = buildJoinedPortfolio(inputs, AS_OF);
-    expect(portfolio.nfts).toHaveLength(5);
-    expect(portfolio.nfts.reduce((sum, row) => sum + row.tokenCount, 0)).toBe(6);
+    expect(portfolio.nfts).toHaveLength(6);
+    expect(portfolio.nfts.reduce((sum, row) => sum + row.tokenCount, 0)).toBe(7);
+    expect(portfolio.nfts.filter((row) => !shouldSuppressHolding(row))).toHaveLength(5);
     const expectedEth = observedNftFloors.filter((row) => row.collection !== "wasteland-art")
       .reduce((sum, row) => sum + row.floorEth! * row.tokenCount, 0);
     expect(portfolio.totals.nftsEth).toBeCloseTo(expectedEth, 12);
@@ -549,14 +583,15 @@ describe("buildJoinedPortfolio", () => {
     expect(Number.isFinite(portfolio.totals.grandTotalUsd)).toBe(true);
     expect(portfolio.sources.nfts.status).toBe(status);
     expect(portfolio.totals.pnlByClass.nfts.pnlCoverage).toMatchObject({ totalHoldings: 5, dust: 0, unpriced: 0, sourcesComplete: status === "live" });
-    expect(portfolio.nfts.find((row) => row.collection === "wasteland-art")).toBeUndefined();
+    expect(portfolio.nfts.find((row) => row.collection === "wasteland-art")).toMatchObject({ valueUsd: null });
   });
 
   it("keeps wholly unpriced NFT inventory unavailable, never a zero subtotal", () => {
     const inputs = fixtureInputs();
     inputs.nfts = { data: observedNftFloors.map((row) => ({ ...row, floorEth: null })), state: state("partial") };
     const portfolio = buildJoinedPortfolio(inputs, AS_OF);
-    expect(portfolio.nfts).toHaveLength(0);
+    expect(portfolio.nfts).toHaveLength(6);
+    expect(portfolio.nfts.filter((row) => !shouldSuppressHolding(row))).toHaveLength(0);
     expect(portfolio.sources.nfts.status).toBe("unavailable");
     for (const key of ["nftsEth", "nftsUsd", "nftsThb", "grandTotalUsd", "grandTotalThb"] as const) expect(portfolio.totals[key]).toBeNull();
     expect(portfolio.totals.pnlByClass.nfts.pnlCoverage).toMatchObject({ totalHoldings: 0, dust: 0, unpriced: 0, status: "partial", sourcesComplete: false });
@@ -760,10 +795,50 @@ describe("getJoinedPortfolio", () => {
       return liveFetch(input, init);
     }));
     const book = await getJoinedPortfolio({ now: () => Date.parse(AS_OF) });
-    expect(book.wallet.tokens.find((row) => row.contract === CAT)).toBeUndefined();
+    expect(book.wallet.tokens.find((row) => row.contract === CAT)).toMatchObject({ valueUsd: 0.25 });
+    expect(book.wallet.tokens.filter((row) => !shouldSuppressHolding(row)).find((row) => row.contract === CAT)).toBeUndefined();
     expect(book.sources.walletTokens.status).toBe("live");
     expect(book.sources.walletTokens.message).not.toMatch(/price hint|unpriced|excluded/);
-    expect(book.totals.walletTokensUsd).toBe(1.475469);
+    expect(book.totals.walletTokensUsd).toBe(1.725469);
+  });
+
+  it("keeps an unverified explorer holding's source and basket stable across the display threshold", async () => {
+    vi.stubEnv("DATABASE_URL", "");
+    const books = [];
+    for (const [index, price] of [0.5, 1.5].entries()) {
+      __resetSnapshotCacheForTests();
+      const liveFetch = walletNetworkFetchMock();
+      vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+        if (String(input).includes("eth.blockscout.com")) return json({ items: [{
+          token: { address_hash: CAT, decimals: "18", exchange_rate: String(price), name: "Royal Cat", symbol: "CAT", type: "ERC-20" },
+          value: "1000000000000000000",
+        }], next_page_params: null });
+        return liveFetch(input, init);
+      }));
+      const asOf = `2026-09-0${index + 1}T12:00:00.000Z`;
+      const fetched = await getJoinedPortfolio({ now: () => Date.parse(asOf) });
+      const inputs = fixtureInputs();
+      inputs.t212Summary = live({ currency: "USD", cashAvailable: 100, totalValue: 100, investmentsCurrentValue: 0 });
+      inputs.nfts = live([]);
+      inputs.walletNative = live([]);
+      inputs.walletTokens = { data: fetched.wallet.tokens, state: fetched.sources.walletTokens };
+      inputs.capitalEvents = live([]);
+      const book = buildJoinedPortfolio(inputs, asOf);
+      books.push(book);
+      expect(book.wallet.tokens.find((row) => row.contract === CAT)).toMatchObject({ valueUsd: price, priceVerified: false });
+      expect(book.sources.walletTokens.status).toBe("live");
+      expect(book.totals.walletTokensUsd).toBeCloseTo(price + 1.475469, 12);
+      expect(book.totals.grandTotalUsd).toBeCloseTo(100 + price + 1.475469, 12);
+      expect(joinedHoldingsMap(book)[`token:1:${CAT.toLowerCase()}`]).toBe(price);
+      expect(book.totals.pnlByClass.walletTokens.pnlCoverage).toMatchObject({
+        totalHoldings: index + 1, dust: 0, unpriced: 0, sourcesComplete: index === 0,
+      });
+    }
+    expect(Object.keys(joinedHoldingsMap(books[0]))).toEqual(Object.keys(joinedHoldingsMap(books[1])));
+    expect(valueSetSignature(joinedHoldingsMap(books[0]), books[0].sources))
+      .toBe(valueSetSignature(joinedHoldingsMap(books[1]), books[1].sources));
+    expect(books[0].sources.walletTokens.message).not.toMatch(/price hint/);
+    expect(books[1].sources.walletTokens.message).toContain("1 Blockscout price hint could not be independently checked");
   });
 
   it.each(["all-priced", "one-stats-401", "no-floors", "wallet-401"] as const)("keeps OpenSea wallet failure distinct from collection pricing failures: %s", async (scenario) => {
@@ -785,14 +860,15 @@ describe("getJoinedPortfolio", () => {
     }));
     const book = await getJoinedPortfolio({ now: () => Date.parse(AS_OF) });
     expect(book.sources.nfts.status).toBe(scenario === "all-priced" || scenario === "one-stats-401" ? "live" : "unavailable");
-    expect(book.nfts).toHaveLength(scenario === "all-priced" ? 6 : scenario === "one-stats-401" ? 5 : 0);
+    expect(book.nfts).toHaveLength(scenario === "wallet-401" ? 0 : 6);
+    expect(book.nfts.filter((row) => !shouldSuppressHolding(row))).toHaveLength(scenario === "all-priced" ? 6 : scenario === "one-stats-401" ? 5 : 0);
     expect(statsCalls).toHaveLength(scenario === "wallet-401" ? 0 : 6);
     if (scenario === "wallet-401" || scenario === "no-floors") expect(book.totals.nftsUsd).toBeNull();
     else {
       const priced = observedNftFloors.filter((row) => scenario === "all-priced" || row.collection !== "wasteland-art");
       expect(book.totals.nftsEth).toBeCloseTo(priced.reduce((sum, row) => sum + row.floorEth! * row.tokenCount, 0), 12);
-      expect(book.nfts.filter((row) => row.valueUsd === null)).toHaveLength(0);
-      if (scenario === "one-stats-401") expect(book.nfts.find((row) => row.collection === "wasteland-art")).toBeUndefined();
+      expect(book.nfts.filter((row) => row.valueUsd === null)).toHaveLength(scenario === "one-stats-401" ? 1 : 0);
+      if (scenario === "one-stats-401") expect(book.nfts.find((row) => row.collection === "wasteland-art")).toMatchObject({ valueUsd: null });
     }
   });
 
@@ -849,21 +925,21 @@ describe("getJoinedPortfolio", () => {
 
     expect(portfolio.sources.walletNative.status).toBe("live");
     expect(portfolio.sources.walletTokens.status).toBe("live");
-    expect(portfolio.wallet.native).toHaveLength(3);
-    expect(portfolio.wallet.native.map((row) => row.chainId)).toEqual([1, 42161, 4663]);
+    expect(portfolio.wallet.native).toHaveLength(4);
+    expect(portfolio.wallet.native.map((row) => row.chainId)).toEqual([1, 8453, 42161, 4663]);
     const arbitrum = portfolio.wallet.native.find((row) => row.chainId === 42161);
     expect(arbitrum?.amount).toBe(0.248395962372228);
     expect(arbitrum?.valueUsd).toBeCloseTo(496.791924744456, 12);
-    expect(portfolio.wallet.tokens).toHaveLength(1);
+    expect(portfolio.wallet.tokens).toHaveLength(2);
     expect(portfolio.wallet.tokens.find((row) => row.contract === USDG)).toMatchObject({
       amountRaw: "1475469",
       amount: 1.475469,
       priceUsd: 1,
       priced: true,
     });
-    expect(portfolio.wallet.tokens.find((row) => row.contract === CAT)).toBeUndefined();
+    expect(portfolio.wallet.tokens.find((row) => row.contract === CAT)).toMatchObject({ valueUsd: null, priced: false });
     expect(portfolio.sources.walletTokens.message).not.toMatch(/unpriced|excluded/);
-    expect(portfolio.totals.walletNativeUsd).toBeCloseTo(499.4075468084915, 12);
+    expect(portfolio.totals.walletNativeUsd).toBeCloseTo(499.605595746183, 12);
     expect(portfolio.totals.walletTokensUsd).toBe(1.475469);
 
     const rpcCalls = fetchMock.mock.calls.filter(([, init]) => init?.method === "POST");
@@ -971,7 +1047,7 @@ describe("getJoinedPortfolio", () => {
     expect(coinGeckoCalls).toHaveLength(1);
     expect(String(coinGeckoCalls[0][0])).toContain("simple/token_price/robinhood");
     expect(String(coinGeckoCalls[0][0]).toLowerCase()).toContain(encodeURIComponent(GME).toLowerCase());
-    expect(portfolio.wallet.tokens.find((token) => token.contract === GME)).toBeUndefined();
+    expect(portfolio.wallet.tokens.find((token) => token.contract === GME)).toMatchObject({ valueUsd: null, amountRaw: "1" });
     expect(portfolio.sources.walletTokens.status).toBe("live");
   });
 

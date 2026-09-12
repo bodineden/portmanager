@@ -15,6 +15,7 @@ import {
 } from "@/lib/live-data";
 import "./asset-list.css";
 import { snapshotFiatUsd } from "@/lib/pnl-view";
+import { shouldSuppressHolding } from "@/lib/dust-filter";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -61,8 +62,8 @@ export default async function AssetListPage() {
   const portfolio = await getJoinedPortfolio();
   const { available: snapshotHistoryAvailable } = await readPortfolioSnapshotHistory();
   const mascot = deriveMascotState({ ...portfolio, snapshotHistoryAvailable }, new Date());
-  const rawPositionCount = portfolio.t212.investments.length;
-  const rawNftTokenCount = portfolio.nfts.reduce((sum, holding) => sum + holding.tokenCount, 0);
+  const positions = portfolio.t212.investments.filter((row) => !shouldSuppressHolding(row));
+  const nfts = portfolio.nfts.filter((row) => !shouldSuppressHolding(row));
   const walletTokens = [...portfolio.wallet.tokens].sort(
     (left, right) => Number(right.priced) - Number(left.priced),
   );
@@ -92,14 +93,12 @@ export default async function AssetListPage() {
     valueThb: formatThb(holding.valueThb),
     priced: holding.priced,
   }));
-  const rawWalletNativeCount = portfolio.wallet.native.length;
-  const rawWalletTokenCount = walletTokens.length;
-  const positionCount = rawPositionCount;
+  const positionCount = positions.length;
   const nftInventoryUnavailable = portfolio.sources.nfts.status === "unavailable";
-  const nftCollectionCount = portfolio.nfts.length;
-  const nftTokenCount = rawNftTokenCount;
-  const walletNativeCount = rawWalletNativeCount;
-  const walletTokenCount = rawWalletTokenCount;
+  const nftCollectionCount = nfts.length;
+  const nftTokenCount = nfts.reduce((sum, holding) => sum + holding.tokenCount, 0);
+  const walletNativeCount = walletNativeRows.filter((row) => !shouldSuppressHolding(row)).length;
+  const walletTokenCount = walletTokenRows.filter((row) => !shouldSuppressHolding(row)).length;
   const walletEntryCount = walletNativeCount + walletTokenCount;
   const walletSourcesComplete = portfolio.sources.walletNative.status === "live"
     && portfolio.sources.walletTokens.status === "live";
@@ -251,7 +250,7 @@ export default async function AssetListPage() {
                   <p>{portfolio.sources.t212Positions.message}</p>
                 </div>
               </div>
-            ) : rawPositionCount === 0 && portfolio.sources.t212Positions.status === "partial" ? (
+            ) : positionCount === 0 && portfolio.sources.t212Positions.status === "partial" ? (
               <div className="asset-empty-state is-partial">
                 <span className="asset-empty-code">T212 / !</span>
                 <div>
@@ -259,7 +258,7 @@ export default async function AssetListPage() {
                   <p>{portfolio.sources.t212Positions.message}</p>
                 </div>
               </div>
-            ) : rawPositionCount === 0 ? (
+            ) : positionCount === 0 ? (
               <div className="asset-empty-state">
                 <span className="asset-empty-code">T212 / 00</span>
                 <div>
@@ -283,7 +282,7 @@ export default async function AssetListPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {portfolio.t212.investments.map((position) => (
+                    {positions.map((position) => (
                       <tr key={position.ticker}>
                         <td>
                           <span className="ticker-badge">{position.ticker}</span>
@@ -336,7 +335,7 @@ export default async function AssetListPage() {
                   <p>{portfolio.sources.nfts.message}</p>
                 </div>
               </div>
-            ) : portfolio.nfts.length === 0 ? (
+            ) : nfts.length === 0 ? (
               <div className="asset-empty-state">
                 <span className="asset-empty-code">NFT / 00</span>
                 <div>
@@ -359,7 +358,7 @@ export default async function AssetListPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {portfolio.nfts.map((holding) => (
+                    {nfts.map((holding) => (
                       <tr key={holding.collection}>
                         <td>
                           <strong className="asset-collection-name">{holding.collectionName}</strong>
@@ -376,7 +375,7 @@ export default async function AssetListPage() {
                   <tfoot>
                     <tr>
                       <td><strong>Total NFT port</strong></td>
-                      <td className="asset-cell-right numeric"><strong>{formatCount(rawNftTokenCount)}</strong></td>
+                      <td className="asset-cell-right numeric"><strong>{formatCount(nftTokenCount)}</strong></td>
                       <td className="asset-cell-right">—</td>
                       <td className="asset-cell-right numeric"><strong>{formatEth(portfolio.totals.nftsEth)}</strong></td>
                       <td className="asset-cell-right numeric"><strong>{formatUsd(portfolio.totals.nftsUsd)}</strong></td>

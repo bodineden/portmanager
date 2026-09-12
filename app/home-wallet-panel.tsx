@@ -1,3 +1,5 @@
+import { shouldSuppressHolding } from "@/lib/dust-filter";
+
 type WalletSourceView = {
   status: "live" | "partial" | "unavailable";
   message: string;
@@ -39,8 +41,8 @@ function SourceBadge({ state }: { state: WalletSourceView }) {
 }
 
 export function WalletBalancesPanel({
-  nativeRows,
-  tokenRows,
+  nativeRows: allNativeRows,
+  tokenRows: allTokenRows,
   nativeSource,
   tokenSource,
   walletSourcesComplete,
@@ -55,6 +57,8 @@ export function WalletBalancesPanel({
   totalWalletUsd: string;
   totalWalletThb: string;
 }) {
+  const nativeRows = allNativeRows.filter((row) => !shouldSuppressHolding(row));
+  const tokenRows = allTokenRows.filter((row) => !shouldSuppressHolding(row));
   const totalCount = nativeRows.length + tokenRows.length;
 
   return (

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { shouldSuppressHolding } from "./dust-filter";
 import { buildJoinedPortfolio, type LiveResult } from "./live-data";
 import type { PnlCoverage } from "./pnl";
 import type { PortfolioSnapshot } from "./pnl-history";
@@ -110,7 +111,7 @@ describe("snapshot currency and value allocation", () => {
     expect(allocation[1].valueThb).toBe(21_915);
   });
 
-  it("retains a suppressed security's value in the authoritative account remainder", () => {
+  it("keeps suppressed values in every class allocation and the authoritative account remainder", () => {
     const portfolio = buildJoinedPortfolio({
       manualHoldings: live([]),
       t212Summary: live({ currency: "USD", cashAvailable: 100, totalValue: 101.5, investmentsCurrentValue: 1.5 }),
@@ -120,14 +121,24 @@ describe("snapshot currency and value allocation", () => {
         { ticker: "SMALL", name: "Small security", quantity: 1, averagePrice: 0.5, currentPrice: 0.5,
           ppl: 0, currency: "USD", pplCurrency: "USD", valueNative: 0.5, valueAccount: 0.5 },
       ]),
-      nfts: live([]), walletNative: live([]), walletTokens: live([]), fiatFx: live(fx), ethPrice: live(2_400),
+      nfts: live([{ collection: "small-nft", collectionName: "Small NFT", tokenCount: 1, floorEth: 0.00025 }]),
+      walletNative: live([{ chainId: 1, chainName: "Ethereum", symbol: "ETH", amount: 0.00025 }]),
+      walletTokens: live([{ chainId: 1, chainName: "Ethereum", symbol: "SMALL", name: "Small token",
+        amountRaw: "1", amount: 1, decimals: 0, priceUsd: 0.5 }]),
+      fiatFx: live(fx), ethPrice: live(2_000),
     }, DATE);
     const allocation = valueAllocation(portfolio);
-    expect(portfolio.t212.investments.map(({ ticker }) => ticker)).toEqual(["BOUNDARY"]);
+    expect(portfolio.t212.investments.map(({ ticker }) => ticker)).toEqual(["BOUNDARY", "SMALL"]);
+    expect(portfolio.t212.investments.filter((row) => !shouldSuppressHolding(row)).map(({ ticker }) => ticker)).toEqual(["BOUNDARY"]);
     expect(portfolio.t212.totalValue).toBe(101.5);
     expect(portfolio.t212.investmentsCurrentValue).toBe(1.5);
     expect(portfolio.totals.t212Thb).toBe(3_654);
-    expect(allocation.map(({ valueUsd }) => valueUsd)).toEqual([1.5, 100, 0, 0, 0]);
+    expect(allocation.map(({ valueUsd }) => valueUsd)).toEqual([1.5, 100, 0.5, 0.5, 0.5]);
+    for (const rows of [portfolio.nfts, portfolio.wallet.native, portfolio.wallet.tokens]) {
+      expect(rows.map((row) => row.valueUsd)).toEqual([0.5]);
+      expect(rows.filter((row) => !shouldSuppressHolding(row))).toHaveLength(0);
+    }
+    expect(portfolio.totals.grandTotalUsd).toBe(103);
     expect(allocation[0].valueThb).toBe(54);
     expect(allocation.reduce((sum, { valueUsd }) => sum + valueUsd!, 0)).toBe(portfolio.totals.grandTotalUsd);
     expect(allocation.reduce((sum, { sharePct }) => sum + sharePct!, 0)).toBeCloseTo(100);

@@ -57,12 +57,15 @@ export async function startUiFixtureServer() {
             export { formatCurrency, formatEth, formatThb, formatUsd } from ${JSON.stringify(path.join(projectRoot, "lib/live-data.ts"))};
             import { capitalBook } from ${JSON.stringify(path.join(projectRoot, "lib/__fixtures__/capital-book.ts"))};
             import { dustBook } from ${JSON.stringify(path.join(projectRoot, "scripts/__fixtures__/dust-book.ts"))};
+            import { joinedHoldingsMap } from ${JSON.stringify(path.join(projectRoot, "lib/holding-values.ts"))};
             export async function getJoinedPortfolio() {
               const scenario = new URLSearchParams(location.search).get("scenario");
               if (scenario?.startsWith("capital-")) return capitalBook(scenario !== "capital-empty");
               if (scenario?.startsWith("dust-")) {
                 const portfolio = dustBook(scenario.replace(/^dust-/, "").replace(/-(home|registry)$/, ""));
                 window.__dustFixturePortfolio = portfolio;
+                // The production snapshot recorder uses this same full-basket mapper.
+                window.__dustFixtureRecordedHoldings = joinedHoldingsMap(portfolio);
                 return portfolio;
               }
               const portfolio = structuredClone(fixture.portfolio);

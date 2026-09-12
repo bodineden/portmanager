@@ -2,7 +2,6 @@ import { createRoot } from "react-dom/client";
 import PortfolioPage from "../app/portfolio/page";
 import Home from "../app/page";
 import AssetListPage from "../app/asset-list/page";
-import { shouldSuppressHolding } from "../lib/dust-filter";
 import { PnlCalendar, PnlPerformance } from "../app/pnl-history-panels";
 import { WalletBalancesPanel } from "../app/home-wallet-panel";
 import type { PortfolioSnapshot } from "../lib/pnl-history";
@@ -33,8 +32,8 @@ async function mount() {
     : scenario === "older" ? fixture.snapshots.slice(0, 1)
       : fixture.snapshots) as PortfolioSnapshot[];
   const filteredEmpty = scenario === "filtered-empty";
-  const nativeInputs = (filteredEmpty ? fixture.wallet.nativeRows.slice(1) : fixture.wallet.nativeRows).filter((row) => !shouldSuppressHolding(row));
-  const tokenInputs = (filteredEmpty ? fixture.wallet.tokenRows.slice(1) : fixture.wallet.tokenRows).filter((row) => !shouldSuppressHolding(row));
+  const nativeInputs = filteredEmpty ? fixture.wallet.nativeRows.slice(1) : fixture.wallet.nativeRows;
+  const tokenInputs = filteredEmpty ? fixture.wallet.tokenRows.slice(1) : fixture.wallet.tokenRows;
   const rowView = (row: typeof nativeInputs[number]) => ({
     ...row,
     priceUsd: formatViewUsd(row.valueUsd),

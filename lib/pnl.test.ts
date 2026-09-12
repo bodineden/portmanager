@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { shouldSuppressHolding } from "./dust-filter";
 import { buildJoinedPortfolio, RH_ERC20_REGISTRY, type JoinedPortfolioInputs, type LiveResult } from "./live-data";
 
 import * as pnl from "./pnl";
@@ -185,7 +186,7 @@ describe("joined P&L aggregation", () => {
     expect(buildJoinedPortfolio(data, AS_OF).wallet.native[0].basisStatus).toBe("not-recorded");
   });
 
-  it("joins evidence additively, excludes cash and unknown/dust/unpriced, and satisfies the arithmetic identity", () => {
+  it("joins the full inventory while excluding cash and suppressed holdings from recorded P&L", () => {
     const data = inputs();
     data.walletTokens = live([
       { chainId: 8453, chainName: "Base", symbol: "SYNTHETIC", name: "Synthetic fixture", contract: tokenHolding.assetId, amountRaw: tokenHolding.quantityRaw, amount: 2, decimals: 18, priceUsd: 15 },
@@ -196,8 +197,10 @@ describe("joined P&L aggregation", () => {
     data.basisEvidence = { [`token:8453:${tokenHolding.assetId}`]: purchaseEvidence() };
     const portfolio = buildJoinedPortfolio(data, AS_OF);
     expect(portfolio.wallet.tokens[0].basisStatus).toBe("onchain-derived");
-    expect(portfolio.wallet.tokens.map((row) => row.symbol)).toEqual(["SYNTHETIC", "USDG"]);
-    expect(portfolio.wallet.tokens.some((row) => row.pnlEligibility === "dust" || row.pnlEligibility === "unpriced")).toBe(false);
+    expect(portfolio.wallet.tokens.map((row) => row.symbol)).toEqual(["SYNTHETIC", "USDG", "DUST", "UNKNOWN"]);
+    expect(portfolio.wallet.tokens.filter((row) => !shouldSuppressHolding(row)).map((row) => row.symbol)).toEqual(["SYNTHETIC", "USDG"]);
+    expect(portfolio.totals.walletTokensUsd).toBeCloseTo(31.485, 12);
+    expect(portfolio.wallet.tokens.filter(shouldSuppressHolding).map((row) => row.valueUsd)).toEqual([0.01, null]);
     expect(portfolio.totals).toMatchObject({
       costBasisUsd: 210, costBasisThb: 7_560, pnlUsd: 20, pnlThb: 720, pnlPct: 20 / 210 * 100,
       pnlCoverage: { totalHoldings: 3, eligible: 2, notRecorded: 1, dust: 0, unpriced: 0, unreconciled: 0, status: "partial" },
@@ -253,8 +256,10 @@ describe("required current-book fixture QA", () => {
     for (const source of data.walletNative.data!) {
       const holding = book.wallet.native.find((row) => row.chainId === source.chainId);
       if (source.chainId === 8453) {
-        expect(holding).toBeUndefined();
-        rows.push([`${source.chainName} ETH ${source.amount}`, "N/A (not displayed)", "no-op", "Absent from joined holdings and coverage"]);
+        expect(holding).toMatchObject({ chainId: 8453, amount: 0.000099 });
+        expect(holding!.valueUsd).toBeCloseTo(0.2376, 12);
+        expect(shouldSuppressHolding(holding!)).toBe(true);
+        rows.push([`${source.chainName} ETH ${source.amount}`, "N/A (not displayed)", "no-op", "Included in joined holdings and value totals; excluded from displayed rows and coverage"]);
       } else {
         expect(holding).toBeDefined();
         rows.push([`${holding!.chainName} ETH ${holding!.amount}`, holding!.basisStatus, holding!.pnlEligibility, holding!.basisNote]);

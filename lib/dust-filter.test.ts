@@ -22,4 +22,8 @@ describe("shouldSuppressHolding", () => {
   it.each([Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY])("does not display an invalid numeric value %s", (valueUsd) => {
     expect(shouldSuppressHolding({ valueUsd })).toBe(true);
   });
+
+  it.each([null, 0, 0.24, 0.99, 1])("keeps operator-declared manual cash valued at %s", (valueUsd) => {
+    expect(shouldSuppressHolding({ manualCash: true, valueUsd })).toBe(false);
+  });
 });

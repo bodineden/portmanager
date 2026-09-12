@@ -2,6 +2,7 @@ import { formatEth, formatThb, formatUsd, type JoinedPortfolio } from "@/lib/liv
 import type { HoldingPnl } from "@/lib/pnl";
 import { basisChip, eligibilityLabel, formatHoldingQuantity, formatPnlMoney, formatPnlPercent, formatSnapshotAsOf, holdingDayChange } from "@/lib/pnl-view";
 import { holdingId, type HoldingsValueMap } from "@/lib/holding-values";
+import { shouldSuppressHolding } from "@/lib/dust-filter";
 
 type AssetRow = HoldingPnl & { id: string; name: string; detail: string; quantity: string; valueUsd: number | null; valueThb: number | null; walletKind?: "native" | "token"; priced?: boolean; manualCash?: boolean };
 
@@ -16,7 +17,7 @@ export function PnlAssetTable({ portfolio, previousHoldings = null }: { portfoli
       detail: `Manual cash · ${row.currency} · reported ${formatSnapshotAsOf(row.recordedAt)}`, quantity: formatHoldingQuantity(row.amount), manualCash: true,
       costBasisUsd: null, costBasisThb: null, pnlUsd: null, pnlThb: null, pnlPct: null,
       basisStatus: "not-recorded" as const, basisNote: "Manually reported · value only · no P&L", pnlEligibility: "not-recorded" as const })),
-  ];
+  ].filter((row) => !shouldSuppressHolding(row));
   const hasPnl = totals.pnlCoverage.eligible > 0;
   return <section className="panel pnl-assets">
     <div className="panel-header"><div><p className="eyebrow">VALUE &amp; RECORDED BASIS</p><h2 className="panel-title">Per-asset P&amp;L</h2></div><span className="panel-count">{rows.length} holdings · all rows</span></div>

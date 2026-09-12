@@ -259,7 +259,9 @@ describe("real pure joined-portfolio fixtures", () => {
     };
     const portfolio = buildJoinedPortfolio(data, AS_OF);
     expect(portfolio.nfts[0]).toMatchObject({ basisStatus: "airdrop-free", costBasisUsd: 0, pnlUsd: 24, pnlPct: null });
-    expect(portfolio.wallet.native).toEqual([]);
+    expect(portfolio.wallet.native).toHaveLength(1);
+    expect(portfolio.wallet.native[0].valueUsd).toBeCloseTo(0.24);
+    expect(portfolio.totals.grandTotalUsd).toBeCloseTo(124.24);
     expect(portfolio.totals.pnlCoverage).toMatchObject({ totalHoldings: 1, eligible: 1, dust: 0, unpriced: 0, notRecorded: 0, status: "complete" });
     expect(deriveMascotState(portfolio).mood).toBe("excited");
     // Historical snapshots retain their original coverage schema and mood semantics.

@@ -10,6 +10,7 @@ import { formatCurrency, formatThb, formatUsd, getJoinedPortfolio, type LiveSour
 import { readPortfolioSnapshotHistory } from "@/lib/pnl-history";
 import { coverageLabel, dailyChangeDetails, previousDayHoldings, valueDirection, formatPnlMoney, formatPnlPercent, formatSnapshotAsOf, formatHoldingQuantity, snapshotFiatUsd, valueAllocation } from "@/lib/pnl-view";
 import { requireSession } from "@/lib/auth";
+import { shouldSuppressHolding } from "@/lib/dust-filter";
 import "./home.css";
 
 export const dynamic = "force-dynamic";
@@ -32,6 +33,8 @@ export default async function Home() {
   const dayDirection = valueDirection(change?.usd);
   const valueSourcesComplete = Object.entries(sources).every(([key, source]) => key === "capital" || source.status === "live");
   const classes = valueAllocation(portfolio);
+  const walletAssetCount = [...wallet.native, ...wallet.tokens].filter((row) => !shouldSuppressHolding(row)).length;
+  const positionCount = t212.investments.filter((row) => !shouldSuppressHolding(row)).length;
   const walletTokens = [...wallet.tokens].sort((left, right) => Number(right.priced) - Number(left.priced));
   const nativeRows = [...wallet.native].sort((left, right) => Number(right.valueUsd !== null) - Number(left.valueUsd !== null)).map((holding) => ({
     id: `${holding.chainId}:native`, symbol: holding.symbol, chainName: holding.chainName, chainId: holding.chainId,
@@ -81,7 +84,7 @@ export default async function Home() {
                 <strong>{formatUsd(item.valueUsd)}</strong><span>{formatThb(item.valueThb)}</span>
               </div>)}
             </div>
-            <div className="pnl-hero-foot"><span data-wallet-summary-count={nativeRows.length + tokenRows.length}>{nativeRows.length + tokenRows.length} wallet assets</span><span>Cash contributes to value only; it has no P&amp;L.</span></div>
+            <div className="pnl-hero-foot"><span data-wallet-summary-count={walletAssetCount}>{walletAssetCount} wallet assets</span><span>Cash contributes to value only; it has no P&amp;L.</span></div>
           </section>
           <section className="pnl-metric-strip" aria-label="P&L and coverage">
             <BookPnlMetric portfolio={portfolio} />
@@ -125,7 +128,7 @@ export default async function Home() {
           <section className="panel pnl-account-context">
             <div><p className="eyebrow">TRADING 212 / CASH &amp; POSITIONS</p><h2 className="panel-title">Account context</h2></div>
             <div><small>Cash available · no P&amp;L</small><strong>{formatUsd(snapshotFiatUsd(t212.cashAvailable, t212.currency, fx))}</strong><span>{formatCurrency(t212.cashAvailable, t212.currency)} · account currency</span></div>
-            <div><small>Open positions</small><strong>{sources.t212Positions.status === "unavailable" ? "—" : t212.investments.length}</strong><span>{sources.t212Positions.status === "unavailable" ? "Trading 212 positions unavailable" : t212.investments.length === 0 ? "No positions yet" : "Included in per-asset P&L"}</span></div>
+            <div><small>Open positions</small><strong>{sources.t212Positions.status === "unavailable" ? "—" : positionCount}</strong><span>{sources.t212Positions.status === "unavailable" ? "Trading 212 positions unavailable" : positionCount === 0 ? "No positions yet" : "Included in per-asset P&L"}</span></div>
             {sources.t212Summary.status === "unavailable" && <p>Trading 212 account summary unavailable. Cash and account totals remain blank.</p>}
           </section>
           <WalletBalancesPanel nativeRows={nativeRows} tokenRows={tokenRows} nativeSource={sources.walletNative} tokenSource={sources.walletTokens}

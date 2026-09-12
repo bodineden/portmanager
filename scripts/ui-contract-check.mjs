@@ -146,7 +146,7 @@ async function assertWalletRows(panel, usdColumn) {
   return `${rows.length} priced wallet rows in native/token order`;
 }
 
-async function assertWalletTotals(panel, usdColumn, thbColumn) {
+async function assertWalletTotals(panel, usdColumn, thbColumn, expected = null) {
   const table = panel.locator("table");
   if (await table.count() === 0) return;
   const rows = await table.locator("tbody tr[data-wallet-kind]").evaluateAll((elements) => elements.map((element) =>
@@ -156,11 +156,27 @@ async function assertWalletTotals(panel, usdColumn, thbColumn) {
   for (const [column, totalIndex, label] of [[usdColumn, totalCells.length - 2, "USD"], [thbColumn, totalCells.length - 1, "THB"]]) {
     const values = rows.map((cells) => parseDisplayedUsd(cells[column]));
     const total = parseDisplayedUsd(totalCells[totalIndex]);
+    if (expected) {
+      const fullTotal = label === "USD" ? expected.totalUsd : expected.totalThb;
+      const formatted = label === "USD" ? expectedUsd(fullTotal) : expectedThb(fullTotal);
+      requireCondition(compactText(totalCells[totalIndex]) === formatted, `${label} wallet total differs from the full joined inventory`);
+    }
     if (values.some((value) => value === null)) {
       requireCondition(total === null, `${label} wallet total invents a value despite unavailable conversion`);
     } else if (total !== null) {
       const sum = values.reduce((result, value) => result + value, 0);
-      requireCondition(Math.abs(total - sum) <= (rows.length + 1) * 0.005 + 0.000001, `${label} wallet total ${total} differs from displayed row sum ${sum}`);
+      requireCondition(total - sum >= -(rows.length + 1) * 0.005 - 0.000001, `${label} wallet total ${total} omits displayed holdings worth ${sum}`);
+      if (expected) {
+        const key = label === "USD" ? "valueUsd" : "valueThb";
+        const suppressed = expected.rows.filter((row) => !Number.isFinite(row.valueUsd) || row.valueUsd < 1);
+        const knownSuppressed = suppressed.filter((row) => Number.isFinite(row[key]));
+        requireCondition(knownSuppressed.every((row) => row.valueUsd >= 0 && row.valueUsd < 1), "a suppressed known holding is outside the strict sub-$1 boundary");
+        const suppressedSum = knownSuppressed.reduce((result, row) => result + row[key], 0);
+        requireCondition(Math.abs(total - sum - suppressedSum) <= (rows.length + 1) * 0.005 + 0.000001,
+          `${label} total/displayed difference ${total - sum} differs from suppressed holdings ${suppressedSum}`);
+        if (suppressedSum > 0) requireCondition(rows.length < expected.rows.length && total > sum,
+          `${label} displayed rows are not a strict subset of the full nonzero total`);
+      }
     } else {
       requireCondition(await panel.locator(".is-unavailable").count() > 0, `${label} wallet total is unknown despite complete priced rows`);
     }
@@ -509,7 +525,7 @@ async function checkHomeContract(page) {
     return `${nativeCount} native + ${tokenCount} tokens = header and hero counts`;
   });
 
-  await check("H3 home wallet totals sum displayed rows and remain stable", async () => {
+  await check("H3 home wallet full totals cover displayed rows and remain stable", async () => {
     const panel = page.locator(".home-wallet-panel");
     const rowsBefore = await panel.locator("tr[data-wallet-kind]").allTextContents();
     const totalsBefore = await panel.locator("tfoot").allTextContents();
@@ -519,7 +535,7 @@ async function checkHomeContract(page) {
     requireCondition(JSON.stringify(await panel.locator("tr[data-wallet-kind]").allTextContents()) === JSON.stringify(rowsBefore), "wallet rows changed during the read-only audit");
     await assertNoSuppressionTrace(page);
     requireCondition(JSON.stringify(await panel.locator("tfoot").allTextContents()) === JSON.stringify(totalsBefore), "wallet totals changed during the read-only audit");
-    return `${rowsBefore.length} rows; USD/THB totals match their displayed values`;
+    return `${rowsBefore.length} displayed rows; full USD/THB totals cover their values`;
   });
 
   await check("home wallet rows keep native/token order and exclude unknown current values", async () => {
@@ -569,7 +585,7 @@ async function checkAssetWalletContract(page) {
     }
     requireCondition(JSON.stringify(await panel.locator("tr[data-wallet-kind]").allTextContents()) === JSON.stringify(rowsBefore), "registry rows changed during the read-only audit");
     requireCondition(JSON.stringify(await panel.locator("tfoot").allTextContents()) === JSON.stringify(totalsBefore), "registry totals changed during the read-only audit");
-    return `${rowCount} displayed rows = registry header and summary; displayed USD/THB totals agree`;
+    return `${rowCount} displayed rows = registry header and summary; full USD/THB totals cover their values`;
   });
 
   await check("asset-list wallet rows keep native/token order and exclude unknown current values", async () => {
@@ -1423,20 +1439,23 @@ async function auditPopulatedFixtures(browser, fixtureUrl, viewport) {
       await assertCalendarDetail(calendar, browserFixture.snapshots.find((row) => row.date === "2026-09-05"));
       return "September → August (2026-08-31) → September (2026-09-05); exact grid/value/basis/P&L/coverage";
     });
-    await check(`${prefix} wallet keeps exact $1 rows and totals only displayed values`, async () => {
+    await check(`${prefix} wallet keeps exact $1 rows while totals include suppressed values`, async () => {
       const wallet = page.locator(".home-wallet-panel");
       const symbols = () => wallet.locator("tbody .ticker-cell").allTextContents();
       requireCondition((await symbols()).join(",") === "NATIVE-ONE,TOKEN-ONE", "strict raw threshold lost a $1 holding or exposed a .999/unknown holding");
       requireCondition(await wallet.locator('tr[data-wallet-priced="false"]').count() === 0, "unknown native/token row is rendered");
       const total = await wallet.locator("tfoot").innerText();
-      requireCondition(total.includes("US$2.00") && total.includes("฿72.00"), "wallet total differs from the two displayed $1 holdings");
+      requireCondition(total.includes("US$3.01") && total.includes("฿108.32"), "wallet total omits known suppressed holdings worth $1.009 / ฿36.324");
       await assertNoSuppressionTrace(page);
       await assertWalletRows(wallet, 4);
-      await assertWalletTotals(wallet, 4, 5);
+      await assertWalletTotals(wallet, 4, 5, {
+        rows: [...browserFixture.wallet.nativeRows, ...browserFixture.wallet.tokenRows], totalUsd: 3.009, totalThb: 108.324,
+      });
       const counts = await readHomeWalletPanelCounts(wallet);
       const header = await readHomeWalletHeaderCounts(wallet);
       requireCondition(counts.native === 1 && counts.token === 1 && header.native === 1 && header.token === 1, "fixture native/token counts differ from rendered rows");
       requireCondition((await symbols()).join(",") === "NATIVE-ONE,TOKEN-ONE" && await wallet.locator("tfoot").innerText() === total, "read-only wallet rows or totals changed");
+      return "$3.009 / ฿108.324 total = $2 / ฿72 displayed + $0.999 and $0.01 suppressed holdings";
     });
     await check(`${prefix} populated page fits viewport and keeps numbers honest`, async () => {
       const overflow = await page.evaluate(() => Math.max(document.body.scrollWidth, document.documentElement.scrollWidth) - document.documentElement.clientWidth);
@@ -1492,7 +1511,7 @@ async function auditDustFixtures(browser, fixtureUrl, viewport) {
   const browserErrors = [];
   page.on("pageerror", (error) => browserErrors.push(`page: ${error.message}`));
   page.on("console", (message) => captureBrowserConsole(browserErrors, message));
-  const prefix = `${viewport.name} joined-boundary fixture`;
+  const prefix = `${viewport.name} render-only fixture`;
   try {
     for (const scenario of ["mixed", "empty", "wholesale", "failed", "inventory", "eth-outage", "fiat-outage"]) {
       for (const surface of ["home", "registry"]) {
@@ -1503,27 +1522,37 @@ async function auditDustFixtures(browser, fixtureUrl, viewport) {
           await page.locator(surface === "home" ? ".pnl-value-hero" : ".asset-registry-hero").waitFor();
         })) continue;
         const portfolio = await page.evaluate(() => window.__dustFixturePortfolio);
+        const recordedHoldings = await page.evaluate(() => window.__dustFixtureRecordedHoldings);
+        const displayable = (rows) => rows.filter((row) => Number.isFinite(row.valueUsd) && row.valueUsd >= 1);
+        const displayed = {
+          investments: displayable(portfolio.t212.investments), nfts: displayable(portfolio.nfts),
+          native: displayable(portfolio.wallet.native), tokens: displayable(portfolio.wallet.tokens),
+        };
+        const marketRows = [...portfolio.t212.investments, ...portfolio.nfts, ...portfolio.wallet.native, ...portfolio.wallet.tokens];
+        const displayRows = [...displayed.investments, ...displayed.nfts, ...displayed.native, ...displayed.tokens];
         await check(`${label} has no suppressed rows, labels, attributes or comments`, async () => {
           await assertNoSuppressionTrace(page);
           await assertMarketRowValues(page);
           const text = await renderedText(page);
           for (const name of ["SECURITY-SMALL", "SECURITY-UNKNOWN", "COLLECTION-SMALL", "COLLECTION-UNKNOWN", "COLLECTION-ZERO", "COLLECTION-POSITIVE", "NATIVE-SMALL", "TOKEN-SMALL", "TOKEN-UNKNOWN"]) {
-            requireCondition(!text.includes(name), `${name} survived joined-boundary suppression`);
+            requireCondition(!text.includes(name), `${name} survived render-only suppression`);
           }
-          const rows = [...portfolio.t212.investments, ...portfolio.nfts, ...portfolio.wallet.native, ...portfolio.wallet.tokens];
-          requireCondition(rows.every((row) => row.valueUsd !== null && row.valueUsd >= 1), "joined holding arrays retain a suppressed market row");
+          const expectedFullRows = { mixed: 11, empty: 7, wholesale: 5, failed: 3, inventory: 11, "eth-outage": 10, "fiat-outage": 4 }[scenario];
+          requireCondition(marketRows.length === expectedFullRows, "joined holding arrays lost full inventory rows");
+          requireCondition(displayRows.length < marketRows.length, "displayed rows are not a strict subset of the joined inventory");
+          requireCondition(Object.keys(recordedHoldings).length === marketRows.length + portfolio.manualHoldings.length, "recorded holdings map lost suppressed inventory identities");
           const coverage = portfolio.totals.pnlCoverage;
-          requireCondition(coverage.totalHoldings === rows.length && coverage.dust === 0 && coverage.unpriced === 0, "coverage counts suppressed rows");
+          requireCondition(coverage.totalHoldings === displayRows.length && coverage.dust === 0 && coverage.unpriced === 0, "coverage counts suppressed rows");
           requireCondition(coverage.eligible + coverage.notRecorded + coverage.unreconciled === coverage.totalHoldings, "coverage bucket identity is broken");
         });
         await check(`${label} counts exactly its DOM rows and preserves source truth`, async () => {
           const wallet = page.locator(surface === "home" ? ".home-wallet-panel" : ".asset-wallet-panel");
           const walletCount = await wallet.locator("tr[data-wallet-kind]").count();
-          requireCondition(walletCount === portfolio.wallet.native.length + portfolio.wallet.tokens.length, "wallet DOM differs from joined rows");
+          requireCondition(walletCount === displayed.native.length + displayed.tokens.length, "wallet DOM differs from displayable joined rows");
           if (surface === "home") {
             const counts = await readHomeWalletPanelCounts(wallet);
             const header = await readHomeWalletHeaderCounts(wallet);
-            requireCondition(counts.native === portfolio.wallet.native.length && counts.token === portfolio.wallet.tokens.length, "wallet attributes differ from joined rows");
+            requireCondition(counts.native === displayed.native.length && counts.token === displayed.tokens.length, "wallet attributes differ from displayable joined rows");
             requireCondition(header.native === counts.native && header.token === counts.token && await readHomeWalletSummaryCount(page) === walletCount, "wallet header/hero count differs from DOM");
             requireCondition(await page.locator('.pnl-asset-table tbody tr:not([data-manual-cash="true"])').count() === portfolio.totals.pnlCoverage.totalHoldings, "P&L market row count differs from coverage");
             requireCondition(compactText(await page.locator(".pnl-coverage .pnl-metric-line > strong").innerText()) === `${portfolio.totals.pnlCoverage.eligible} / ${portfolio.totals.pnlCoverage.totalHoldings}`, "coverage numerator/denominator differs from displayed market holdings");
@@ -1536,8 +1565,8 @@ async function auditDustFixtures(browser, fixtureUrl, viewport) {
             const nfts = page.locator(".asset-live-panel").filter({ has: page.getByRole("heading", { name: "Live NFT Collection Registry", exact: true }) });
             const positions = await securities.locator("tbody tr").count();
             const collections = await nfts.locator("tbody tr").count();
-            const tokens = portfolio.nfts.reduce((sum, row) => sum + row.tokenCount, 0);
-            requireCondition(positions === portfolio.t212.investments.length && collections === portfolio.nfts.length, "security/NFT registry DOM differs from joined arrays");
+            const tokens = displayed.nfts.reduce((sum, row) => sum + row.tokenCount, 0);
+            requireCondition(positions === displayed.investments.length && collections === displayed.nfts.length, "security/NFT registry DOM differs from displayable joined rows");
             requireCondition(compactText(await securities.locator(".panel-count").innerText()) === `${positions} POSITIONS`, "position header differs from displayed rows");
             requireCondition(compactText(await nfts.locator(".panel-count").innerText()) === `${collections} COLLECTIONS · ${tokens} TOKENS`, "NFT header counts suppressed collections/tokens");
             const summary = page.locator(".asset-registry-kpi").last();
@@ -1548,7 +1577,9 @@ async function auditDustFixtures(browser, fixtureUrl, viewport) {
             requireCondition(compactText(await wallet.locator(surface === "home" ? ".home-empty strong" : ".asset-empty-state strong").innerText()) === "No wallet holdings to display in this snapshot.", "neutral wallet empty copy changed");
             requireCondition(!/\$1|hidden|filter|no balances/i.test(await wallet.innerText()), "empty wallet exposes suppression or falsely claims no balances");
           }
-          await assertWalletTotals(wallet, surface === "home" ? 4 : 5, surface === "home" ? 5 : 6);
+          await assertWalletTotals(wallet, surface === "home" ? 4 : 5, surface === "home" ? 5 : 6, {
+            rows: [...portfolio.wallet.native, ...portfolio.wallet.tokens], totalUsd: portfolio.totals.walletUsd, totalThb: portfolio.totals.walletThb,
+          });
         });
         await check(`${label} pins independent totals, boundary, cash exemption and outage behavior`, async () => {
           const expectedMarketCount = ["empty", "wholesale", "fiat-outage"].includes(scenario) ? 0 : scenario === "failed" ? 1 : scenario === "eth-outage" ? 2 : 4;
@@ -1557,31 +1588,54 @@ async function auditDustFixtures(browser, fixtureUrl, viewport) {
           const expectedAccountTotal = scenario === "empty" || scenario === "fiat-outage" ? 0.999 : 1.999;
           requireCondition(portfolio.t212.totalValue === expectedAccountTotal && portfolio.t212.investmentsCurrentValue === expectedAccountTotal, "filtered positions changed authoritative broker figures");
           requireCondition(scenario === "fiat-outage" ? portfolio.totals.t212Thb === null : Math.abs(portfolio.totals.t212Thb - expectedAccountTotal * 36) < 1e-9, "account THB differs from authoritative broker total/conversion availability");
-          const expectedTotal = unavailable ? null : scenario === "empty" ? 0.999 : 5.249;
-          requireCondition(expectedTotal === null ? portfolio.totals.grandTotalUsd === null : Math.abs(portfolio.totals.grandTotalUsd - expectedTotal) < 1e-9, "joined total differs from authoritative account plus displayed other classes");
+          const expectedTotal = unavailable ? null : scenario === "empty" ? 3.996 : 8.246;
+          requireCondition(expectedTotal === null ? portfolio.totals.grandTotalUsd === null : Math.abs(portfolio.totals.grandTotalUsd - expectedTotal) < 1e-9, "joined total differs from authoritative account plus full other classes");
           const hero = page.locator(surface === "home" ? '[data-value-currency="USD"]' : ".asset-registry-value");
           requireCondition(compactText(await hero.innerText()) === expectedUsd(expectedTotal), "hero differs from independent authoritative account sum/outage null");
+          const expectedTotalThb = expectedTotal === null ? null : scenario === "empty" ? 143.856 : 296.856;
+          requireCondition(expectedTotalThb === null ? portfolio.totals.grandTotalThb === null : Math.abs(portfolio.totals.grandTotalThb - expectedTotalThb) < 1e-9,
+            "THB joined total differs from the full independent inventory");
+          const heroThb = page.locator(surface === "home" ? ".pnl-value-hero .pnl-secondary" : ".asset-registry-secondary > span:first-child strong");
+          requireCondition(compactText(await heroThb.innerText()) === `${expectedThb(expectedTotalThb)}${surface === "home" ? " THB" : ""}`,
+            "THB hero omits suppressed holdings or loses outage null");
           if (surface === "home") {
             if (unavailable) requireCondition((await page.locator(".pnl-value-hero").innerText()).includes("Value unavailable"), "outage lost the unavailable hero");
             const expectedCash = ["empty", "wholesale", "eth-outage", "fiat-outage"].includes(scenario) ? [] : [0.25, 0];
             const cash = await page.locator('[data-manual-cash="true"] [data-pnl-cell="value"]').evaluateAll((cells) => cells.map((cell) => cell.firstChild?.textContent ?? ""));
             requireCondition(JSON.stringify(cash.map(parseDisplayedUsd)) === JSON.stringify(expectedCash), "manual quarter/zero cash pot exemption changed");
             requireCondition(await page.locator('.pnl-assets tbody tr').count() === expectedMarketCount + expectedCash.length, "P&L table lost cash exemption or reintroduced market rows");
+            requireCondition(compactText(await page.locator(".pnl-assets .panel-count").innerText()) === `${expectedMarketCount + expectedCash.length} holdings · all rows`,
+              "P&L holdings count includes suppressed market rows or omits manual cash");
           }
           if (scenario === "mixed" || scenario === "inventory") {
-            requireCondition([...portfolio.t212.investments, ...portfolio.nfts, ...portfolio.wallet.native, ...portfolio.wallet.tokens].every((row) => row.valueUsd === 1), "exact $1 market boundary is not retained across four classes");
-            requireCondition(portfolio.totals.walletUsd === 2 && portfolio.totals.walletThb === 72 && portfolio.totals.nftsUsd === 1, "displayed wallet/NFT subtotals differ from independent row sums");
+            requireCondition(displayRows.every((row) => row.valueUsd === 1), "exact $1 market boundary is not retained across four classes");
+            requireCondition(Math.abs(portfolio.totals.walletUsd - 3.998) < 1e-9 && Math.abs(portfolio.totals.walletThb - 143.928) < 1e-9
+              && Math.abs(portfolio.totals.nftsUsd - 1.999) < 1e-9, "full wallet/NFT subtotals omit known suppressed values");
+            const suppressedKnown = marketRows.filter((row) => Number.isFinite(row.valueUsd) && row.valueUsd < 1);
+            requireCondition(suppressedKnown.length === 4 && suppressedKnown.every((row) => Math.abs(row.valueUsd - 0.999) < 1e-9), "independent four $0.999 suppressed holdings changed");
+            const displayedTotal = displayRows.reduce((sum, row) => sum + row.valueUsd, 0) + 0.25;
+            const suppressedTotal = suppressedKnown.reduce((sum, row) => sum + row.valueUsd, 0);
+            requireCondition(Math.abs(displayedTotal - 4.25) < 1e-9 && Math.abs(suppressedTotal - 3.996) < 1e-9
+              && Math.abs(portfolio.totals.grandTotalUsd - displayedTotal - suppressedTotal) < 1e-9
+              && suppressedTotal > 0 && suppressedTotal < suppressedKnown.length, "book/displayed difference is not exactly bounded by the four sub-$1 holdings");
+            for (const id of ["t212:SECURITY-SMALL", "nft:collection-small", "native:8453", "token:1:0x0000000000000000000000000000000000000002"]) {
+              requireCondition(Math.abs(recordedHoldings[id] - 0.999) < 1e-9, `${id} is absent or changed in the recorded holdings map`);
+            }
+            for (const id of ["t212:SECURITY-UNKNOWN", "nft:collection-unknown", "token:1:0x0000000000000000000000000000000000000003"]) {
+              requireCondition(Object.hasOwn(recordedHoldings, id) && recordedHoldings[id] === null, `${id} is absent or valued instead of null in the recorded holdings map`);
+            }
             requireCondition(portfolio.totals.pnlCoverage.eligible === 4, "priced evidence-backed holdings lost eligible coverage");
             requireCondition(portfolio.sources.walletTokens.status === "live", "mixed token pricing changed source status");
             requireCondition(portfolio.sources.nfts.status === (scenario === "inventory" ? "partial" : "live"), "NFT status conflates incomplete inventory and missing individual price");
             requireCondition(portfolio.totals.pnlCoverage.status === (scenario === "inventory" ? "partial" : "complete"), "suppression caused partial P&L or inventory incompleteness disappeared");
             if (surface === "home") {
-              for (const [key, value] of [["t212", 1.999], ["cash", 0.25], ["nfts", 1], ["walletNative", 1], ["walletTokens", 1]]) {
-                requireCondition(compactText(await page.locator(`[data-value-class="${key}"] strong`).innerText()) === expectedUsd(value), `${key} class value differs from authoritative account remainder/displayed other classes`);
+              for (const [key, value] of [["t212", 1.999], ["cash", 0.25], ["nfts", 1.999], ["walletNative", 1.999], ["walletTokens", 1.999]]) {
+                requireCondition(compactText(await page.locator(`[data-value-class="${key}"] strong`).innerText()) === expectedUsd(value), `${key} class value differs from full joined holdings`);
               }
               const allocationValues = await page.locator(".pnl-allocation-item > div:first-child > strong").allTextContents();
-              requireCondition(JSON.stringify(allocationValues.map(compactText)) === JSON.stringify([1.999, 0.25, 1, 1, 1].map(expectedUsd)), "allocation values differ from authoritative account remainder/displayed other class sums");
+              requireCondition(JSON.stringify(allocationValues.map(compactText)) === JSON.stringify([1.999, 0.25, 1.999, 1.999, 1.999].map(expectedUsd)), "allocation values differ from full joined class sums");
             }
+            return "$8.246 / ฿296.856 hero/book = $4.25 displayed + four $0.999 holdings ($3.996 < $4); all 13 recording identities retained";
           } else if (scenario === "empty") {
             requireCondition(Object.values(portfolio.sources).every((source) => source.status === "live"), "all-small mixed pricing book invents incomplete sources");
             requireCondition(portfolio.totals.pnlCoverage.status === "complete" && portfolio.totals.pnlCoverage.eligible === 0, "known zero displayed holdings invented partial coverage");
@@ -1602,8 +1656,8 @@ async function auditDustFixtures(browser, fixtureUrl, viewport) {
               ? ["nftsUsd", "nftsThb", "walletNativeUsd", "walletNativeThb", "grandTotalUsd", "grandTotalThb"]
               : ["t212Thb", "nftsThb", "walletNativeThb", "walletTokensThb", "walletThb", "grandTotalUsd", "grandTotalThb"];
             for (const key of nullTotals) requireCondition(portfolio.totals[key] === null, `${key} invents zero from suppressed rows despite its failed conversion dependency`);
-            if (ethOutage) requireCondition(portfolio.sources.walletTokens.status === "live" && portfolio.totals.walletTokensUsd === 1 && portfolio.totals.walletTokensThb === 36
-              && portfolio.totals.walletUsd === 1 && portfolio.totals.walletThb === 36, "ETH outage changed independent known token pricing/partial wallet aggregate");
+            if (ethOutage) requireCondition(portfolio.sources.walletTokens.status === "live" && Math.abs(portfolio.totals.walletTokensUsd - 1.999) < 1e-9 && Math.abs(portfolio.totals.walletTokensThb - 71.964) < 1e-9
+              && Math.abs(portfolio.totals.walletUsd - 1.999) < 1e-9 && Math.abs(portfolio.totals.walletThb - 71.964) < 1e-9, "ETH outage changed independent full token pricing/partial wallet aggregate");
             requireCondition(portfolio.totals.pnlCoverage.sourcesComplete === false && portfolio.totals.pnlCoverage.status === "partial", "conversion outage disappeared from source completeness");
             const heroUsd = page.locator(surface === "home" ? '[data-value-currency="USD"]' : ".asset-registry-value");
             const heroThb = page.locator(surface === "home" ? ".pnl-value-hero .pnl-secondary" : ".asset-registry-secondary > span:first-child strong");

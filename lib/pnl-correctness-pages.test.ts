@@ -5,12 +5,15 @@ import Home from "../app/page";
 import AssetListPage from "../app/asset-list/page";
 import PortfolioPage from "../app/portfolio/page";
 import { buildJoinedPortfolio, getJoinedPortfolio, type LiveResult } from "./live-data";
+import { createSnapshotRecorder } from "./pnl-history";
+import { shouldSuppressHolding } from "./dust-filter";
 import { observedNftFloors, oneUnpricedNft } from "./__fixtures__/nft-floors";
 
 vi.mock("./live-data", async (original) => ({ ...await original<typeof import("./live-data")>(), getJoinedPortfolio: vi.fn() }));
-vi.mock("./assets-db", () => ({ isNeonConfigured: () => false }));
+vi.mock("./assets-db", async (original) => ({ ...await original<typeof import("./assets-db")>(), isNeonConfigured: () => false }));
 vi.mock("./auth", () => ({ requireSession: async () => null }));
-vi.mock("./pnl-history", () => ({
+vi.mock("./pnl-history", async (original) => ({
+  ...await original<typeof import("./pnl-history")>(),
   readPortfolioSnapshotHistory: async () => ({ snapshots: [], available: true }), recordPortfolioSnapshot: vi.fn(),
 }));
 // Keep financial pages real; isolate unrelated auth/navigation and browser-only rendering.
@@ -32,8 +35,103 @@ function book(scenario: "mixed" | "all-unpriced" | "wallet-failure" | "incomplet
   }, AS_OF);
 }
 const text = (html: string) => html.replace(/<[^>]*>/g, " ").replaceAll("&amp;", "&").replace(/\s+/g, " ").trim();
+
+function displayBoundaryBook() {
+  return buildJoinedPortfolio({
+    t212Summary: live({ currency: "USD", cashAvailable: 100, totalValue: 101.5, investmentsCurrentValue: 1.5 }),
+    t212Positions: live([0.5, 1].map((value) => ({
+      ticker: value < 1 ? "SMALL-SECURITY" : "ONE-SECURITY", name: "Security fixture", quantity: 1,
+      averagePrice: value, currentPrice: value, ppl: 0, currency: "USD", pplCurrency: "USD", valueNative: value, valueAccount: value,
+    }))),
+    nfts: live([
+      { collection: "small-nft", collectionName: "Small collection", tokenCount: 1, floorEth: 0.00025 },
+      { collection: "one-nft", collectionName: "One-dollar collection", tokenCount: 2, floorEth: 0.00025 },
+    ]),
+    walletNative: live([
+      { chainId: 1, chainName: "Ethereum", symbol: "SMALL-NATIVE", amount: 0.00025 },
+      { chainId: 8453, chainName: "Base", symbol: "ONE-NATIVE", amount: 0.0005 },
+    ]),
+    walletTokens: live([
+      { chainId: 1, chainName: "Ethereum", contract: "0xaaa", symbol: "SMALL-TOKEN", name: "Small token", amountRaw: "1", decimals: 0, amount: 1, priceUsd: 0.5 },
+      { chainId: 1, chainName: "Ethereum", contract: "0xbbb", symbol: "ONE-TOKEN", name: "One-dollar token", amountRaw: "1", decimals: 0, amount: 1, priceUsd: 1 },
+      { chainId: 1, chainName: "Ethereum", contract: "0xccc", symbol: "FIVE-TOKEN", name: "Five-dollar token", amountRaw: "1", decimals: 0, amount: 1, priceUsd: 5 },
+      { chainId: 1, chainName: "Ethereum", contract: "0xddd", symbol: "UNKNOWN-TOKEN", name: "Unknown token", amountRaw: "1", decimals: 0, amount: 1, priceUsd: null },
+    ]),
+    manualHoldings: live([{ id: "cash", label: "Operator cash", kind: "cash", currency: "USD", amount: 0.25, recordedAt: AS_OF, createdAt: AS_OF }]),
+    capitalEvents: live([{ occurredAt: AS_OF, kind: "contribution", amountThb: 3600 }]),
+    fiatFx: live({ usdToThb: 36, gbpToThb: 45, eurToThb: 40, asOf: AS_OF }), ethPrice: live(2000),
+  }, AS_OF);
+}
+
 beforeEach(() => vi.stubGlobal("React", React));
 afterEach(() => { vi.unstubAllGlobals(); vi.clearAllMocks(); });
+
+describe("render-only holding suppression", () => {
+  it("keeps small holdings in hero/class totals and recorded inventory while every row and count shows the displayable subset", async () => {
+    const portfolio = displayBoundaryBook();
+    const allHoldings = [...portfolio.t212.investments, ...portfolio.nfts, ...portfolio.wallet.native, ...portfolio.wallet.tokens];
+    const displayed = allHoldings.filter((row) => !shouldSuppressHolding(row));
+    const suppressed = allHoldings.filter(shouldSuppressHolding);
+    const small = suppressed.filter((row) => row.valueUsd !== null);
+    expect(allHoldings).toHaveLength(10);
+    expect(displayed).toHaveLength(5);
+    expect(small.map((row) => row.valueUsd)).toEqual([0.5, 0.5, 0.5, 0.5]);
+    expect(small.every((row) => row.valueUsd! < 1)).toBe(true);
+    const displayedValue = displayed.reduce((sum, row) => sum + row.valueUsd!, 0);
+    const suppressedValue = small.reduce((sum, row) => sum + row.valueUsd!, 0);
+    expect(displayedValue).toBe(9);
+    expect(suppressedValue).toBe(2);
+    expect(portfolio.totals.grandTotalUsd).toBe(111.25);
+    expect(portfolio.totals.grandTotalUsd! - 100 - 0.25 - displayedValue).toBe(suppressedValue);
+    expect(portfolio.totals).toMatchObject({ nftsUsd: 1.5, walletNativeUsd: 1.5, walletTokensUsd: 6.5, walletUsd: 8, grandTotalThb: 4005 });
+    expect(portfolio.totals.pnlCoverage).toMatchObject({ totalHoldings: 5, dust: 0, unpriced: 0 });
+
+    vi.mocked(getJoinedPortfolio).mockResolvedValue(portfolio);
+    const home = renderToStaticMarkup(await Home());
+    const registry = renderToStaticMarkup(await AssetListPage());
+    for (const html of [home, registry]) {
+      for (const name of ["SMALL-SECURITY", "Small collection", "SMALL-NATIVE", "SMALL-TOKEN", "UNKNOWN-TOKEN"]) expect(html).not.toContain(name);
+      for (const name of ["ONE-SECURITY", "One-dollar collection", "ONE-NATIVE", "ONE-TOKEN", "FIVE-TOKEN"]) expect(html).toContain(name);
+      expect(text(html)).not.toMatch(/dust|unpriced|hidden|under \$1/i);
+    }
+    expect(home).toMatch(/data-value-currency="USD">US\$111\.25<\/strong>/);
+    expect(home).toContain('data-wallet-summary-count="3">3 wallet assets');
+    expect(home).toContain('data-wallet-native-count="1" data-wallet-token-count="2"');
+    expect(text(home)).toContain("1 NATIVE · 2 TOKENS");
+    expect(text(home)).toContain("Open positions 1 Included in per-asset P&L");
+    expect(text(home)).toContain("6 holdings · all rows");
+    expect(home).toContain('data-manual-cash="true"');
+    expect(home).toContain("Operator cash");
+    expect(home).toMatch(/data-value-class="nfts">[\s\S]*?<strong>US\$1\.50<\/strong>/);
+    expect(home).toMatch(/data-value-class="walletNative">[\s\S]*?<strong>US\$1\.50<\/strong>/);
+    expect(home).toMatch(/data-value-class="walletTokens">[\s\S]*?<strong>US\$6\.50<\/strong>/);
+    expect(registry).toMatch(/id="asset-registry-total"[^>]*>US\$111\.25<\/h2>/);
+    expect(text(registry)).toContain("1 T212 · 1 NFT · 3 wallet assets");
+    expect(text(registry)).toContain("1 POSITIONS");
+    expect(text(registry)).toContain("1 COLLECTIONS · 2 TOKENS");
+    expect(text(registry)).toContain("3 ASSETS");
+    const nftFooter = registry.match(/asset-nft-table[\s\S]*?<tfoot>([\s\S]*?)<\/tfoot>/)![1];
+    expect(text(nftFooter)).toBe("Total NFT port 2 — 0.00075 ETH US$1.50 ฿54.00");
+
+    let recorded: unknown[] | undefined;
+    const recorder = createSnapshotRecorder({ hasDb: () => true, now: () => Date.parse(AS_OF), getDb: () => ({
+      query: async (sql, params) => {
+        if (!sql.includes("INSERT INTO portfolio_snapshot")) return [];
+        recorded = params;
+        return [{ snapshot_date: AS_OF.slice(0, 10) }];
+      },
+    }) });
+    expect(await recorder(portfolio)).toBe("recorded");
+    expect(recorded![1]).toBe(111.25);
+    expect(JSON.parse(recorded![16] as string)).toEqual({
+      "t212:SMALL-SECURITY": 0.5, "t212:ONE-SECURITY": 1,
+      "nft:small-nft": 0.5, "nft:one-nft": 1,
+      "native:1": 0.5, "native:8453": 1,
+      "token:1:0xaaa": 0.5, "token:1:0xbbb": 1, "token:1:0xccc": 5, "token:1:0xddd": null,
+      "manual:Operator cash": 0.25,
+    });
+  });
+});
 
 describe("displayed NFT value across read-only pages", () => {
   it("omits the missing-floor registry row and counts only five displayed collections / six tokens", async () => {

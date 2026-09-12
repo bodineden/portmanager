@@ -99,11 +99,14 @@ describe("rendered per-asset P&L honesty (offline fixtures)", () => {
     expect(html).not.toMatch(/<(?:form|button|input|select)\b|contenteditable=/i);
   });
 
-  it("renders every joined holding once, excludes cash, retains provenance and adds no mutation controls", () => {
+  it("renders each displayable holding once, excludes broker cash, retains provenance and adds no mutation controls", () => {
     const book = fixture();
     const original = structuredClone(book);
     const html = markup(book);
     expect(rows(html)).toHaveLength(6);
+    expect(text(html)).toContain("6 holdings · all rows");
+    expect(book.wallet.native).toHaveLength(2);
+    expect(book.wallet.tokens).toHaveLength(4);
     for (const name of ["RECORDED", "FX-DIFFERENCE", "Unknown NFT", "NATIVE", "FREE", "PURCHASED"]) {
       expect(rows(html).filter((row) => row.includes(`>${name}</strong>`))).toHaveLength(1);
     }
@@ -140,7 +143,7 @@ describe("rendered per-asset P&L honesty (offline fixtures)", () => {
     expect(cell(row, "pnl")).not.toContain("0.00%");
   });
 
-  it("preserves unreconciled API P&L visibly while omitted rows never enter totals", () => {
+  it("preserves unreconciled API P&L visibly while ineligible rows never enter recorded P&L totals", () => {
     const book = fixture();
     const html = markup(book);
     const row = rowNamed(html, "FX-DIFFERENCE");

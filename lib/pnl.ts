@@ -258,7 +258,7 @@ function completeSum(values: (number | null)[]): number | null {
 }
 
 function summarizePnl(inputRows: PnlClassInput["holdings"], sourcesComplete: boolean, usdToThb: number | null): PnlSummary {
-  // Revalidate callers at the aggregate boundary without counting omitted rows.
+  // P&L coverage describes displayable rows; the caller retains every holding for book valuation.
   const rows = inputRows.filter((row) => !shouldSuppressHolding(row));
   const coverage: PnlCoverage = { totalHoldings: rows.length, eligible: 0, notRecorded: 0, dust: 0, unpriced: 0,
     unreconciled: 0, status: "partial", sourcesComplete };
