@@ -97,6 +97,76 @@ function parseDisplayedUsd(value) {
   return parsed;
 }
 
+async function assertNoSuppressionTrace(page) {
+  const retired = ".home-wallet-filter, .home-wallet-hidden-count, .home-wallet-filtered-empty, .asset-wallet-filter, .asset-wallet-hidden-count, .asset-wallet-filtered-empty";
+  requireCondition(await page.locator(retired).count() === 0, "retired wallet filter/count/threshold-empty element exists");
+  const tracePattern = /\b(?:dust|unpriced)\b|hide (?:assets )?under \$1|hidden under \$1|all \d+ wallet assets are hidden/i;
+  requireCondition(!tracePattern.test(await renderedText(page)), "rendered page discloses suppressed holdings");
+  const hiddenCopy = await page.locator("body").evaluate((body) => {
+    const attributes = Array.from(body.querySelectorAll("[aria-label], [title], [aria-description]"), (element) =>
+      [element.getAttribute("aria-label"), element.getAttribute("title"), element.getAttribute("aria-description")].join(" "));
+    const comments = [];
+    const walker = document.createTreeWalker(body, NodeFilter.SHOW_COMMENT);
+    while (walker.nextNode()) comments.push(walker.currentNode.textContent ?? "");
+    return [...attributes, ...comments].join(" ");
+  });
+  requireCondition(!tracePattern.test(hiddenCopy), "tooltip, accessible label or DOM comment discloses suppressed holdings");
+  requireCondition(await page.locator('[data-pnl-eligibility="dust"], [data-pnl-eligibility="unpriced"]').count() === 0, "suppressed eligibility chip/row is rendered");
+}
+
+async function assertMarketRowValues(page) {
+  const values = await page.locator('.pnl-asset-table tbody tr:not([data-manual-cash="true"]) [data-pnl-cell="value"], .asset-live-table tbody .asset-usd-value').evaluateAll((cells) =>
+    cells.map((cell) => cell.firstChild?.textContent ?? ""));
+  for (const text of values) {
+    const value = parseDisplayedUsd(text);
+    requireCondition(value !== null && value >= 1, `rendered market holding current value is ${text}`);
+  }
+  for (const [selector, column] of [[".home-wallet-panel", 4], [".asset-wallet-panel", 5]]) {
+    if (await page.locator(selector).count()) await assertWalletRows(page.locator(selector), column);
+  }
+  return `${values.length} market registry/P&L current values checked; manual cash remains exempt`;
+}
+
+async function assertWalletRows(panel, usdColumn) {
+  const rows = await panel.locator("tr[data-wallet-kind]").evaluateAll((elements) => elements.map((element) => ({
+    kind: element.getAttribute("data-wallet-kind"),
+    priced: element.getAttribute("data-wallet-priced"),
+    cells: Array.from(element.querySelectorAll("td"), (cell) => (cell.textContent ?? "").replace(/\s+/g, " ").trim()),
+  })));
+  let tokenSeen = false;
+  for (const row of rows) {
+    requireCondition(["native", "token"].includes(row.kind), "wallet row has invalid data-wallet-kind");
+    requireCondition(row.priced === "true", "wallet row is not marked priced");
+    if (row.kind === "token") tokenSeen = true;
+    if (row.kind === "native") requireCondition(!tokenSeen, "native row appears after a token row");
+    const usd = parseDisplayedUsd(row.cells[usdColumn]);
+    requireCondition(usd !== null && usd >= 1, `wallet current value is ${row.cells[usdColumn]}`);
+    requireCondition(parseDisplayedUsd(row.cells[usdColumn - 1]) !== null, "displayed wallet holding has unknown price");
+  }
+  return `${rows.length} priced wallet rows in native/token order`;
+}
+
+async function assertWalletTotals(panel, usdColumn, thbColumn) {
+  const table = panel.locator("table");
+  if (await table.count() === 0) return;
+  const rows = await table.locator("tbody tr[data-wallet-kind]").evaluateAll((elements) => elements.map((element) =>
+    Array.from(element.querySelectorAll("td"), (cell) => cell.textContent ?? "")));
+  const totalCells = await table.locator("tfoot td").allTextContents();
+  requireCondition(/Total wallet \(priced\)/i.test(totalCells.join(" ")), "priced wallet total label is missing");
+  for (const [column, totalIndex, label] of [[usdColumn, totalCells.length - 2, "USD"], [thbColumn, totalCells.length - 1, "THB"]]) {
+    const values = rows.map((cells) => parseDisplayedUsd(cells[column]));
+    const total = parseDisplayedUsd(totalCells[totalIndex]);
+    if (values.some((value) => value === null)) {
+      requireCondition(total === null, `${label} wallet total invents a value despite unavailable conversion`);
+    } else if (total !== null) {
+      const sum = values.reduce((result, value) => result + value, 0);
+      requireCondition(Math.abs(total - sum) <= (rows.length + 1) * 0.005 + 0.000001, `${label} wallet total ${total} differs from displayed row sum ${sum}`);
+    } else {
+      requireCondition(await panel.locator(".is-unavailable").count() > 0, `${label} wallet total is unknown despite complete priced rows`);
+    }
+  }
+}
+
 async function readHomeWalletSummaryCount(page) {
   const summary = page.locator("[data-wallet-summary-count]");
   requireCondition(await summary.count() === 1, "full-set wallet summary is missing or duplicated");
@@ -204,6 +274,7 @@ async function checkPnlContract(page) {
     const rows = await table.locator("tr[data-basis-status]").evaluateAll((elements) => elements.map((element) => ({
       status: element.getAttribute("data-basis-status"),
       eligibility: element.getAttribute("data-pnl-eligibility"),
+      valueUsd: element.querySelector('[data-pnl-cell="value"]')?.firstChild?.textContent ?? "",
       value: element.querySelector('[data-pnl-cell="value"]')?.textContent?.replace(/\s+/g, " ").trim() ?? "",
       basis: element.querySelector('[data-pnl-cell="basis"]')?.textContent?.replace(/\s+/g, " ").trim() ?? "",
       pnl: element.querySelector('[data-pnl-cell="pnl"]')?.textContent?.replace(/\s+/g, " ").trim() ?? "",
@@ -217,7 +288,7 @@ async function checkPnlContract(page) {
     }
     for (const row of rows) {
       requireCondition(["t212-live", "onchain-derived", "airdrop-free", "not-recorded"].includes(row.status), `invalid basisStatus ${row.status}`);
-      requireCondition(["eligible", "not-recorded", "dust", "unpriced", "unreconciled"].includes(row.eligibility), `invalid pnlEligibility ${row.eligibility}`);
+      requireCondition(["eligible", "not-recorded", "unreconciled"].includes(row.eligibility), `invalid pnlEligibility ${row.eligibility}`);
       requireCondition(row.value.length > 0 && row.basis.length > 0 && row.pnl.length > 0, "P&L row omits value/basis/P&L cells");
       requireCondition(row.text.includes(row.status), `basisStatus chip ${row.status} is not visible`);
       requireCondition(Boolean(row.note?.trim()), `basis note tooltip is missing for ${row.status}`);
@@ -233,13 +304,11 @@ async function checkPnlContract(page) {
       if (row.eligibility !== "eligible") {
         requireCondition(/excluded/i.test(row.text), `${row.eligibility} row does not explain its exclusion`);
       }
-      if (["dust", "unpriced", "unreconciled"].includes(row.eligibility)) {
+      if (row.eligibility === "unreconciled") {
         requireCondition(new RegExp(row.eligibility, "i").test(row.text), `${row.eligibility} is not visually distinguished`);
       }
-      if (row.eligibility === "unpriced") {
-        requireCondition(row.value.includes("—"), "unpriced current value is not —");
-        requireCondition(!/(?:\$|฿|USD\s*|THB\s*)[+-]?\d/.test(row.value), "unpriced row invents a current value");
-      }
+      const currentValue = parseDisplayedUsd(row.valueUsd);
+      requireCondition(currentValue !== null && currentValue >= 1, "market P&L row has unknown or sub-threshold current value");
       if (row.status === "airdrop-free") {
         requireCondition(/(?:\$|USD\s*)0(?:\.0+)?(?![\d.])/.test(row.basis), "verified free basis is not shown as zero USD");
         requireCondition(!/[+-]?\d+(?:\.\d+)?%/.test(row.pnl), "zero-basis acquisition invents a P&L percentage");
@@ -418,216 +487,43 @@ async function checkHomeContract(page) {
     );
   });
 
-  await check("H1 home wallet hide-under-$1 toggle is present and checked by default", async () => {
-    const panel = page.locator(".home-wallet-panel");
-    const filter = panel.locator(".home-wallet-filter");
-    requireCondition(await filter.count() === 1, "expected exactly one home wallet filter");
-    requireCondition(await filter.isVisible(), "home wallet filter is not visible");
-    requireCondition(compactText((await filter.textContent()) ?? "") === "Hide under $1", "home wallet filter label changed");
-
-    const toggle = filter.locator('input[type="checkbox"][aria-label="Hide assets under $1"]');
-    requireCondition(await toggle.count() === 1, "accessible home wallet filter checkbox is missing or duplicated");
-    requireCondition(await toggle.isChecked(), "home wallet filter is not checked by default");
+  await check("H1 home wallet has no retired filter controls or suppression traces", async () => {
+    await assertNoSuppressionTrace(page);
+    requireCondition(await page.locator('.home-wallet-panel input, .home-wallet-panel button, .home-wallet-panel select').count() === 0, "wallet panel still exposes a control");
   });
 
-  await check("H2 home wallet default view hides unpriced and under-$1 rows", async () => {
+  await check("H2 home wallet headers and hero count exactly the displayable rows", async () => {
     const panel = page.locator(".home-wallet-panel");
-    const table = panel.locator(".home-wallet-table");
-    const fullCounts = await readHomeWalletPanelCounts(panel);
-    const fullCount = fullCounts.native + fullCounts.token;
-    const summaryCount = await readHomeWalletSummaryCount(page);
-    requireCondition(fullCount === summaryCount, `panel has ${fullCount} total rows but wallet summary reports ${summaryCount}`);
-
-    if (await table.count() === 0) {
-      requireCondition(fullCount === 0, `wallet table is absent despite ${fullCount} total rows`);
-      requireCondition(await panel.locator(".home-empty").count() === 1, "wallet table has no explicit empty/unavailable state");
-      return "wallet sources returned no display rows";
+    const counts = await readHomeWalletPanelCounts(panel);
+    const header = await readHomeWalletHeaderCounts(panel);
+    const nativeCount = await panel.locator('tr[data-wallet-kind="native"]').count();
+    const tokenCount = await panel.locator('tr[data-wallet-kind="token"]').count();
+    requireCondition(counts.native === nativeCount && counts.token === tokenCount, "wallet data counts differ from displayed native/token rows");
+    requireCondition(header.native === nativeCount && header.token === tokenCount, "wallet header counts differ from displayed native/token rows");
+    requireCondition(await readHomeWalletSummaryCount(page) === nativeCount + tokenCount, "hero wallet count differs from displayed rows");
+    await assertWalletRows(panel, 4);
+    if (nativeCount + tokenCount === 0) {
+      requireCondition(await panel.locator(".home-wallet-table").count() === 0, "empty wallet renders a holding table");
+      requireCondition(compactText(await panel.locator(".home-empty strong").innerText()) === "No wallet holdings to display in this snapshot.", "wallet neutral empty copy changed");
     }
-
-    const rows = panel.locator("tr[data-wallet-kind]");
-    const rowContracts = await rows.evaluateAll((elements) => elements.map((element) => ({
-      kind: element.getAttribute("data-wallet-kind"),
-      priced: element.getAttribute("data-wallet-priced"),
-      valueUsd: (element.querySelectorAll("td")[4]?.textContent ?? "").replace(/\s+/g, " ").trim(),
-    })));
-    const visibleNativeCount = rowContracts.filter((row) => row.kind === "native").length;
-    const visibleTokenCount = rowContracts.filter((row) => row.kind === "token").length;
-    const headerCounts = await readHomeWalletHeaderCounts(panel);
-    requireCondition(headerCounts.native === visibleNativeCount, `header shows ${headerCounts.native} native, found ${visibleNativeCount}`);
-    requireCondition(headerCounts.token === visibleTokenCount, `header shows ${headerCounts.token} tokens, found ${visibleTokenCount}`);
-    // Unknown-price native balances stay visible; unpriced tokens are hidden by the existing dust filter.
-    requireCondition(
-      await panel.locator('tr[data-wallet-kind="token"][data-wallet-priced="false"]').count() === 0,
-      "an unpriced token is visible while the filter is on",
-    );
-
-    for (const row of rowContracts) {
-      requireCondition(row.kind === "native" || row.kind === "token", `unexpected wallet row kind ${row.kind ?? "missing"}`);
-      if (row.kind === "token") requireCondition(row.priced === "true", "visible token is not marked priced");
-      const valueUsd = parseDisplayedUsd(row.valueUsd);
-      if (valueUsd !== null) requireCondition(valueUsd >= 1, `visible ${row.kind} row is worth ${row.valueUsd}`);
-    }
-
-    const hiddenCount = fullCount - rowContracts.length;
-    requireCondition(hiddenCount >= 0, `visible row count ${rowContracts.length} exceeds full count ${fullCount}`);
-    const hiddenNote = panel.locator(".home-wallet-hidden-count");
-    if (hiddenCount > 0) {
-      requireCondition(await hiddenNote.count() === 1, "hidden-under-$1 note is missing");
-      requireCondition(
-        compactText((await hiddenNote.textContent()) ?? "") === `(${hiddenCount} hidden under $1)`,
-        "hidden-under-$1 note count is incorrect",
-      );
-    } else {
-      requireCondition(await hiddenNote.count() === 0, "hidden-under-$1 note is rendered with no hidden rows");
-    }
-
-    const filteredEmptyCell = table.locator('tbody td[colspan="6"]');
-    if (rowContracts.length === 0 && fullCount > 0) {
-      requireCondition(await filteredEmptyCell.count() === 1, "all-hidden wallet explanation is missing or duplicated");
-      requireCondition(
-        compactText((await filteredEmptyCell.textContent()) ?? "")
-          === `All ${fullCount} wallet assets are hidden under $1 — uncheck "Hide under $1" to show them`,
-        "all-hidden wallet explanation changed",
-      );
-    } else {
-      requireCondition(await filteredEmptyCell.count() === 0, "all-hidden wallet explanation is rendered with visible rows");
-    }
-
-    return `${rowContracts.length}/${fullCount} wallet rows visible by default`;
+    return `${nativeCount} native + ${tokenCount} tokens = header and hero counts`;
   });
 
-  await check("H3 home wallet toggle restores the full ordered row set and preserves totals", async () => {
+  await check("H3 home wallet totals sum displayed rows and remain stable", async () => {
     const panel = page.locator(".home-wallet-panel");
-    const toggle = panel.locator('input[type="checkbox"][aria-label="Hide assets under $1"]');
-    const table = panel.locator(".home-wallet-table");
-    const fullCounts = await readHomeWalletPanelCounts(panel);
-    const fullCount = fullCounts.native + fullCounts.token;
-    const summaryCount = await readHomeWalletSummaryCount(page);
-    requireCondition(fullCount === summaryCount, `panel has ${fullCount} total rows but wallet summary reports ${summaryCount}`);
-
-    if (await table.count() === 0) {
-      requireCondition(fullCount === 0, `wallet table is absent despite ${fullCount} total rows`);
-      await toggle.uncheck();
-      requireCondition(!(await toggle.isChecked()), "home wallet filter stayed checked");
-      requireCondition(await panel.locator(".home-empty").count() === 1, "empty wallet state disappeared after toggling");
-      requireCondition(
-        await panel.locator(".home-wallet-hidden-count").count() === 0,
-        "hidden-under-$1 note appeared for an empty wallet after toggling off",
-      );
-      await toggle.check();
-      requireCondition(await toggle.isChecked(), "empty wallet filter did not return to its default state");
-      requireCondition(await panel.locator(".home-empty").count() === 1, "empty wallet state disappeared after restoring the filter");
-      return "wallet sources returned no display rows; empty state remained stable in both toggle directions";
-    }
-
-    const defaultVisibleCount = await panel.locator("tr[data-wallet-kind]").count();
-    const defaultVisibleRows = await panel.locator("tr[data-wallet-kind]").allTextContents();
-    const defaultUnpricedNativeCount = await panel.locator('tr[data-wallet-kind="native"][data-wallet-priced="false"]').count();
-    const hiddenBefore = fullCount - defaultVisibleCount;
-    const totalBefore = compactText((await table.locator(".table-total-row").textContent()) ?? "");
-    requireCondition(/Total wallet \(priced\)/i.test(totalBefore), "priced wallet total is missing before toggling");
-
-    await toggle.uncheck();
-    await page.waitForFunction(
-      (expected) => document.querySelectorAll(".home-wallet-panel tr[data-wallet-kind]").length === expected,
-      fullCount,
-      { timeout: 5_000 },
-    );
-    requireCondition(!(await toggle.isChecked()), "home wallet filter stayed checked");
-
-    const rowContracts = await panel.locator("tr[data-wallet-kind]").evaluateAll((elements) => elements.map((element) => ({
-      kind: element.getAttribute("data-wallet-kind"),
-      priced: element.getAttribute("data-wallet-priced"),
-      cells: Array.from(element.querySelectorAll("td"), (cell) => (cell.textContent ?? "").replace(/\s+/g, " ").trim()),
-    })));
-    requireCondition(rowContracts.length === fullCount, `toggle restored ${rowContracts.length}/${fullCount} wallet rows`);
-    requireCondition(
-      hiddenBefore > 0 ? rowContracts.length > defaultVisibleCount : rowContracts.length === defaultVisibleCount,
-      hiddenBefore > 0 ? "toggle did not add the hidden rows" : "toggle changed a full default row set",
-    );
-
-    const restoredNativeCount = rowContracts.filter((row) => row.kind === "native").length;
-    const restoredTokenCount = rowContracts.filter((row) => row.kind === "token").length;
-    requireCondition(restoredNativeCount === fullCounts.native, `restored ${restoredNativeCount}/${fullCounts.native} native rows`);
-    requireCondition(restoredTokenCount === fullCounts.token, `restored ${restoredTokenCount}/${fullCounts.token} token rows`);
-    requireCondition(
-      rowContracts.filter((row) => row.kind === "native" && row.priced === "false").length === defaultUnpricedNativeCount,
-      "native holdings with unavailable prices were hidden by the default filter",
-    );
-    const headerCounts = await readHomeWalletHeaderCounts(panel);
-    requireCondition(headerCounts.native === restoredNativeCount, "restored native header count is incorrect");
-    requireCondition(headerCounts.token === restoredTokenCount, "restored token header count is incorrect");
-
-    let tokenSeen = false;
-    let unpricedSeen = false;
-    for (const row of rowContracts) {
-      requireCondition(row.kind === "native" || row.kind === "token", "restored row has invalid data-wallet-kind");
-      requireCondition(row.priced === "true" || row.priced === "false", "restored row has invalid data-wallet-priced");
-      if (row.kind === "token") tokenSeen = true;
-      if (row.kind === "native") requireCondition(!tokenSeen, "native row appears after a token row");
-      if (row.kind === "native" && row.priced === "false") {
-        for (const index of [3, 4, 5]) {
-          requireCondition(row.cells[index] === "—", `unpriced native cell ${index + 1} is not —`);
-        }
-      }
-      if (row.kind === "token" && row.priced === "false") {
-        unpricedSeen = true;
-        requireCondition(/UNPRICED/i.test(row.cells[1] ?? ""), "unpriced token tag is missing");
-        for (const index of [3, 4, 5]) {
-          requireCondition(row.cells[index] === "—", `unpriced token cell ${index + 1} is not —`);
-        }
-      }
-      if (row.kind === "token" && row.priced === "true") {
-        requireCondition(!unpricedSeen, "priced token appears after an unpriced token");
-      }
-    }
-
-    requireCondition(await panel.locator(".home-wallet-hidden-count").count() === 0, "hidden-under-$1 note remained after toggling off");
-    requireCondition(await table.locator(".home-wallet-filtered-empty").count() === 0, "all-hidden explanation remained after toggling off");
-    const totalAfter = compactText((await table.locator(".table-total-row").textContent()) ?? "");
-    requireCondition(totalAfter === totalBefore, "priced wallet total changed after toggling");
+    const rowsBefore = await panel.locator("tr[data-wallet-kind]").allTextContents();
+    const totalsBefore = await panel.locator("tfoot").allTextContents();
+    await assertWalletTotals(panel, 4, 5);
     const overflow = await page.evaluate(() => Math.max(document.documentElement.scrollWidth, document.body.scrollWidth) - document.documentElement.clientWidth);
-    requireCondition(overflow <= 1, `unfiltered wallet creates ${overflow}px of horizontal body overflow`);
-    await toggle.check();
-    requireCondition(await toggle.isChecked(), "wallet filter did not return to its default state");
-    await page.waitForFunction(
-      (expected) => document.querySelectorAll(".home-wallet-panel tr[data-wallet-kind]").length === expected,
-      defaultVisibleCount,
-      { timeout: 5_000 },
-    );
-    const filteredAgain = await panel.locator("tr[data-wallet-kind]").allTextContents();
-    requireCondition(JSON.stringify(filteredAgain) === JSON.stringify(defaultVisibleRows), "restoring the filter changed its original row set");
-    requireCondition(compactText((await table.locator(".table-total-row").textContent()) ?? "") === totalBefore, "priced wallet total changed after restoring the filter");
-    return `${defaultVisibleCount} default · ${rowContracts.length} restored · both toggle directions preserve totals`;
+    requireCondition(overflow <= 1, `wallet creates ${overflow}px of horizontal body overflow`);
+    requireCondition(JSON.stringify(await panel.locator("tr[data-wallet-kind]").allTextContents()) === JSON.stringify(rowsBefore), "wallet rows changed during the read-only audit");
+    await assertNoSuppressionTrace(page);
+    requireCondition(JSON.stringify(await panel.locator("tfoot").allTextContents()) === JSON.stringify(totalsBefore), "wallet totals changed during the read-only audit");
+    return `${rowsBefore.length} rows; USD/THB totals match their displayed values`;
   });
 
-  await check("home wallet rows keep native/token order and unpriced nulls", async () => {
-    const rows = page.locator(".home-wallet-panel tr[data-wallet-kind]");
-    const rowContracts = await rows.evaluateAll((elements) => elements.map((element) => ({
-      kind: element.getAttribute("data-wallet-kind"),
-      priced: element.getAttribute("data-wallet-priced"),
-      cells: Array.from(element.querySelectorAll("td"), (cell) => (cell.textContent ?? "").replace(/\s+/g, " ").trim()),
-    })));
-
-    let tokenSeen = false;
-    let unpricedSeen = false;
-    for (const row of rowContracts) {
-      requireCondition(row.kind === "native" || row.kind === "token", "wallet row has invalid data-wallet-kind");
-      requireCondition(row.priced === "true" || row.priced === "false", "wallet row has invalid data-wallet-priced");
-      if (row.kind === "token") tokenSeen = true;
-      if (row.kind === "native") requireCondition(!tokenSeen, "native row appears after a token row");
-      if (row.kind === "token" && row.priced === "false") {
-        unpricedSeen = true;
-        requireCondition(/UNPRICED/i.test(row.cells[1] ?? ""), "unpriced token tag is missing");
-        for (const index of [3, 4, 5]) {
-          requireCondition(row.cells[index] === "—", `unpriced token cell ${index + 1} is not —`);
-        }
-      }
-      if (row.kind === "token" && row.priced === "true") {
-        requireCondition(!unpricedSeen, "priced token appears after an unpriced token");
-      }
-    }
-    return `${rowContracts.length} wallet row${rowContracts.length === 1 ? "" : "s"}`;
+  await check("home wallet rows keep native/token order and exclude unknown current values", async () => {
+    return assertWalletRows(page.locator(".home-wallet-panel"), 4);
   });
 }
 
@@ -654,115 +550,30 @@ async function checkAssetWalletContract(page) {
     requireCondition(/Total wallet \(priced\)/i.test(compactText((await table.locator("tfoot").textContent()) ?? "")), "wallet registry total is missing");
   });
 
-  await check("asset-list wallet filter defaults on and preserves the full registry totals", async () => {
+  await check("asset-list wallet registry has no filter and counts only displayed holdings", async () => {
     const panel = page.locator(".asset-wallet-panel");
-    const toggle = panel.locator('input[type="checkbox"][aria-label="Hide assets under $1"]');
-    requireCondition(await toggle.count() === 1 && await toggle.isChecked(), "registry filter is missing or not checked by default");
+    await assertNoSuppressionTrace(page);
+    requireCondition(await panel.locator("input, button, select").count() === 0, "wallet registry still exposes a control");
+    const rowCount = await panel.locator("tr[data-wallet-kind]").count();
+    const rowsBefore = await panel.locator("tr[data-wallet-kind]").allTextContents();
+    const totalsBefore = await panel.locator("tfoot").allTextContents();
     const summary = compactText((await page.locator(".asset-registry-kpi").last().textContent()) ?? "");
     const match = summary.match(/([\d,]+)\s+wallet assets?\b/i);
-    const defaultRows = await panel.locator("tr[data-wallet-kind]").allTextContents();
-    const hiddenNote = panel.locator(".asset-wallet-hidden-count");
-    const hiddenText = await hiddenNote.count() > 0 ? compactText((await hiddenNote.textContent()) ?? "") : "";
-    const hiddenMatch = hiddenText.match(/^\(([\d,]+) hidden under \$1\)$/);
-    requireCondition(!hiddenText || hiddenMatch, "registry hidden-row count is malformed");
-    const hiddenCount = hiddenMatch ? parseGroupedCount(hiddenMatch[1], "hidden registry rows") : 0;
-    const fullCount = defaultRows.length + hiddenCount;
-    if (match) {
-      requireCondition(parseGroupedCount(match[1], "registry wallet count") === fullCount, "registry filter counts differ from the full summary");
-    } else {
-      requireCondition(/—\s+wallet assets?\b/i.test(summary), "registry summary omits its unavailable wallet count");
-      requireCondition(await panel.locator(".asset-source-badge.is-unavailable").count() > 0, "registry summary is unavailable despite complete wallet sources");
+    requireCondition(match && parseGroupedCount(match[1], "registry wallet count") === rowCount, "registry wallet summary differs from displayed rows");
+    requireCondition(compactText((await panel.locator(".asset-wallet-count .panel-count").textContent()) ?? "") === `${rowCount} ASSETS`, "registry header differs from displayed rows");
+    await assertWalletRows(panel, 5);
+    await assertWalletTotals(panel, 5, 6);
+    if (rowCount === 0) {
+      requireCondition(await panel.locator(".asset-wallet-table").count() === 0, "empty registry renders a holding table");
+      requireCondition(compactText(await panel.locator(".asset-empty-state strong").innerText()) === "No wallet holdings to display in this snapshot.", "registry neutral empty copy changed");
     }
-    requireCondition(compactText((await panel.locator(".asset-wallet-count .panel-count").textContent()) ?? "") === `${defaultRows.length} ASSETS`, "registry visible count differs from its rows");
-    requireCondition(hiddenCount > 0
-      ? compactText((await hiddenNote.textContent()) ?? "") === `(${hiddenCount} hidden under $1)`
-      : await hiddenNote.count() === 0, "registry hidden-row count is incorrect");
-    const defaultValues = await panel.locator("tr[data-wallet-kind]").evaluateAll((elements) => elements.map((element) => ({
-      kind: element.getAttribute("data-wallet-kind"), priced: element.getAttribute("data-wallet-priced"),
-      value: element.querySelectorAll("td")[5]?.textContent ?? "",
-    })));
-    for (const row of defaultValues) {
-      requireCondition(row.kind !== "token" || row.priced === "true", "default registry displays an unpriced token");
-      const value = parseDisplayedUsd(row.value);
-      requireCondition(value === null || value >= 1, "default registry displays an under-$1 holding");
-    }
-    const table = panel.locator(".asset-wallet-table");
-    if (await table.count() === 0) {
-      requireCondition(fullCount === 0, "registry table is absent despite joined holdings");
-      await toggle.uncheck();
-      requireCondition(await panel.locator(".asset-empty-state").count() === 1, "empty registry state disappeared after toggling off");
-      await toggle.check();
-      requireCondition(await panel.locator(".asset-empty-state").count() === 1, "empty registry state disappeared after restoring the filter");
-      return "empty registry is stable in both toggle directions";
-    }
-    if (defaultRows.length === 0) {
-      requireCondition(await panel.locator(".asset-wallet-filtered-empty").count() === 1, "all-hidden registry has no explicit explanation");
-    }
-    const totals = compactText((await table.locator("tfoot").textContent()) ?? "");
-    await toggle.uncheck();
-    await page.waitForFunction((expected) => document.querySelectorAll(".asset-wallet-panel tr[data-wallet-kind]").length === expected, fullCount, { timeout: 5_000 });
-    const fullRows = await panel.locator("tr[data-wallet-kind]").evaluateAll((elements) => elements.map((element) => ({
-      kind: element.getAttribute("data-wallet-kind"), priced: element.getAttribute("data-wallet-priced"),
-      cells: Array.from(element.querySelectorAll("td"), (cell) => (cell.textContent ?? "").replace(/\s+/g, " ").trim()),
-    })));
-    let tokenSeen = false;
-    let unpricedTokenSeen = false;
-    for (const row of fullRows) {
-      requireCondition(["native", "token"].includes(row.kind) && ["true", "false"].includes(row.priced), "registry wallet attributes are invalid");
-      if (row.kind === "token") tokenSeen = true;
-      if (row.kind === "native") requireCondition(!tokenSeen, "restored registry native appears after a token");
-      if (row.priced === "false") {
-        for (const index of [4, 5, 6]) requireCondition(row.cells[index] === "—", "restored unpriced registry cell is not —");
-      }
-      if (row.kind === "token" && row.priced === "false") {
-        unpricedTokenSeen = true;
-        requireCondition(/UNPRICED/i.test(row.cells[2]), "restored unpriced token tag is missing");
-      }
-      if (row.kind === "token" && row.priced === "true") requireCondition(!unpricedTokenSeen, "restored priced token follows an unpriced token");
-    }
-    requireCondition(fullRows.filter((row) => row.kind === "native" && row.priced === "false").length
-      === defaultValues.filter((row) => row.kind === "native" && row.priced === "false").length, "registry filter hid a native holding with unavailable price");
-    requireCondition(await hiddenNote.count() === 0 && await panel.locator(".asset-wallet-filtered-empty").count() === 0, "registry hidden-state labels remained after toggling off");
-    requireCondition(compactText((await table.locator("tfoot").textContent()) ?? "") === totals, "registry filter changed full-set totals");
-    await toggle.check();
-    await page.waitForFunction((expected) => document.querySelectorAll(".asset-wallet-panel tr[data-wallet-kind]").length === expected, defaultRows.length, { timeout: 5_000 });
-    requireCondition(JSON.stringify(await panel.locator("tr[data-wallet-kind]").allTextContents()) === JSON.stringify(defaultRows), "restoring registry filter changed the default row set");
-    requireCondition(compactText((await table.locator("tfoot").textContent()) ?? "") === totals, "restoring registry filter changed totals");
-    return `${defaultRows.length} default · ${fullCount} restored · totals unchanged in both directions`;
+    requireCondition(JSON.stringify(await panel.locator("tr[data-wallet-kind]").allTextContents()) === JSON.stringify(rowsBefore), "registry rows changed during the read-only audit");
+    requireCondition(JSON.stringify(await panel.locator("tfoot").allTextContents()) === JSON.stringify(totalsBefore), "registry totals changed during the read-only audit");
+    return `${rowCount} displayed rows = registry header and summary; displayed USD/THB totals agree`;
   });
 
-  await check("asset-list wallet rows keep native/token order and unpriced nulls", async () => {
-    const rows = page.locator(".asset-wallet-panel tr[data-wallet-kind]");
-    const rowContracts = await rows.evaluateAll((elements) => elements.map((element) => ({
-      kind: element.getAttribute("data-wallet-kind"),
-      priced: element.getAttribute("data-wallet-priced"),
-      cells: Array.from(element.querySelectorAll("td"), (cell) => (cell.textContent ?? "").replace(/\s+/g, " ").trim()),
-    })));
-
-    let tokenSeen = false;
-    let unpricedSeen = false;
-    for (const row of rowContracts) {
-      requireCondition(row.kind === "native" || row.kind === "token", "registry row has invalid data-wallet-kind");
-      requireCondition(row.priced === "true" || row.priced === "false", "registry row has invalid data-wallet-priced");
-      if (row.kind === "token") tokenSeen = true;
-      if (row.kind === "native") requireCondition(!tokenSeen, "native registry row appears after a token row");
-      if (row.kind === "native" && row.priced === "false") {
-        for (const index of [4, 5, 6]) {
-          requireCondition(row.cells[index] === "—", `unpriced native registry cell ${index + 1} is not —`);
-        }
-      }
-      if (row.kind === "token" && row.priced === "false") {
-        unpricedSeen = true;
-        requireCondition(/UNPRICED/i.test(row.cells[2] ?? ""), "unpriced registry tag is missing");
-        for (const index of [4, 5, 6]) {
-          requireCondition(row.cells[index] === "—", `unpriced registry cell ${index + 1} is not —`);
-        }
-      }
-      if (row.kind === "token" && row.priced === "true") {
-        requireCondition(!unpricedSeen, "priced registry token appears after an unpriced token");
-      }
-    }
-    return `${rowContracts.length} wallet registry row${rowContracts.length === 1 ? "" : "s"}`;
+  await check("asset-list wallet rows keep native/token order and exclude unknown current values", async () => {
+    return assertWalletRows(page.locator(".asset-wallet-panel"), 5);
   });
 }
 
@@ -1612,22 +1423,20 @@ async function auditPopulatedFixtures(browser, fixtureUrl, viewport) {
       await assertCalendarDetail(calendar, browserFixture.snapshots.find((row) => row.date === "2026-09-05"));
       return "September → August (2026-08-31) → September (2026-09-05); exact grid/value/basis/P&L/coverage";
     });
-    await check(`${prefix} wallet preserves raw $1 threshold, unknown native rows and full totals`, async () => {
+    await check(`${prefix} wallet keeps exact $1 rows and totals only displayed values`, async () => {
       const wallet = page.locator(".home-wallet-panel");
-      const toggle = wallet.getByRole("checkbox", { name: "Hide assets under $1", exact: true });
       const symbols = () => wallet.locator("tbody .ticker-cell").allTextContents();
-      requireCondition(await toggle.isChecked(), "fixture wallet filter is not default-on");
-      requireCondition((await symbols()).join(",") === "NATIVE-ONE,NATIVE-UNPRICED,TOKEN-ONE", "strict raw $1 filter hid $1/unknown native or exposed $0.999/unpriced token");
+      requireCondition((await symbols()).join(",") === "NATIVE-ONE,TOKEN-ONE", "strict raw threshold lost a $1 holding or exposed a .999/unknown holding");
+      requireCondition(await wallet.locator('tr[data-wallet-priced="false"]').count() === 0, "unknown native/token row is rendered");
       const total = await wallet.locator("tfoot").innerText();
-      requireCondition(total.includes("US$3.01") && total.includes("฿108.32"), "wallet total omitted hidden priced dust");
-      await toggle.uncheck();
-      requireCondition((await symbols()).join(",") === [...browserFixture.wallet.nativeRows, ...browserFixture.wallet.tokenRows].map((row) => row.symbol).join(","), "wallet did not restore the full ordered fixture row set");
-      for (const row of await wallet.locator('tr[data-wallet-priced="false"]').all()) {
-        requireCondition(compactText(await row.locator("td").nth(3).innerText()) === "—" && compactText(await row.locator("td").nth(4).innerText()) === "—", "unpriced fixture quote/value invented a number");
-      }
-      requireCondition(await wallet.locator("tfoot").innerText() === total, "wallet uncheck changed full totals");
-      await toggle.check();
-      requireCondition((await symbols()).join(",") === "NATIVE-ONE,NATIVE-UNPRICED,TOKEN-ONE" && await wallet.locator("tfoot").innerText() === total, "wallet recheck changed default rows or full totals");
+      requireCondition(total.includes("US$2.00") && total.includes("฿72.00"), "wallet total differs from the two displayed $1 holdings");
+      await assertNoSuppressionTrace(page);
+      await assertWalletRows(wallet, 4);
+      await assertWalletTotals(wallet, 4, 5);
+      const counts = await readHomeWalletPanelCounts(wallet);
+      const header = await readHomeWalletHeaderCounts(wallet);
+      requireCondition(counts.native === 1 && counts.token === 1 && header.native === 1 && header.token === 1, "fixture native/token counts differ from rendered rows");
+      requireCondition((await symbols()).join(",") === "NATIVE-ONE,TOKEN-ONE" && await wallet.locator("tfoot").innerText() === total, "read-only wallet rows or totals changed");
     });
     await check(`${prefix} populated page fits viewport and keeps numbers honest`, async () => {
       const overflow = await page.evaluate(() => Math.max(document.body.scrollWidth, document.documentElement.scrollWidth) - document.documentElement.clientWidth);
@@ -1660,16 +1469,130 @@ async function auditPopulatedFixtures(browser, fixtureUrl, viewport) {
         && (await calendar.locator(".pnl-calendar-detail").innerText()).includes("History starts today"), "empty history explanation is missing");
     });
     if (!await navigate("filtered-empty")) return;
-    await check(`${prefix} all-dust wallet explains filtered empty state through both toggles`, async () => {
+    await check(`${prefix} all-small/unknown wallet has zero rows and only neutral empty copy`, async () => {
       const wallet = page.locator(".home-wallet-panel");
-      const total = await wallet.locator("tfoot").innerText();
-      requireCondition((await wallet.locator(".home-wallet-filtered-empty").innerText()).includes("All 3 wallet assets are hidden under $1"), "all-dust fixture empty explanation is missing");
-      await wallet.getByRole("checkbox").uncheck();
-      requireCondition(await wallet.locator("tr[data-wallet-kind]").count() === 3 && await wallet.locator("tfoot").innerText() === total, "all-dust uncheck dropped rows or changed totals");
-      await wallet.getByRole("checkbox").check();
-      requireCondition(await wallet.locator(".home-wallet-filtered-empty").count() === 1 && await wallet.locator("tfoot").innerText() === total, "all-dust recheck lost the filtered state or changed totals");
+      requireCondition(await wallet.locator("tr[data-wallet-kind], table, tfoot, input, button, select").count() === 0, "all-small/unknown fixture renders a row, total table or control");
+      requireCondition(compactText(await wallet.locator(".home-empty strong").innerText()) === "No wallet holdings to display in this snapshot.", "neutral wallet empty copy changed");
+      requireCondition(!/\$1|hidden|filter|no balances/i.test(await wallet.innerText()), "empty wallet discloses suppression or claims no balances");
+      const counts = await readHomeWalletPanelCounts(wallet);
+      const header = await readHomeWalletHeaderCounts(wallet);
+      requireCondition(counts.native === 0 && counts.token === 0 && header.native === 0 && header.token === 0, "empty wallet counts are not zero");
+      await assertNoSuppressionTrace(page);
     });
     await check(`${prefix} populated/empty/live/legacy interactions keep browser console clean`, async () => {
+      requireCondition(browserErrors.length === 0, browserErrors.join(" | "));
+    });
+  } finally {
+    await page.close();
+  }
+}
+
+async function auditDustFixtures(browser, fixtureUrl, viewport) {
+  const page = await browser.newPage({ viewport: { width: viewport.width, height: viewport.height } });
+  const browserErrors = [];
+  page.on("pageerror", (error) => browserErrors.push(`page: ${error.message}`));
+  page.on("console", (message) => captureBrowserConsole(browserErrors, message));
+  const prefix = `${viewport.name} joined-boundary fixture`;
+  try {
+    for (const scenario of ["mixed", "empty", "wholesale", "failed", "inventory"]) {
+      for (const surface of ["home", "registry"]) {
+        const label = `${prefix} ${scenario} ${surface}`;
+        if (!await check(`${label} renders the real page through buildJoinedPortfolio`, async () => {
+          const response = await page.goto(`${fixtureUrl}/?scenario=dust-${scenario}-${surface}`, { waitUntil: "networkidle", timeout: 15_000 });
+          requireCondition(response?.ok(), `fixture HTTP ${response?.status() ?? "unavailable"}`);
+          await page.locator(surface === "home" ? ".pnl-value-hero" : ".asset-registry-hero").waitFor();
+        })) continue;
+        const portfolio = await page.evaluate(() => window.__dustFixturePortfolio);
+        await check(`${label} has no suppressed rows, labels, attributes or comments`, async () => {
+          await assertNoSuppressionTrace(page);
+          await assertMarketRowValues(page);
+          const text = await renderedText(page);
+          for (const name of ["SECURITY-SMALL", "SECURITY-UNKNOWN", "COLLECTION-SMALL", "COLLECTION-UNKNOWN", "NATIVE-SMALL", "TOKEN-SMALL", "TOKEN-UNKNOWN"]) {
+            requireCondition(!text.includes(name), `${name} survived joined-boundary suppression`);
+          }
+          const rows = [...portfolio.t212.investments, ...portfolio.nfts, ...portfolio.wallet.native, ...portfolio.wallet.tokens];
+          requireCondition(rows.every((row) => row.valueUsd !== null && row.valueUsd >= 1), "joined holding arrays retain a suppressed market row");
+          const coverage = portfolio.totals.pnlCoverage;
+          requireCondition(coverage.totalHoldings === rows.length && coverage.dust === 0 && coverage.unpriced === 0, "coverage counts suppressed rows");
+          requireCondition(coverage.eligible + coverage.notRecorded + coverage.unreconciled === coverage.totalHoldings, "coverage bucket identity is broken");
+        });
+        await check(`${label} counts exactly its DOM rows and preserves source truth`, async () => {
+          const wallet = page.locator(surface === "home" ? ".home-wallet-panel" : ".asset-wallet-panel");
+          const walletCount = await wallet.locator("tr[data-wallet-kind]").count();
+          requireCondition(walletCount === portfolio.wallet.native.length + portfolio.wallet.tokens.length, "wallet DOM differs from joined rows");
+          if (surface === "home") {
+            const counts = await readHomeWalletPanelCounts(wallet);
+            const header = await readHomeWalletHeaderCounts(wallet);
+            requireCondition(counts.native === portfolio.wallet.native.length && counts.token === portfolio.wallet.tokens.length, "wallet attributes differ from joined rows");
+            requireCondition(header.native === counts.native && header.token === counts.token && await readHomeWalletSummaryCount(page) === walletCount, "wallet header/hero count differs from DOM");
+            requireCondition(await page.locator('.pnl-asset-table tbody tr:not([data-manual-cash="true"])').count() === portfolio.totals.pnlCoverage.totalHoldings, "P&L market row count differs from coverage");
+            requireCondition(compactText(await page.locator(".pnl-coverage .pnl-metric-line > strong").innerText()) === `${portfolio.totals.pnlCoverage.eligible} / ${portfolio.totals.pnlCoverage.totalHoldings}`, "coverage numerator/denominator differs from displayed market holdings");
+            for (const key of ["t212Positions", "nfts", "walletNative", "walletTokens"]) {
+              requireCondition(compactText(await page.locator(`[data-source-key="${key}"] .live-source-badge`).innerText()) === portfolio.sources[key].status, `${key} source badge differs from joined status`);
+            }
+          } else {
+            requireCondition(compactText(await wallet.locator(".asset-wallet-count .panel-count").innerText()) === `${walletCount} ASSETS`, "registry wallet header differs from rows");
+            const securities = page.locator(".asset-live-panel").filter({ has: page.getByRole("heading", { name: "Live Securities Registry", exact: true }) });
+            const nfts = page.locator(".asset-live-panel").filter({ has: page.getByRole("heading", { name: "Live NFT Collection Registry", exact: true }) });
+            const positions = await securities.locator("tbody tr").count();
+            const collections = await nfts.locator("tbody tr").count();
+            const tokens = portfolio.nfts.reduce((sum, row) => sum + row.tokenCount, 0);
+            requireCondition(positions === portfolio.t212.investments.length && collections === portfolio.nfts.length, "security/NFT registry DOM differs from joined arrays");
+            requireCondition(compactText(await securities.locator(".panel-count").innerText()) === `${positions} POSITIONS`, "position header differs from displayed rows");
+            requireCondition(compactText(await nfts.locator(".panel-count").innerText()) === `${collections} COLLECTIONS · ${tokens} TOKENS`, "NFT header counts suppressed collections/tokens");
+            const summary = page.locator(".asset-registry-kpi").last();
+            requireCondition(compactText(await summary.locator("strong").innerText()) === String(positions + collections + walletCount), "registry grand entry count differs from DOM");
+            requireCondition(compactText(await summary.locator("small").innerText()) === `${positions} T212 · ${collections} NFT · ${walletCount} wallet assets`, "registry class summary differs from displayed rows");
+          }
+          if (walletCount === 0) {
+            requireCondition(compactText(await wallet.locator(surface === "home" ? ".home-empty strong" : ".asset-empty-state strong").innerText()) === "No wallet holdings to display in this snapshot.", "neutral wallet empty copy changed");
+            requireCondition(!/\$1|hidden|filter|no balances/i.test(await wallet.innerText()), "empty wallet exposes suppression or falsely claims no balances");
+          }
+          await assertWalletTotals(wallet, surface === "home" ? 4 : 5, surface === "home" ? 5 : 6);
+        });
+        await check(`${label} pins independent totals, boundary, cash exemption and outage behavior`, async () => {
+          const expectedMarketCount = scenario === "empty" || scenario === "wholesale" ? 0 : scenario === "failed" ? 1 : 4;
+          requireCondition(portfolio.totals.pnlCoverage.totalHoldings === expectedMarketCount, "independent market holding count differs");
+          const unavailable = scenario === "wholesale" || scenario === "failed";
+          const expectedTotal = unavailable ? null : scenario === "empty" ? 0 : 4.25;
+          requireCondition(portfolio.totals.grandTotalUsd === expectedTotal, "joined total differs from independent displayed-value sum");
+          const hero = page.locator(surface === "home" ? '[data-value-currency="USD"]' : ".asset-registry-value");
+          requireCondition(parseDisplayedUsd(await hero.innerText()) === expectedTotal, "hero differs from independent displayed-value sum/outage null");
+          if (surface === "home") {
+            if (unavailable) requireCondition((await page.locator(".pnl-value-hero").innerText()).includes("Value unavailable"), "outage lost the unavailable hero");
+            const expectedCash = scenario === "empty" || scenario === "wholesale" ? [] : [0.25, 0];
+            const cash = await page.locator('[data-manual-cash="true"] [data-pnl-cell="value"]').evaluateAll((cells) => cells.map((cell) => cell.firstChild?.textContent ?? ""));
+            requireCondition(JSON.stringify(cash.map(parseDisplayedUsd)) === JSON.stringify(expectedCash), "manual quarter/zero cash pot exemption changed");
+            requireCondition(await page.locator('.pnl-assets tbody tr').count() === expectedMarketCount + expectedCash.length, "P&L table lost cash exemption or reintroduced market rows");
+          }
+          if (scenario === "mixed" || scenario === "inventory") {
+            requireCondition([...portfolio.t212.investments, ...portfolio.nfts, ...portfolio.wallet.native, ...portfolio.wallet.tokens].every((row) => row.valueUsd === 1), "exact $1 market boundary is not retained across four classes");
+            requireCondition(portfolio.totals.walletUsd === 2 && portfolio.totals.walletThb === 72 && portfolio.totals.nftsUsd === 1, "displayed wallet/NFT subtotals differ from independent row sums");
+            requireCondition(portfolio.totals.pnlCoverage.eligible === 4, "priced evidence-backed holdings lost eligible coverage");
+            requireCondition(portfolio.sources.walletTokens.status === "live", "mixed token pricing changed source status");
+            requireCondition(portfolio.sources.nfts.status === (scenario === "inventory" ? "partial" : "live"), "NFT status conflates incomplete inventory and missing individual price");
+            requireCondition(portfolio.totals.pnlCoverage.status === (scenario === "inventory" ? "partial" : "complete"), "suppression caused partial P&L or inventory incompleteness disappeared");
+            if (surface === "home") {
+              for (const [key, value] of [["t212", 1], ["cash", 0.25], ["nfts", 1], ["walletNative", 1], ["walletTokens", 1]]) {
+                requireCondition(parseDisplayedUsd(await page.locator(`[data-value-class="${key}"] strong`).innerText()) === value, `${key} class value differs from displayed rows`);
+              }
+              const allocationValues = await page.locator(".pnl-allocation-item > div:first-child > strong").allTextContents();
+              requireCondition(JSON.stringify(allocationValues.map(parseDisplayedUsd)) === JSON.stringify([1, 0.25, 1, 1, 1]), "allocation values differ from displayed class sums");
+            }
+          } else if (scenario === "empty") {
+            requireCondition(Object.values(portfolio.sources).every((source) => source.status === "live"), "all-small mixed pricing book invents incomplete sources");
+            requireCondition(portfolio.totals.pnlCoverage.status === "complete" && portfolio.totals.pnlCoverage.eligible === 0, "known zero displayed holdings invented partial coverage");
+            requireCondition(!/(?:under|below)\s+\$1|hidden under|(?:wallet|asset) filter/i.test(await renderedText(page)), "all-small/unknown page exposes threshold or wallet-filter copy");
+          } else {
+            for (const key of ["nfts", "walletNative", "walletTokens"]) requireCondition(portfolio.sources[key].status === "unavailable", `${key} outage became a zero/live class`);
+            for (const key of ["nftsUsd", "walletNativeUsd", "walletTokensUsd"]) requireCondition(portfolio.totals[key] === null, `${key} outage became zero`);
+            requireCondition(portfolio.totals.pnlCoverage.sourcesComplete === false && portfolio.totals.pnlCoverage.status === "partial", "outage no longer makes coverage incomplete");
+          }
+        });
+        await checkNoMutationControls(page, label);
+      }
+    }
+    await check(`${prefix} all scenarios keep browser console clean`, async () => {
       requireCondition(browserErrors.length === 0, browserErrors.join(" | "));
     });
   } finally {
@@ -2412,6 +2335,10 @@ async function auditRoute(browser, route, viewport) {
     });
 
     await checkNoMutationControls(page, `${viewport.name} ${route.name}`);
+    await check(`${viewport.name} ${route.name} has no suppressed market rows or disclosure traces`, async () => {
+      await assertNoSuppressionTrace(page);
+      await assertMarketRowValues(page);
+    });
     await checkOwnershipLanguage(page, `${viewport.name} ${route.name}`);
     if (route.name === "login") {
       await check(`${viewport.name} login preserves the Google sign-in gate`, async () => {
@@ -2435,7 +2362,7 @@ async function auditRoute(browser, route, viewport) {
 
     await page.waitForTimeout(200);
     const consoleLabel = route.name === "home"
-      ? `H4 ${viewport.name} home wallet/history toggle paths keep the browser console clean`
+      ? `H4 ${viewport.name} home wallet/history paths keep the browser console clean`
       : `${viewport.name} ${route.path} keeps the browser console clean`;
     await check(consoleLabel, async () => {
       requireCondition(browserErrors.length === 0, browserErrors.join(" | "));
@@ -2469,6 +2396,7 @@ try {
       for (const viewport of viewports) {
         await auditCapitalFixtures(browser, fixtureServer.url, viewport, check);
         await auditPopulatedFixtures(browser, fixtureServer.url, viewport);
+        await auditDustFixtures(browser, fixtureServer.url, viewport);
         await auditMascotFixtures(browser, fixtureServer.url, viewport);
         await auditMascotReducedMotion(browser, `${fixtureServer.url}/?scenario=portfolio-mascot-excited`, viewport, "fixture");
         await auditMascotLoading(browser, fixtureServer.url, viewport);

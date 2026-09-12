@@ -12,6 +12,7 @@ import { isNeonConfigured } from "./assets-db";
 import { calculateBookPnl, latestManualHoldings, sumContributedCapital, type BookCapital, type BookPnl, type CapitalEvent, type ManualHoldingReport } from "./capital";
 import { ensureLedgerSchema, readCapitalEvents, readManualHoldings } from "./capital-db";
 import { recordPortfolioSnapshot } from "./pnl-history";
+import { shouldSuppressHolding } from "./dust-filter";
 
 export type SourceStatus = "live" | "partial" | "unavailable";
 
@@ -642,11 +643,9 @@ async function fetchNftSource(): Promise<LiveResult<NftFloorHolding[]>> {
     }),
   );
 
-  const missingFloors = holdings.filter((holding) => holding.floorEth === null).length;
   const paginationIncomplete = typeof response.next === "string" && response.next.length > 0;
-  const partial = missingFloors > 0 || paginationIncomplete || ignoredNfts > 0;
+  const partial = paginationIncomplete || ignoredNfts > 0;
   const details = [
-    missingFloors > 0 ? `${missingFloors} collection floor${missingFloors === 1 ? " is" : "s are"} unavailable.` : "",
     ignoredNfts > 0 ? `${ignoredNfts} wallet item${ignoredNfts === 1 ? " was" : "s were"} missing collection metadata.` : "",
     paginationIncomplete ? "The wallet contains more than 200 NFTs; this snapshot is partial." : "",
   ].filter(Boolean).join(" ");
@@ -1058,10 +1057,13 @@ async function fetchWalletTokenSource(wallet: string): Promise<LiveResult<Normal
     amount: token.amount,
     priceUsd: prices.get(tokenKey(token.chainId, token.contract)) ?? null,
   }));
-  const unpriced = tokens.filter((token) => token.priceUsd === null).length;
-  const unverifiedExplorerHints = explorerHintKeys.size - verifiedExplorerHintKeys.size;
+  const displayedExplorerHints = tokens.filter((token) => !shouldSuppressHolding({
+    valueUsd: token.priceUsd === null ? null : token.amount * token.priceUsd,
+  }) && explorerHintKeys.has(tokenKey(token.chainId, token.contract ?? "")));
+  const unverifiedExplorerHints = displayedExplorerHints.filter((token) =>
+    !verifiedExplorerHintKeys.has(tokenKey(token.chainId, token.contract ?? ""))).length;
   const inventoryPartial = inventoryResults.some((result) => result.state.status !== "live");
-  const partial = inventoryPartial || unpriced > 0 || unverifiedExplorerHints > 0;
+  const partial = inventoryPartial || unverifiedExplorerHints > 0;
   const inventoryAsOf = latestTimestamp(inventoryResults.map((result) => result.state.asOf));
   const asOf = latestTimestamp([inventoryAsOf, ...pricingTimestamps]);
   const coverage = `${availableInventories.length} of ${inventoryResults.length} chain inventories responded.`;
@@ -1069,20 +1071,17 @@ async function fetchWalletTokenSource(wallet: string): Promise<LiveResult<Normal
     .filter((result) => result.state.status !== "live")
     .map((result) => result.state.message)
     .join(" ");
-  const priceMessage = unpriced > 0
-    ? ` ${unpriced} token${unpriced === 1 ? " is" : "s are"} unpriced and excluded from totals.`
-    : " Token prices are live.";
   const verificationMessage = unverifiedExplorerHints > 0
     ? ` ${unverifiedExplorerHints} Blockscout price hint${unverifiedExplorerHints === 1 ? "" : "s"} could not be independently checked.`
-    : explorerHintKeys.size > 0
-      ? ` ${explorerHintKeys.size} Blockscout price hint${explorerHintKeys.size === 1 ? " was" : "s were"} cross-checked with DefiLlama.`
+    : displayedExplorerHints.length > 0
+      ? ` ${displayedExplorerHints.length} Blockscout price hint${displayedExplorerHints.length === 1 ? " was" : "s were"} cross-checked with DefiLlama.`
       : "";
 
   return {
     data: tokens,
     state: sourceState(
       partial ? "partial" : "live",
-      `${coverage}${priceMessage}${verificationMessage}${inventoryMessages ? ` ${inventoryMessages}` : ""}`,
+      `${coverage}${verificationMessage}${inventoryMessages ? ` ${inventoryMessages}` : ""}`,
       asOf,
     ),
   };
@@ -1115,6 +1114,7 @@ function pricedSubtotal<T>(
   amountOf: (row: T) => number,
   valueOf: (row: T) => number | null,
 ): number | null {
+  if (state.status === "unavailable") return null;
   const positiveRows = rows.filter((row) => amountOf(row) > 0);
   if (positiveRows.length === 0) return state.status === "live" ? 0 : null;
   const pricedValues = positiveRows
@@ -1123,6 +1123,21 @@ function pricedSubtotal<T>(
   return pricedValues.length > 0
     ? pricedValues.reduce((sum, value) => sum + value, 0)
     : null;
+}
+
+/** Inspect original inventory so an absent price feed cannot become an empty class. */
+function holdingSourceState<T extends { valueUsd: number | null }>(
+  rows: T[] | null,
+  state: LiveSourceState,
+  amountOf: (row: T) => number,
+  label: string,
+): LiveSourceState {
+  if (rows === null || state.status === "unavailable") return { ...state, status: "unavailable" };
+  const positiveRows = rows.filter((row) => amountOf(row) > 0);
+  if (positiveRows.length > 0 && positiveRows.every((row) => row.valueUsd === null || !Number.isFinite(row.valueUsd))) {
+    return { ...state, status: "unavailable", message: `${label} prices are unavailable.` };
+  }
+  return state;
 }
 
 function combineWalletSubtotals(first: number | null, second: number | null): number | null {
@@ -1162,18 +1177,18 @@ export function buildJoinedPortfolio(inputs: JoinedPortfolioInputs, asOf: string
   const capital: BookCapital = { contributedThb, contributedUsd: contributedUsd !== null && Number.isFinite(contributedUsd) ? contributedUsd : null,
     asOf, available: contributedThb !== null };
   const walletWasProvided = inputs.walletNative !== undefined || inputs.walletTokens !== undefined;
-  const walletNativeState = inputs.walletNative?.state ?? {
+  const walletNativeInputState = inputs.walletNative?.state ?? {
     status: "unavailable",
     asOf: null,
     message: "Native wallet balances were not included in this snapshot.",
   } satisfies LiveSourceState;
-  const walletTokenState = inputs.walletTokens?.state ?? {
+  const walletTokenInputState = inputs.walletTokens?.state ?? {
     status: "unavailable",
     asOf: null,
     message: "Wallet token balances were not included in this snapshot.",
   } satisfies LiveSourceState;
 
-  const investments = (inputs.t212Positions.data ?? []).map((position): JoinedT212Position => {
+  const allInvestments = (inputs.t212Positions.data ?? []).map((position): JoinedT212Position => {
     const accountValue = position.valueAccount;
     const valueThb = accountValue !== null
       ? convertAmount(accountValue, rateToThb(position.pplCurrency ?? accountCurrency, fiatFx))
@@ -1181,7 +1196,7 @@ export function buildJoinedPortfolio(inputs: JoinedPortfolioInputs, asOf: string
     return { ...position, valueThb, ...deriveT212Pnl(position, fiatFx, accountCurrency) };
   });
 
-  const nfts = (inputs.nfts.data ?? []).map((holding): JoinedNftHolding => {
+  const allNfts = (inputs.nfts.data ?? []).map((holding): JoinedNftHolding => {
     const valueEth = holding.floorEth === null ? null : holding.floorEth * holding.tokenCount;
     const valueUsd = valueEth === 0 ? 0 : convertAmount(valueEth, ethToUsd);
     const valueThb = valueUsd === 0 ? 0 : convertAmount(valueUsd, fiatFx?.usdToThb ?? null);
@@ -1191,7 +1206,7 @@ export function buildJoinedPortfolio(inputs: JoinedPortfolioInputs, asOf: string
     }, fiatFx?.usdToThb ?? null, inputs.basisEvidence?.[`nft:4663:${holding.collection}`]) };
   });
 
-  const walletNative = (inputs.walletNative?.data ?? []).map((balance): WalletNativeHolding => {
+  const allWalletNative = (inputs.walletNative?.data ?? []).map((balance): WalletNativeHolding => {
     const valueUsd = convertAmount(balance.amount, ethToUsd);
     const valueThb = convertAmount(valueUsd, fiatFx?.usdToThb ?? null);
     return { ...balance, valueUsd, valueThb, ...deriveOnchainPnl({
@@ -1201,7 +1216,7 @@ export function buildJoinedPortfolio(inputs: JoinedPortfolioInputs, asOf: string
     }, fiatFx?.usdToThb ?? null, inputs.basisEvidence?.[`native:${balance.chainId}:native`]) };
   });
 
-  const walletTokens = (inputs.walletTokens?.data ?? []).map((token): WalletTokenHolding => {
+  const allWalletTokens = (inputs.walletTokens?.data ?? []).map((token): WalletTokenHolding => {
     const priced = token.priceUsd !== null;
     const valueUsd = priced ? token.amount * (token.priceUsd as number) : null;
     const valueThb = convertAmount(valueUsd, fiatFx?.usdToThb ?? null);
@@ -1211,37 +1226,36 @@ export function buildJoinedPortfolio(inputs: JoinedPortfolioInputs, asOf: string
     }, fiatFx?.usdToThb ?? null, token.contract ? inputs.basisEvidence?.[`token:${token.chainId}:${token.contract.toLowerCase()}`] : undefined) };
   });
 
-  let nftState = inputs.nfts.state;
-  const missingFloors = nfts.filter((row) => row.floorEth === null).length;
-  if (inputs.nfts.data === null) nftState = { ...nftState, status: "unavailable" };
-  else if (nftState.status !== "unavailable") {
-    const knownEmpty = nfts.length === 0 && nftState.status === "live";
-    if (!knownEmpty && !nfts.some((row) => row.floorEth !== null)) {
-      nftState = { ...nftState, status: "unavailable", message: `No NFT collection floor resolved. ${nftState.message}` };
-    } else if (missingFloors > 0 && nftState.status === "live") {
-      nftState = { ...nftState, status: "partial", message: `${missingFloors} NFT collection floor(s) unavailable; total includes priced collections only.` };
-    }
-  }
-  // Like wallet tokens, retain the known priced subtotal and every unpriced row.
-  // A hard wallet failure or wholly unpriced inventory must never become zero.
-  const nftsEth = nftState.status === "unavailable"
-    ? null
-    : pricedSubtotal(nfts, nftState, (row) => row.tokenCount, (row) => row.valueEth);
-  const nftsUsd = nftsEth === 0 ? 0 : convertAmount(nftsEth, ethToUsd);
-  const nftsThb = nftsUsd === 0 ? 0 : convertAmount(nftsUsd, fiatFx?.usdToThb ?? null);
-  const t212Thb = convertAmount(summary?.totalValue ?? null, rateToThb(accountCurrency, fiatFx));
-  const walletNativeUsd = inputs.walletNative?.data === null
-    ? null
-    : pricedSubtotal(walletNative, walletNativeState, (row) => row.amount, (row) => row.valueUsd);
-  const walletNativeThb = inputs.walletNative?.data === null
-    ? null
-    : pricedSubtotal(walletNative, walletNativeState, (row) => row.amount, (row) => row.valueThb);
-  const walletTokensUsd = inputs.walletTokens?.data === null
-    ? null
-    : pricedSubtotal(walletTokens, walletTokenState, (row) => row.amount, (row) => row.valueUsd);
-  const walletTokensThb = inputs.walletTokens?.data === null
-    ? null
-    : pricedSubtotal(walletTokens, walletTokenState, (row) => row.amount, (row) => row.valueThb);
+  const t212PositionState = holdingSourceState(inputs.t212Positions.data === null ? null : allInvestments,
+    inputs.t212Positions.state, (row) => row.quantity, "Trading 212 position");
+  const nftState = holdingSourceState(inputs.nfts.data === null ? null : allNfts,
+    inputs.nfts.state, (row) => row.tokenCount, "NFT collection");
+  const walletNativeState = holdingSourceState(inputs.walletNative?.data == null ? null : allWalletNative,
+    walletNativeInputState, (row) => row.amount, "Native wallet");
+  const walletTokenState = holdingSourceState(inputs.walletTokens?.data == null ? null : allWalletTokens,
+    walletTokenInputState, (row) => row.amount, "Wallet token");
+
+  const investments = allInvestments.filter((row) => !shouldSuppressHolding(row));
+  const nfts = allNfts.filter((row) => !shouldSuppressHolding(row));
+  const walletNative = allWalletNative.filter((row) => !shouldSuppressHolding(row));
+  const walletTokens = allWalletTokens.filter((row) => !shouldSuppressHolding(row));
+
+  const nftsEth = pricedSubtotal(nfts, nftState, (row) => row.tokenCount, (row) => row.valueEth);
+  const nftsUsd = pricedSubtotal(nfts, nftState, (row) => row.tokenCount, (row) => row.valueUsd);
+  const nftsThb = pricedSubtotal(nfts, nftState, (row) => row.tokenCount, (row) => row.valueThb);
+  const investmentsThb = pricedSubtotal(investments, t212PositionState, (row) => row.quantity, (row) => row.valueThb);
+  const investmentsUsd = pricedSubtotal(investments, t212PositionState, (row) => row.quantity, (row) => row.valueUsd);
+  const accountToThb = rateToThb(accountCurrency, fiatFx);
+  const investmentsCurrentValue = accountCurrency === "USD" ? investmentsUsd
+    : convertAmount(investmentsThb, accountToThb ? 1 / accountToThb : null);
+  const summaryAvailable = inputs.t212Summary.state.status !== "unavailable" && summary !== null;
+  const t212TotalValue = summaryAvailable ? sumComplete([summary.cashAvailable, investmentsCurrentValue]) : null;
+  const t212Thb = summaryAvailable
+    ? sumComplete([convertAmount(summary.cashAvailable, accountToThb), investmentsThb]) : null;
+  const walletNativeUsd = pricedSubtotal(walletNative, walletNativeState, (row) => row.amount, (row) => row.valueUsd);
+  const walletNativeThb = pricedSubtotal(walletNative, walletNativeState, (row) => row.amount, (row) => row.valueThb);
+  const walletTokensUsd = pricedSubtotal(walletTokens, walletTokenState, (row) => row.amount, (row) => row.valueUsd);
+  const walletTokensThb = pricedSubtotal(walletTokens, walletTokenState, (row) => row.amount, (row) => row.valueThb);
   const walletUsd = combineWalletSubtotals(walletNativeUsd, walletTokensUsd);
   const walletThb = combineWalletSubtotals(walletNativeThb, walletTokensThb);
   const legacyGrandTotalThb = sumComplete([t212Thb, nftsThb]);
@@ -1256,8 +1270,8 @@ export function buildJoinedPortfolio(inputs: JoinedPortfolioInputs, asOf: string
     t212: {
       currency: accountCurrency,
       cashAvailable: summary?.cashAvailable ?? null,
-      totalValue: summary?.totalValue ?? null,
-      investmentsCurrentValue: summary?.investmentsCurrentValue ?? null,
+      totalValue: t212TotalValue,
+      investmentsCurrentValue,
       investments,
       asOf: latestTimestamp([inputs.t212Summary.state.asOf, inputs.t212Positions.state.asOf]),
     },
@@ -1274,7 +1288,7 @@ export function buildJoinedPortfolio(inputs: JoinedPortfolioInputs, asOf: string
     },
     totals: {
       ...aggregatePnl({
-        t212: { holdings: investments, sourceComplete: inputs.t212Positions.data !== null && inputs.t212Positions.state.status === "live" },
+        t212: { holdings: investments, sourceComplete: t212PositionState.status === "live" },
         nfts: { holdings: nfts, sourceComplete: nftState.status === "live" },
         walletNative: { holdings: walletNative, sourceComplete: inputs.walletNative?.data != null && walletNativeState.status === "live" },
         walletTokens: { holdings: walletTokens, sourceComplete: inputs.walletTokens?.data != null && walletTokenState.status === "live" },
@@ -1298,7 +1312,7 @@ export function buildJoinedPortfolio(inputs: JoinedPortfolioInputs, asOf: string
     },
     sources: {
       t212Summary: inputs.t212Summary.state,
-      t212Positions: inputs.t212Positions.state,
+      t212Positions: t212PositionState,
       nfts: nftState,
       fiatFx: inputs.fiatFx.state,
       ethPrice: inputs.ethPrice.state,

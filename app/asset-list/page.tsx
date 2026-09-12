@@ -94,23 +94,16 @@ export default async function AssetListPage() {
   }));
   const rawWalletNativeCount = portfolio.wallet.native.length;
   const rawWalletTokenCount = walletTokens.length;
-  const positionCount = portfolio.sources.t212Positions.status === "unavailable" ? null : rawPositionCount;
-  // Unavailable NFT pricing can still carry known wallet rows. Do not hide them.
-  const nftInventoryUnavailable = portfolio.sources.nfts.status === "unavailable" && portfolio.nfts.length === 0;
-  const nftCollectionCount = nftInventoryUnavailable ? null : portfolio.nfts.length;
-  const nftTokenCount = nftInventoryUnavailable ? null : rawNftTokenCount;
-  const walletNativeCount = portfolio.sources.walletNative.status === "unavailable" ? null : rawWalletNativeCount;
-  const walletTokenCount = portfolio.sources.walletTokens.status === "unavailable" ? null : rawWalletTokenCount;
-  const walletEntryCount = walletNativeCount === null || walletTokenCount === null
-    ? null
-    : walletNativeCount + walletTokenCount;
+  const positionCount = rawPositionCount;
+  const nftInventoryUnavailable = portfolio.sources.nfts.status === "unavailable";
+  const nftCollectionCount = portfolio.nfts.length;
+  const nftTokenCount = rawNftTokenCount;
+  const walletNativeCount = rawWalletNativeCount;
+  const walletTokenCount = rawWalletTokenCount;
+  const walletEntryCount = walletNativeCount + walletTokenCount;
   const walletSourcesComplete = portfolio.sources.walletNative.status === "live"
     && portfolio.sources.walletTokens.status === "live";
-  const walletSourcesUnavailable = portfolio.sources.walletNative.status === "unavailable"
-    && portfolio.sources.walletTokens.status === "unavailable";
-  const liveEntryCount = positionCount === null || nftCollectionCount === null || walletEntryCount === null
-    ? null
-    : positionCount + nftCollectionCount + walletEntryCount;
+  const liveEntryCount = positionCount + nftCollectionCount + walletEntryCount;
   const registryState = joinedStatus(Object.values(portfolio.sources));
   const accountCurrency = portfolio.t212.currency;
   const sourceFeeds: Array<{ label: string; state: LiveSourceState }> = [
@@ -195,7 +188,6 @@ export default async function AssetListPage() {
                 label: sourceLabel(portfolio.sources.walletTokens.status),
               }}
               walletSourcesComplete={walletSourcesComplete}
-              walletSourcesUnavailable={walletSourcesUnavailable}
               totalWalletUsd={formatUsd(portfolio.totals.walletUsd)}
               totalWalletThb={formatThb(portfolio.totals.walletThb)}
             />

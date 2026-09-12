@@ -1,10 +1,10 @@
 import * as React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { capitalBook } from "./__fixtures__/capital-book";
+import { AS_OF, capitalBook, live } from "./__fixtures__/capital-book";
 import { BookPnlMetric } from "../app/book-pnl-metric";
 import { PnlAssetTable } from "../app/pnl-asset-table";
-import { formatUsd, formatThb } from "./live-data";
+import { buildJoinedPortfolio, formatUsd, formatThb } from "./live-data";
 import { valueDirection } from "./pnl-view";
 
 beforeEach(() => vi.stubGlobal("React", React));
@@ -34,6 +34,32 @@ describe("capital and cash-pot UI fixtures", () => {
       expect(value).not.toMatch(/\$0|฿0|\d/);
     }
     expect(html).not.toMatch(/<(?:form|button|input)\b/);
+  });
+  it.each([0, 0.25, 1, null])("keeps manual cash value %s while removing every small or unknown market row", (valueUsd) => {
+    const portfolio = buildJoinedPortfolio({
+      t212Summary: live({ currency: "USD", cashAvailable: 0, totalValue: 0, investmentsCurrentValue: 0 }),
+      t212Positions: live([]), nfts: live([]), walletNative: live([]),
+      walletTokens: live([
+        { chainId: 1, chainName: "Ethereum", contract: "0xsmall", symbol: "SMALL", name: "Small token", amountRaw: "1", amount: 1, decimals: 0, priceUsd: 0.99 },
+        { chainId: 1, chainName: "Ethereum", contract: "0xunknown", symbol: "UNKNOWN", name: "Unknown token", amountRaw: "1", amount: 1, decimals: 0, priceUsd: null },
+      ]),
+      manualHoldings: live([{ id: "cash", label: "Operator cash", kind: "cash", currency: valueUsd === null ? "GBP" : "USD", amount: valueUsd ?? 5, recordedAt: AS_OF, createdAt: AS_OF }]),
+      capitalEvents: live([]),
+      fiatFx: live({ usdToThb: 36, gbpToThb: null, eurToThb: 40, asOf: AS_OF }), ethPrice: live(2400),
+    }, AS_OF);
+    const html = render(React.createElement(PnlAssetTable, { portfolio }));
+    const rows = [...html.matchAll(/<tr[^>]*data-holding-id[^>]*>[\s\S]*?<\/tr>/g)].map(([row]) => row);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toContain("data-manual-cash");
+    expect(text(rows[0])).toContain("Operator cash");
+    const value = rows[0].match(/data-pnl-cell="value"[^>]*>([\s\S]*?)<\/td>/)![1];
+    expect(text(value)).toContain(formatUsd(valueUsd));
+    expect(text(html)).not.toMatch(/SMALL|UNKNOWN|dust|unpriced/i);
+    expect(html).not.toMatch(/0xsmall|0xunknown/);
+    expect(html).not.toMatch(/<(?:form|button|input|select)\b/);
+    expect(portfolio.manualHoldings).toHaveLength(1);
+    expect(portfolio.manualHoldings[0].valueUsd).toBe(valueUsd);
+    expect(portfolio.totals.pnlCoverage).toMatchObject({ totalHoldings: 0, dust: 0, unpriced: 0 });
   });
   it("renders book P&L against the exact opening THB 120000 even without eligible asset P&L", () => {
     const portfolio = capitalBook();

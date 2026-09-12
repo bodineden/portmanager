@@ -39,6 +39,8 @@ describe("daily snapshot recorder", () => {
     // Synthetic audit reproduction, not historical wallet balances.
     const book = portfolio({
       t212Summary: live({ currency: "GBP", totalValue: 9.62, cashAvailable: 0.28, investmentsCurrentValue: 9.34 }),
+      t212Positions: live([{ ticker: "CMCSA_US_EQ", name: "Comcast", quantity: 0.5, averagePrice: 26.32,
+        currentPrice: 25.25, ppl: -0.37, currency: "USD", pplCurrency: "GBP", valueNative: 12.625, valueAccount: 9.34 }]),
       manualHoldings: live([{ id: "opening", label: "T212 cash pot", kind: "cash", currency: "GBP", amount: 2000, recordedAt: DATE, createdAt: DATE }]),
       capitalEvents: live([{ occurredAt: DATE, kind: "contribution", amountThb: 120000 }]),
       fiatFx: live({ usdToThb: 33.003871, gbpToThb: 44.6154, eurToThb: null, asOf: DATE }), ethPrice: live(2578.15),
@@ -55,13 +57,13 @@ describe("daily snapshot recorder", () => {
     expect(getDb).not.toHaveBeenCalled();
   });
 
-  it("records partial-but-valued NFTs and wallet tokens with null inventory evidence intact", async () => {
+  it("records only displayed NFTs and tokens without price-only partial status or suppressed map entries", async () => {
     const book = portfolio({
-      nfts: { data: oneUnpricedNft, state: { status: "partial", asOf: DATE, message: "One collection unpriced" } },
-      walletTokens: { data: [
+      nfts: live(oneUnpricedNft),
+      walletTokens: live([
         { chainId: 1, chainName: "Ethereum", symbol: "UNPRICED", name: "Unpriced token", amountRaw: "7", decimals: 0, amount: 7, priceUsd: null },
         { chainId: 1, chainName: "Ethereum", symbol: "DUST", name: "Priced dust", amountRaw: "1", decimals: 0, amount: 1, priceUsd: 0.02 },
-      ], state: { status: "partial", asOf: DATE, message: "One token unpriced" } },
+      ]),
     });
     expect(Number.isFinite(book.totals.grandTotalUsd)).toBe(true);
     const query = vi.fn(async (_sql: string, _params?: unknown[]) => { void _sql; void _params; return [{ snapshot_date: "2026-09-05" }]; });
@@ -69,10 +71,17 @@ describe("daily snapshot recorder", () => {
     expect(await record(book)).toBe("recorded");
     const params = query.mock.calls[2][1]!;
     const coverage = JSON.parse(String(params[8]));
-    expect(coverage.sources.nfts.status).toBe("partial");
-    expect(coverage.sources.walletTokens.status).toBe("partial");
-    expect(coverage).toMatchObject({ unpriced: 2, dust: 1, status: "partial" });
-    expect(JSON.parse(String(params[16]))).toMatchObject({ "nft:wasteland-art": null, "token:1:unpriced": null });
+    expect(coverage.sources.nfts.status).toBe("live");
+    expect(coverage.sources.walletTokens.status).toBe("live");
+    expect(coverage).toMatchObject({ totalHoldings: 6, eligible: 0, notRecorded: 6, unpriced: 0, dust: 0, status: "partial" });
+    expect(coverage.eligible + coverage.notRecorded + coverage.unreconciled + coverage.dust + coverage.unpriced).toBe(coverage.totalHoldings);
+    const holdings = JSON.parse(String(params[16]));
+    expect(holdings).not.toHaveProperty("nft:wasteland-art");
+    expect(holdings).not.toHaveProperty("token:1:unpriced");
+    expect(holdings).not.toHaveProperty("token:1:dust");
+    expect(Object.values(holdings)).toHaveLength(6);
+    expect(Object.values(holdings).every((value) => typeof value === "number" && value >= 1)).toBe(true);
+    expect(history.mapPortfolioSnapshotRow({ snapshot_date: "2026-09-05", total_value_usd: params[1], total_value_thb: params[2], coverage, holdings })?.coverage).toMatchObject({ totalHoldings: 6, dust: 0, unpriced: 0 });
   });
 
   it("records non-null partial values with explicit partial source status and observation time", async () => {

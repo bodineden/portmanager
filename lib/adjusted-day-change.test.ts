@@ -31,7 +31,7 @@ describe("adjusted adjacent-day book value change", () => {
     expect(dailyChange([after, before], AS_OF)).toMatchObject({ usd: 0, thb: 0 });
     expect(current.capital.contributedThb).toBe(120000);
   });
-  it("accepts stable partial pricing and removes a reported contribution", () => {
+  it("continues reading legacy stable partial pricing and removes a reported contribution", () => {
     const before = snapshot("2026-09-10", 100000, 110000);
     const after = snapshot("2026-09-11", 110000, 120000);
     expect(dailyChange([after, before], AS_OF)).toMatchObject({ usd: 0, thb: 0, pct: 0 });
@@ -114,7 +114,9 @@ describe("adjusted adjacent-day book value change", () => {
 describe("compact snapshot holdings and book columns", () => {
   const book = () => buildJoinedPortfolio({
     t212Summary: live({ currency: "GBP", totalValue: 9.62, cashAvailable: 0.28, investmentsCurrentValue: 9.34 }),
-    t212Positions: live([]), nfts: live([]), walletNative: live([]), walletTokens: live([]),
+    t212Positions: live([{ ticker: "CMCSA_US_EQ", name: "Comcast", quantity: 0.5, averagePrice: 26.32,
+      currentPrice: 25.25, ppl: -0.37, currency: "USD", pplCurrency: "GBP", valueNative: 12.625, valueAccount: 9.34 }]),
+    nfts: live([]), walletNative: live([]), walletTokens: live([]),
     fiatFx: live({ usdToThb: FX, gbpToThb: 44.6154, eurToThb: null, asOf: AS_OF }), ethPrice: live(2578.15),
     capitalEvents: live([{ occurredAt: AS_OF, kind: "contribution", amountThb: 120000 }]),
     manualHoldings: live([{ id: "report-uuid", label: "T212 cash pot", kind: "cash", currency: "GBP", amount: 2000, recordedAt: AS_OF, createdAt: AS_OF }]),
@@ -122,7 +124,7 @@ describe("compact snapshot holdings and book columns", () => {
   it("identifies manual cash by stable label, not append-only report UUID", () => {
     const portfolio = book();
     const map = joinedHoldingsMap(portfolio);
-    expect(map).toEqual({ "manual:T212 cash pot": portfolio.totals.manualUsd });
+    expect(map).toEqual({ "manual:T212 cash pot": portfolio.totals.manualUsd, "t212:CMCSA_US_EQ": portfolio.t212.investments[0].valueUsd });
     expect(valueSetSignature(map, portfolio.sources)).not.toBeNull();
     portfolio.manualHoldings[0].id = "next-report-uuid";
     expect(joinedHoldingsMap(portfolio)).toEqual(map);
@@ -133,6 +135,32 @@ describe("compact snapshot holdings and book columns", () => {
     expect(allocations.find((row) => row.key === "cash")?.valueThb).toBeCloseTo((2000 + 0.28) * 44.6154, 8);
     expect(allocations.reduce((sum, row) => sum + row.valueThb!, 0)).toBeCloseTo(portfolio.totals.grandTotalThb!, 8);
     expect(allocations.reduce((sum, row) => sum + row.sharePct!, 0)).toBeCloseTo(100, 8);
+  });
+  it("keeps suppressed market rows out of snapshot identities while retaining small manual cash", () => {
+    const displayBook = (priceUsd: number | null) => buildJoinedPortfolio({
+      t212Summary: live({ currency: "USD", cashAvailable: 0, totalValue: 0, investmentsCurrentValue: 0 }),
+      t212Positions: live([]), nfts: live([]), walletNative: live([]),
+      walletTokens: live([
+        { chainId: 1, chainName: "Ethereum", symbol: "STABLE", name: "Stable", contract: "0xstable", amountRaw: "10", decimals: 0, amount: 10, priceUsd: 1 },
+        { chainId: 1, chainName: "Ethereum", symbol: "EDGE", name: "Boundary", contract: "0xedge", amountRaw: "1", decimals: 0, amount: 1, priceUsd },
+      ]),
+      fiatFx: live({ usdToThb: 36, gbpToThb: 45, eurToThb: 40, asOf: AS_OF }), ethPrice: live(2400),
+      capitalEvents: live([{ occurredAt: AS_OF, kind: "contribution", amountThb: 120000 }]),
+      manualHoldings: live([{ id: "small", label: "Small pot", kind: "cash", currency: "USD", amount: 0.25, recordedAt: AS_OF, createdAt: AS_OF }]),
+    }, AS_OF);
+    const expected = { "token:1:0xstable": 10, "manual:Small pot": 0.25 };
+    const unknown = displayBook(null);
+    const below = displayBook(0.999);
+    expect(joinedHoldingsMap(unknown)).toEqual(expected);
+    expect(joinedHoldingsMap(below)).toEqual(expected);
+    expect(valueSetSignature(expected, unknown.sources)).toBe(valueSetSignature(expected, below.sources));
+    const boundary = displayBook(1);
+    expect(joinedHoldingsMap(boundary)).toEqual({ ...expected, "token:1:0xedge": 1 });
+    expect(boundary.totals.grandTotalUsd).toBe(11.25);
+    expect(below.totals.grandTotalUsd).toBe(10.25);
+    const before = { ...snapshot("2026-09-10", 369, 120000, 36), holdings: expected, sources: below.sources };
+    const after = { ...snapshot("2026-09-11", 405, 120000, 36), holdings: joinedHoldingsMap(boundary), sources: boundary.sources };
+    expect(dailyChangeDetails([after, before], AS_OF)).toEqual({ change: null, reason: "holdings changed between days" });
   });
   it("records all seven extensions, leaves eligible-subset columns unchanged, reads maps back", async () => {
     const calls: { sql: string; params: unknown[] }[] = [];

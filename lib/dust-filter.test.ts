@@ -1,39 +1,25 @@
 import { describe, expect, it } from "vitest";
-import { shouldHideWalletDust, type WalletDustRow } from "./dust-filter";
+import { shouldSuppressHolding } from "./dust-filter";
 
-const row = (overrides: Partial<WalletDustRow>): WalletDustRow => ({
-  kind: "token",
-  valueUsd: 2,
-  priced: true,
-  ...overrides,
-});
+describe("shouldSuppressHolding", () => {
+  describe.each(["native", "token", "t212", "nft"])("%s market holding", (kind) => {
+    it.each([null, 0, 0.24, 0.99, 1 - Number.EPSILON])("always suppresses a value of %s", (valueUsd) => {
+      expect(shouldSuppressHolding(Object.freeze({ kind, valueUsd }))).toBe(true);
+    });
 
-describe("shouldHideWalletDust", () => {
-  it("hides an unpriced token when the filter is on", () => {
-    expect(shouldHideWalletDust(row({ priced: false, valueUsd: null }), true)).toBe(true);
+    it.each([1, 1 + Number.EPSILON, 2])("keeps a value of %s without a filter control", (valueUsd) => {
+      expect(shouldSuppressHolding(Object.freeze({ kind, valueUsd }))).toBe(false);
+    });
   });
 
-  it("hides a token valued at $0.99 when the filter is on", () => {
-    expect(shouldHideWalletDust(row({ valueUsd: 0.99 }), true)).toBe(true);
+  it("uses the current value as the source of truth", () => {
+    const known = Object.freeze({ kind: "token", priced: false, valueUsd: 2 });
+    const unknown = Object.freeze({ kind: "native", priced: true, valueUsd: null });
+    expect(shouldSuppressHolding(known)).toBe(false);
+    expect(shouldSuppressHolding(unknown)).toBe(true);
   });
 
-  it("keeps a token valued at exactly $1.00 when the filter is on", () => {
-    expect(shouldHideWalletDust(row({ valueUsd: 1 }), true)).toBe(false);
-  });
-
-  it("hides a native row valued at $0.24 when the filter is on", () => {
-    expect(shouldHideWalletDust(row({ kind: "native", valueUsd: 0.24 }), true)).toBe(true);
-  });
-
-  it("keeps a native row with a null USD value when the filter is on", () => {
-    expect(shouldHideWalletDust(row({ kind: "native", valueUsd: null }), true)).toBe(false);
-  });
-
-  it("shows an unpriced token when the filter is off", () => {
-    expect(shouldHideWalletDust(row({ priced: false, valueUsd: null }), false)).toBe(false);
-  });
-
-  it("shows a sub-dollar native row when the filter is off", () => {
-    expect(shouldHideWalletDust(row({ kind: "native", valueUsd: 0.24 }), false)).toBe(false);
+  it.each([Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY])("does not display an invalid numeric value %s", (valueUsd) => {
+    expect(shouldSuppressHolding({ valueUsd })).toBe(true);
   });
 });

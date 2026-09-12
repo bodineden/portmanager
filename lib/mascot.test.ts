@@ -245,7 +245,7 @@ describe("real pure joined-portfolio fixtures", () => {
     expect(deriveMascotState(portfolio, "2026-09-05T01:00:00Z").mood).toBe("calm");
   });
 
-  it("allows happy for verified airdrop-free gains without inventing a percentage or full coverage", () => {
+  it("uses displayed coverage for verified free gains and preserves legacy partial mood behavior", () => {
     const data = inputs();
     data.nfts = live([{ collection: "fixture-free", collectionName: "Synthetic free acquisition", tokenCount: 1, floorEth: 0.01 }]);
     data.walletNative = live([{ chainId: 8453, chainName: "Base", symbol: "ETH", amount: 0.0001 }]);
@@ -259,8 +259,13 @@ describe("real pure joined-portfolio fixtures", () => {
     };
     const portfolio = buildJoinedPortfolio(data, AS_OF);
     expect(portfolio.nfts[0]).toMatchObject({ basisStatus: "airdrop-free", costBasisUsd: 0, pnlUsd: 24, pnlPct: null });
-    expect(portfolio.totals.pnlCoverage).toMatchObject({ eligible: 1, dust: 1, notRecorded: 0, status: "partial" });
-    expect(deriveMascotState(portfolio).mood).toBe("happy");
+    expect(portfolio.wallet.native).toEqual([]);
+    expect(portfolio.totals.pnlCoverage).toMatchObject({ totalHoldings: 1, eligible: 1, dust: 0, unpriced: 0, notRecorded: 0, status: "complete" });
+    expect(deriveMascotState(portfolio).mood).toBe("excited");
+    // Historical snapshots retain their original coverage schema and mood semantics.
+    const legacy = structuredClone(portfolio);
+    Object.assign(legacy.totals.pnlCoverage, { totalHoldings: 2, dust: 1, status: "partial" });
+    expect(deriveMascotState(legacy).mood).toBe("happy");
     data.walletNative = live([]);
     expect(deriveMascotState(buildJoinedPortfolio(data, AS_OF)).mood).toBe("excited");
   });

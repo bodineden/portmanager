@@ -78,9 +78,10 @@ describe("honest presentation formatting", () => {
     expect(coverageLabel({ ...coverage, eligible: 0, unreconciled: 1 })).toContain("unreconciled holdings are excluded");
     expect(basisChip("not-recorded")).toEqual({ label: "not-recorded", description: "Basis not recorded; excluded from recorded P&L" });
     expect(basisChip("airdrop-free").description).toContain("percentage is unavailable for zero basis");
-    for (const status of ["not-recorded", "dust", "unpriced", "unreconciled"] as const) {
+    for (const status of ["not-recorded", "unreconciled"] as const) {
       expect(eligibilityLabel(status)).toContain("excluded from P&L");
     }
+    for (const status of ["dust", "unpriced"] as const) expect(eligibilityLabel(status)).toBeNull();
     expect(eligibilityLabel("eligible")).toBe("Included in recorded P&L");
   });
 });
@@ -107,6 +108,26 @@ describe("snapshot currency and value allocation", () => {
     expect(allocation.map(({ valueUsd }) => valueUsd)).toEqual([0, 608.75, 480, 600, 0]);
     expect(allocation.reduce((sum, { sharePct }) => sum + sharePct!, 0)).toBeCloseTo(100);
     expect(allocation[1].valueThb).toBe(21_915);
+  });
+
+  it("allocates only displayed security values while retaining account cash", () => {
+    const portfolio = buildJoinedPortfolio({
+      manualHoldings: live([]),
+      t212Summary: live({ currency: "USD", cashAvailable: 100, totalValue: 101.5, investmentsCurrentValue: 1.5 }),
+      t212Positions: live([
+        { ticker: "BOUNDARY", name: "Boundary security", quantity: 1, averagePrice: 1, currentPrice: 1,
+          ppl: 0, currency: "USD", pplCurrency: "USD", valueNative: 1, valueAccount: 1 },
+        { ticker: "SMALL", name: "Small security", quantity: 1, averagePrice: 0.5, currentPrice: 0.5,
+          ppl: 0, currency: "USD", pplCurrency: "USD", valueNative: 0.5, valueAccount: 0.5 },
+      ]),
+      nfts: live([]), walletNative: live([]), walletTokens: live([]), fiatFx: live(fx), ethPrice: live(2_400),
+    }, DATE);
+    const allocation = valueAllocation(portfolio);
+    expect(portfolio.t212.investments.map(({ ticker }) => ticker)).toEqual(["BOUNDARY"]);
+    expect(allocation.map(({ valueUsd }) => valueUsd)).toEqual([1, 100, 0, 0, 0]);
+    expect(allocation[0].valueThb).toBe(36);
+    expect(allocation.reduce((sum, { valueUsd }) => sum + valueUsd!, 0)).toBe(portfolio.totals.grandTotalUsd);
+    expect(allocation.reduce((sum, { sharePct }) => sum + sharePct!, 0)).toBeCloseTo(100);
   });
 
   it("never assigns unknown classes zero value or presents incomplete/zero totals as 100%", () => {

@@ -42,7 +42,7 @@ export function createSnapshotRecorder(options: SnapshotRecorderOptions = {}) {
       const totals = portfolio.totals;
       // Inventory completeness is independent of a finite priced subtotal. A hard
       // failure in any source must leave today's immutable slot available to retry.
-      // Partial-but-valued inventories (unpriced dust/collections) remain eligible.
+      // Finite subtotals with incomplete inventory remain eligible.
       if (!VALUE_SOURCE_KEYS.every((key) => ["live", "partial"].includes(portfolio.sources[key]?.status))) return "skipped";
       if (!validValue(totals.grandTotalUsd) || !validValue(totals.grandTotalThb)
         || portfolio.sources.fiatFx.status !== "live" || !validValue(portfolio.fx.usdToThb) || portfolio.fx.usdToThb === 0) return "skipped";

@@ -1,6 +1,6 @@
 import type { JoinedPortfolio, LiveSourceState } from "./live-data";
 
-/** Null values retain unpriced inventory identity; they are never stored as zero. */
+/** Null values remain valid for historical snapshots and unconverted manual cash. */
 export type HoldingsValueMap = Record<string, number | null>;
 export type SnapshotSources = Record<string, LiveSourceState>;
 export const VALUE_SOURCE_KEYS = ["t212Summary", "t212Positions", "nfts", "fiatFx", "ethPrice", "walletNative", "walletTokens", "manualHoldings", "capital"] as const;

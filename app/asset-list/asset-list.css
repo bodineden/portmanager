@@ -59,14 +59,10 @@
 .asset-legacy-note { display: grid; grid-template-columns: 160px minmax(0, 1fr); gap: 20px; padding: 18px 22px; background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); }
 .asset-legacy-note > span { color: var(--purple); }
 .asset-legacy-note p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
-.asset-wallet-filter { display: inline-flex; align-items: center; gap: 7px; padding: 6px 9px; color: var(--muted); background: var(--panel-raised); border: 1px solid var(--border); border-radius: 6px; cursor: pointer; font-size: 11px; }
-.asset-wallet-filter input { margin: 0; width: 14px; height: 14px; accent-color: var(--accent); }
 .asset-wallet-count { display: grid; gap: 4px; justify-items: end; }
-.asset-wallet-hidden-count { color: var(--muted); font-size: 10px; }
 .asset-wallet-source-label { display: grid; gap: 4px; }
 .asset-wallet-source-label small { color: var(--muted); font-size: 9px; }
 .asset-wallet-type { display: flex; flex-wrap: wrap; gap: 4px; }
-.asset-wallet-unpriced { color: var(--amber); background: #FFF8EB; border-color: #EDDEBD; }
 @media (max-width: 1240px) {
   .asset-registry-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .asset-panel-footer { grid-template-columns: auto minmax(0, 1fr); }

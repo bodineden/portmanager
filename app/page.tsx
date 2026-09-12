@@ -103,7 +103,7 @@ export default async function Home() {
               <p className="eyebrow">WHAT CAN BE MEASURED</p><h2>P&amp;L coverage</h2>
               <div className="pnl-metric-line"><strong>{coverage.eligible}<span> / {coverage.totalHoldings}</span></strong><span className={`pnl-status is-${coverage.status}`}>{coverage.status}</span></div>
               <p>Holdings eligible for P&amp;L · NFT collections count as one holding each.</p>
-              <div className="pnl-coverage-buckets"><span>{coverage.notRecorded} basis not recorded</span><span>{coverage.dust} dust</span><span>{coverage.unpriced} unpriced</span><span>{coverage.unreconciled} unreconciled</span></div>
+              <div className="pnl-coverage-buckets"><span>{coverage.notRecorded} basis not recorded</span><span>{coverage.unreconciled} unreconciled</span></div>
               {!coverage.sourcesComplete && <small>Source coverage is incomplete.</small>}
             </article>
           </section>
@@ -117,7 +117,7 @@ export default async function Home() {
                 <small>{item.sharePct === null ? "Share unavailable" : `${formatHoldingQuantity(item.sharePct, 1)}% of priced value`} · {formatThb(item.valueThb)}</small>
                 {item.key === "cash" ? <small className="pnl-class-pnl">Value only · no per-asset P&amp;L</small> : <small className="pnl-class-pnl">P&amp;L (recorded): {formatUsd(totals.pnlByClass[item.key].pnlCoverage.eligible > 0 ? totals.pnlByClass[item.key].pnlUsd : null)} · {totals.pnlByClass[item.key].pnlCoverage.eligible} eligible</small>}
               </div>)}</div>
-              <p className="pnl-panel-note">Shares describe known priced class subtotals, not the entire inventory. Unpriced assets have no inferred weight; shares are unavailable when a class has no known subtotal.</p>
+              <p className="pnl-panel-note">Shares describe current class values; shares are unavailable when a class has no known subtotal.</p>
             </section>
           </div>
           <PnlCalendar snapshots={history} asOf={portfolio.asOf} />
@@ -130,7 +130,6 @@ export default async function Home() {
           </section>
           <WalletBalancesPanel nativeRows={nativeRows} tokenRows={tokenRows} nativeSource={sources.walletNative} tokenSource={sources.walletTokens}
             walletSourcesComplete={sources.walletNative.status === "live" && sources.walletTokens.status === "live"}
-            walletSourcesUnavailable={sources.walletNative.status === "unavailable" && sources.walletTokens.status === "unavailable"}
             totalWalletUsd={formatUsd(totals.walletUsd)} totalWalletThb={formatThb(totals.walletThb)} />
           <section className="panel pnl-source-strip" aria-label="Portfolio sources">
             <div className="panel-header"><div><p className="eyebrow">EVERY FIGURE HAS A SOURCE</p><h2 className="panel-title">Source status</h2></div><span className="panel-count">{Object.keys(sources).length} sources</span></div>

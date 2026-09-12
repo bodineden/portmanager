@@ -9,12 +9,7 @@ import { oneUnpricedNft } from "./__fixtures__/nft-floors";
 const DATE = "2026-09-05T12:00:00.000Z";
 const live = <T>(data: T): LiveResult<T> => ({ data, state: { status: "live", asOf: DATE, message: "offline fixture" } });
 const unavailable = <T>(): LiveResult<T> => ({ data: null, state: { status: "unavailable", asOf: null, message: "offline fixture unavailable" } });
-const unknown: HoldingPnl = {
-  costBasisUsd: null, costBasisThb: null, basisStatus: "not-recorded", basisNote: "Fixture: acquisition evidence is absent",
-  pnlUsd: null, pnlThb: null, pnlPct: null, pnlEligibility: "not-recorded",
-};
-
-function fixture(): JoinedPortfolio {
+function fixture(ethPrice: LiveResult<number> = live(2_400)): JoinedPortfolio {
   const book = buildJoinedPortfolio({
     t212Summary: live({ currency: "USD", cashAvailable: 487, totalValue: 717, investmentsCurrentValue: 230 }),
     t212Positions: live([
@@ -34,7 +29,7 @@ function fixture(): JoinedPortfolio {
       { chainId: 1, chainName: "Ethereum", symbol: "PURCHASED", name: "Derived purchase token", amountRaw: "3", decimals: 0, amount: 3, priceUsd: 20 },
       { chainId: 1, chainName: "Ethereum", symbol: "TOKEN-DUST", name: "Dust token", amountRaw: "1", decimals: 0, amount: 1, priceUsd: 0.02 },
     ]),
-    fiatFx: live({ usdToThb: 36, gbpToThb: 45, eurToThb: 40, asOf: DATE }), ethPrice: live(2_400),
+    fiatFx: live({ usdToThb: 36, gbpToThb: 45, eurToThb: 40, asOf: DATE }), ethPrice,
   }, DATE);
   // Explicit presentation fixtures for future evidence-backed rows. No provider
   // response or current balance is being asserted to prove a free acquisition.
@@ -47,10 +42,10 @@ function fixture(): JoinedPortfolio {
     pnlUsd: 10, pnlThb: 360, pnlPct: 20, pnlEligibility: "eligible",
   } satisfies HoldingPnl);
   Object.assign(book.totals, aggregatePnl({
-    t212: { holdings: book.t212.investments, sourceComplete: true },
-    nfts: { holdings: book.nfts, sourceComplete: true },
-    walletNative: { holdings: book.wallet.native, sourceComplete: true },
-    walletTokens: { holdings: book.wallet.tokens, sourceComplete: true },
+    t212: { holdings: book.t212.investments, sourceComplete: book.sources.t212Positions.status === "live" },
+    nfts: { holdings: book.nfts, sourceComplete: book.sources.nfts.status === "live" },
+    walletNative: { holdings: book.wallet.native, sourceComplete: book.sources.walletNative.status === "live" },
+    walletTokens: { holdings: book.wallet.tokens, sourceComplete: book.sources.walletTokens.status === "live" },
   }, book.fx.usdToThb));
   return book;
 }
@@ -83,21 +78,20 @@ beforeEach(() => { vi.stubGlobal("React", React); });
 afterEach(() => { vi.unstubAllGlobals(); });
 
 describe("rendered per-asset P&L honesty (offline fixtures)", () => {
-  it("renders an unpriceable NFT as its own dash row while the other five keep the book valued", () => {
+  it("omits an unpriceable NFT entirely while the other five keep the book valued", () => {
     const book = buildJoinedPortfolio({
       t212Summary: live({ currency: "GBP", cashAvailable: 487, totalValue: 487, investmentsCurrentValue: 0 }),
       t212Positions: live([]), manualHoldings: live([]), walletNative: live([]), walletTokens: live([]),
-      nfts: { data: oneUnpricedNft, state: { status: "partial", asOf: DATE, message: "One floor unpriced" } },
+      nfts: live(oneUnpricedNft),
       fiatFx: live({ usdToThb: 36, gbpToThb: 45, eurToThb: 40, asOf: DATE }), ethPrice: live(2400),
     }, DATE);
     const html = markup(book);
-    expect(rows(html)).toHaveLength(6);
-    const row = rowNamed(html, "wasteland-art");
-    expect(row).toContain('data-pnl-eligibility="unpriced"');
-    expect(cell(row, "value")).toBe("— — Unpriced");
-    expect(cell(row, "basis")).toBe("— — basis not recorded");
-    expect(cell(row, "pnl")).toBe("— — · — Excluded from P&L totals");
-    expect(text(row)).not.toMatch(/\$0|฿0|Dust/);
+    expect(rows(html)).toHaveLength(5);
+    expect(html).not.toContain("wasteland-art");
+    expect(html).not.toMatch(/data-pnl-eligibility="(?:dust|unpriced)"/);
+    expect(text(html)).not.toMatch(/\b(?:dust|unpriced)\b/i);
+    expect(book.totals.pnlCoverage).toMatchObject({ totalHoldings: 5, dust: 0, unpriced: 0 });
+    expect(book.sources.nfts.status).toBe("live");
     expect(Number.isFinite(book.totals.grandTotalUsd)).toBe(true);
     for (const priced of oneUnpricedNft.filter((item) => item.floorEth !== null)) {
       expect(cell(rowNamed(html, priced.collectionName), "value")).toContain(formatUsd(book.nfts.find((item) => item.collection === priced.collection)!.valueUsd));
@@ -109,10 +103,12 @@ describe("rendered per-asset P&L honesty (offline fixtures)", () => {
     const book = fixture();
     const original = structuredClone(book);
     const html = markup(book);
-    expect(rows(html)).toHaveLength(9);
-    for (const name of ["RECORDED", "FX-DIFFERENCE", "Unknown NFT", "NATIVE", "NATIVE-DUST", "UNPRICED", "FREE", "PURCHASED", "TOKEN-DUST"]) {
+    expect(rows(html)).toHaveLength(6);
+    for (const name of ["RECORDED", "FX-DIFFERENCE", "Unknown NFT", "NATIVE", "FREE", "PURCHASED"]) {
       expect(rows(html).filter((row) => row.includes(`>${name}</strong>`))).toHaveLength(1);
     }
+    for (const name of ["NATIVE-DUST", "UNPRICED", "TOKEN-DUST"]) expect(html).not.toContain(name);
+    expect(text(html)).not.toMatch(/\b(?:dust|unpriced)\b/i);
     expect(html).toContain('title="Fixture: verified no-payment acquisition"');
     expect(html).toContain('title="Fixture: audited historical payment value"');
     expect(text(html)).toContain("Cash has no P&L");
@@ -144,7 +140,7 @@ describe("rendered per-asset P&L honesty (offline fixtures)", () => {
     expect(cell(row, "pnl")).not.toContain("0.00%");
   });
 
-  it("preserves unreconciled API P&L visibly but excludes it and unknown/dust holdings from totals", () => {
+  it("preserves unreconciled API P&L visibly while omitted rows never enter totals", () => {
     const book = fixture();
     const html = markup(book);
     const row = rowNamed(html, "FX-DIFFERENCE");
@@ -155,7 +151,7 @@ describe("rendered per-asset P&L honesty (offline fixtures)", () => {
     expect(book.totals.pnlUsd).toBe(60); // 10 recorded security + 40 free + 10 purchase.
     expect(book.totals.costBasisUsd).toBe(150);
     const footer = text(html.match(/<tfoot>([\s\S]*?)<\/tfoot>/)![1]);
-    expect(footer).toContain("3 of 9 holdings");
+    expect(footer).toContain("3 of 6 holdings");
     expect(footer).toContain("US$150.00 ฿5,400.00 US$60.00 ฿2,160.00 · +40.00%");
     expect(footer).not.toContain("US$75.00");
   });
@@ -175,23 +171,31 @@ describe("rendered per-asset P&L honesty (offline fixtures)", () => {
     expect(text(html.match(/<tfoot>([\s\S]*?)<\/tfoot>/)![1])).toContain("US$150.00 — US$60.00 — · +40.00%");
   });
 
-  it("keeps all dust values, orders wallet native before token and priced before unpriced, and preserves attributes", () => {
+  it("omits unknown and small values, orders native before token, and preserves priced attributes", () => {
     const book = fixture();
-    // A missing native quote remains a visible row and sorts behind priced native.
-    Object.assign(book.wallet.native[0], unknown, { valueUsd: null, valueThb: null, pnlEligibility: "unpriced" });
     const html = markup(book);
     const walletRows = rows(html).filter((row) => row.includes("data-wallet-kind="));
-    expect(walletRows).toHaveLength(6);
+    expect(walletRows).toHaveLength(3);
     expect(walletRows.map((row) => row.match(/data-wallet-kind="([^"]+)"/)![1]))
-      .toEqual(["native", "native", "token", "token", "token", "token"]);
+      .toEqual(["native", "token", "token"]);
     expect(walletRows.map((row) => row.match(/data-wallet-priced="([^"]+)"/)![1]))
-      .toEqual(["true", "false", "true", "true", "true", "false"]);
-    expect(cell(rowNamed(html, "NATIVE"), "value")).toBe("— — Unpriced");
-    expect(cell(rowNamed(html, "UNPRICED"), "value")).toBe("— — Unpriced");
-    expect(cell(rowNamed(html, "TOKEN-DUST"), "value")).toBe("US$0.02 ฿0.72 Dust · below $1");
-    expect(cell(rowNamed(html, "NATIVE-DUST"), "value")).toContain(formatUsd(book.wallet.native[1].valueUsd));
-    expect(cell(rowNamed(html, "TOKEN-DUST"), "pnl")).toContain("Excluded from P&L totals");
+      .toEqual(["true", "true", "true"]);
+    for (const name of ["UNPRICED", "TOKEN-DUST", "NATIVE-DUST"]) expect(html).not.toContain(name);
+    expect(cell(rowNamed(html, "NATIVE"), "value")).toContain(formatUsd(book.wallet.native[0].valueUsd));
+    expect(walletRows.every((row) => !cell(row, "value").startsWith("—"))).toBe(true);
+    expect(text(html)).not.toMatch(/\b(?:dust|unpriced)\b/i);
     expect(book.totals.pnlUsd).toBe(60);
+    expect(book.totals.pnlCoverage).toMatchObject({ totalHoldings: 6, dust: 0, unpriced: 0 });
+
+    const noNativePrice = fixture(unavailable<number>());
+    const noNativePriceHtml = markup(noNativePrice);
+    expect(noNativePriceHtml).not.toContain('data-wallet-kind="native"');
+    expect(noNativePriceHtml).not.toContain('data-wallet-priced="false"');
+    expect(noNativePriceHtml).not.toContain('>NATIVE</strong>');
+    expect(rows(noNativePriceHtml).filter((row) => row.includes('data-wallet-kind="token"'))).toHaveLength(2);
+    expect(noNativePrice.sources.walletNative.status).toBe("unavailable");
+    expect(noNativePrice.totals.walletNativeUsd).toBeNull();
+    expect(noNativePrice.totals.pnlUsd).toBe(60);
   });
 
   it("renders unavailable inventory explicitly instead of emitting zero P&L or an empty-account claim", () => {

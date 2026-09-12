@@ -1,8 +1,3 @@
-"use client";
-
-import { useState } from "react";
-import { shouldHideWalletDust } from "@/lib/dust-filter";
-
 type WalletSourceView = {
   status: "live" | "partial" | "unavailable";
   label: string;
@@ -42,7 +37,6 @@ export function WalletAssetRegistry({
   nativeSource,
   tokenSource,
   walletSourcesComplete,
-  walletSourcesUnavailable,
   totalWalletUsd,
   totalWalletThb,
 }: {
@@ -51,24 +45,10 @@ export function WalletAssetRegistry({
   nativeSource: WalletSourceView;
   tokenSource: WalletSourceView;
   walletSourcesComplete: boolean;
-  walletSourcesUnavailable: boolean;
   totalWalletUsd: string;
   totalWalletThb: string;
 }) {
-  const [hideUnderOne, setHideUnderOne] = useState(true);
-  const visibleNativeRows = nativeRows.filter((row) => !shouldHideWalletDust({
-    kind: "native",
-    valueUsd: row.valueUsd,
-    priced: true,
-  }, hideUnderOne));
-  const visibleTokenRows = tokenRows.filter((row) => !shouldHideWalletDust({
-    kind: "token",
-    valueUsd: row.valueUsd,
-    priced: row.priced,
-  }, hideUnderOne));
   const totalCount = nativeRows.length + tokenRows.length;
-  const visibleCount = visibleNativeRows.length + visibleTokenRows.length;
-  const hiddenCount = totalCount - visibleCount;
 
   return (
     <>
@@ -76,7 +56,7 @@ export function WalletAssetRegistry({
         <div>
           <p className="eyebrow">EVM WALLET / NATIVE + ERC-20</p>
           <h2 className="panel-title">Live Wallet Asset Registry</h2>
-          <p className="panel-subtitle">Positive native coin and token balances. Full-set totals include hidden assets.</p>
+          <p className="panel-subtitle">Native coin and token balances.</p>
         </div>
         <div className="asset-panel-status">
           <span className="asset-wallet-source-label">
@@ -87,20 +67,8 @@ export function WalletAssetRegistry({
             <small>TOKENS</small>
             <span className={`asset-source-badge is-${tokenSource.status}`}>{tokenSource.label}</span>
           </span>
-          <label className="asset-wallet-filter">
-            <input
-              type="checkbox"
-              aria-label="Hide assets under $1"
-              checked={hideUnderOne}
-              onChange={(event) => setHideUnderOne(event.target.checked)}
-            />
-            <span>Hide under $1</span>
-          </label>
           <span className="asset-wallet-count">
-            <span className="panel-count">{visibleCount} ASSETS</span>
-            {hideUnderOne && hiddenCount > 0 ? (
-              <small className="asset-wallet-hidden-count">({hiddenCount} hidden under $1)</small>
-            ) : null}
+            <span className="panel-count">{totalCount} ASSETS</span>
           </span>
         </div>
       </div>
@@ -109,16 +77,8 @@ export function WalletAssetRegistry({
         <div className={`asset-empty-state${walletSourcesComplete ? "" : " is-unavailable"}`}>
           <span className="asset-empty-code">WALLET / —</span>
           <div>
-            <strong>{walletSourcesComplete
-              ? "No wallet assets found"
-              : walletSourcesUnavailable
-                ? "Wallet assets are unavailable"
-                : "Wallet asset snapshot incomplete"}</strong>
-            <p>
-              {walletSourcesComplete
-                ? "The connected EVM wallet returned no positive native coin or ERC-20 balances in this snapshot."
-                : "One or more wallet sources did not return a complete inventory; no empty-wallet conclusion is inferred."}
-            </p>
+            <strong>No wallet holdings to display in this snapshot.</strong>
+            {!walletSourcesComplete && <p>One or more wallet sources did not return a complete inventory; no empty-wallet conclusion is inferred.</p>}
           </div>
         </div>
       ) : (
@@ -137,12 +97,7 @@ export function WalletAssetRegistry({
               </tr>
             </thead>
             <tbody>
-              {visibleCount === 0 ? (
-                <tr className="asset-wallet-filtered-empty">
-                  <td colSpan={7}>All wallet assets are hidden by the under-$1 filter. Full-set priced totals remain below.</td>
-                </tr>
-              ) : null}
-              {visibleNativeRows.map((holding) => (
+              {nativeRows.map((holding) => (
                 <tr key={holding.id} data-wallet-kind="native" data-wallet-priced={holding.priced ? "true" : "false"}>
                   <td><span className="ticker-badge">{holding.symbol}</span></td>
                   <td>
@@ -156,7 +111,7 @@ export function WalletAssetRegistry({
                   <td className="asset-cell-right numeric asset-thb-value">{holding.valueThb}</td>
                 </tr>
               ))}
-              {visibleTokenRows.map((holding) => (
+              {tokenRows.map((holding) => (
                 <tr
                   key={holding.id}
                   data-wallet-kind="token"
@@ -173,7 +128,6 @@ export function WalletAssetRegistry({
                   <td>
                     <span className="asset-wallet-type">
                       <span className="data-tag">ERC-20</span>
-                      {holding.priced ? null : <span className="data-tag asset-wallet-unpriced">UNPRICED</span>}
                     </span>
                   </td>
                   <td className="asset-cell-right numeric">{holding.amount}</td>

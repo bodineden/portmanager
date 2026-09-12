@@ -1,6 +1,8 @@
 import { createRoot } from "react-dom/client";
 import PortfolioPage from "../app/portfolio/page";
 import Home from "../app/page";
+import AssetListPage from "../app/asset-list/page";
+import { shouldSuppressHolding } from "../lib/dust-filter";
 import { PnlCalendar, PnlPerformance } from "../app/pnl-history-panels";
 import { WalletBalancesPanel } from "../app/home-wallet-panel";
 import type { PortfolioSnapshot } from "../lib/pnl-history";
@@ -15,6 +17,10 @@ let scenario = new URLSearchParams(location.search).get("scenario") ?? "recent";
 const root = createRoot(document.getElementById("root")!);
 
 async function mount() {
+  if (scenario.startsWith("dust-")) {
+    root.render(scenario.endsWith("-registry") ? await AssetListPage() : await Home());
+    return;
+  }
   if (scenario.startsWith("capital-")) { root.render(await Home()); return; }
   if (scenario.startsWith("portfolio-")) {
     // Execute the actual page with fixture data boundaries, including livePoint
@@ -27,8 +33,8 @@ async function mount() {
     : scenario === "older" ? fixture.snapshots.slice(0, 1)
       : fixture.snapshots) as PortfolioSnapshot[];
   const filteredEmpty = scenario === "filtered-empty";
-  const nativeInputs = filteredEmpty ? fixture.wallet.nativeRows.slice(1, 2) : fixture.wallet.nativeRows;
-  const tokenInputs = filteredEmpty ? fixture.wallet.tokenRows.slice(1) : fixture.wallet.tokenRows;
+  const nativeInputs = (filteredEmpty ? fixture.wallet.nativeRows.slice(1) : fixture.wallet.nativeRows).filter((row) => !shouldSuppressHolding(row));
+  const tokenInputs = (filteredEmpty ? fixture.wallet.tokenRows.slice(1) : fixture.wallet.tokenRows).filter((row) => !shouldSuppressHolding(row));
   const rowView = (row: typeof nativeInputs[number]) => ({
     ...row,
     priceUsd: formatViewUsd(row.valueUsd),
@@ -39,14 +45,14 @@ async function mount() {
   const tokenRows = tokenInputs.map((row) => ({ ...rowView(row), name: row.name, priced: row.priced }));
   const totalUsd = [...nativeInputs, ...tokenInputs].reduce((sum, row) => sum + (row.valueUsd ?? 0), 0);
   const totalThb = [...nativeInputs, ...tokenInputs].reduce((sum, row) => sum + (row.valueThb ?? 0), 0);
-  const source = { ...fixture.wallet.source, status: "partial" as const };
+  const source = { ...fixture.wallet.source, status: "live" as const };
 
   root.render(<main className="home-shell page-content home-content">
     <PnlPerformance snapshots={snapshots} asOf={fixture.asOf} />
     <PnlCalendar snapshots={snapshots} asOf={fixture.asOf} />
     <WalletBalancesPanel nativeRows={nativeRows} tokenRows={tokenRows}
-      nativeSource={source} tokenSource={source} walletSourcesComplete={false}
-      walletSourcesUnavailable={false} totalWalletUsd={formatViewUsd(totalUsd)} totalWalletThb={formatViewThb(totalThb)} />
+      nativeSource={source} tokenSource={source} walletSourcesComplete={true}
+      totalWalletUsd={formatViewUsd(totalUsd)} totalWalletThb={formatViewThb(totalThb)} />
   </main>);
 }
 

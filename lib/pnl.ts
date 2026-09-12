@@ -1,4 +1,4 @@
-import { shouldHideWalletDust } from "./dust-filter";
+import { shouldSuppressHolding } from "./dust-filter";
 import type { FiatRates, NormalizedT212Position } from "./live-data";
 
 /** Recorded does not mean free. Only verified no-payment acquisitions are free. */
@@ -51,8 +51,7 @@ function unknown(note: string, eligibility: PnlEligibility = "not-recorded"): Ho
 
 function excluded(valueUsd: number | null): HoldingPnl | null {
   if (!nonNegative(valueUsd)) return unknown("Unpriced or invalid current value; basis derivation skipped", "unpriced");
-  // Share the shipped strict < $1 test, but exclude unpriced native from P&L too.
-  if (shouldHideWalletDust({ kind: "native", valueUsd, priced: true }, true)) {
+  if (shouldSuppressHolding({ valueUsd })) {
     return unknown("Dust: current value below $1; basis derivation skipped", "dust");
   }
   return null;
@@ -258,16 +257,15 @@ function completeSum(values: (number | null)[]): number | null {
   return finite(sum) ? sum : null;
 }
 
-function summarizePnl(rows: PnlClassInput["holdings"], sourcesComplete: boolean, usdToThb: number | null): PnlSummary {
+function summarizePnl(inputRows: PnlClassInput["holdings"], sourcesComplete: boolean, usdToThb: number | null): PnlSummary {
+  // Revalidate callers at the aggregate boundary without counting omitted rows.
+  const rows = inputRows.filter((row) => !shouldSuppressHolding(row));
   const coverage: PnlCoverage = { totalHoldings: rows.length, eligible: 0, notRecorded: 0, dust: 0, unpriced: 0,
     unreconciled: 0, status: "partial", sourcesComplete };
   const eligible: PnlClassInput["holdings"][number][] = [];
   for (const row of rows) {
     // Revalidate the aggregate boundary too: do not trust a forged/stale eligibility flag.
-    const skip = excluded(row.valueUsd);
-    if (skip?.pnlEligibility === "unpriced") coverage.unpriced += 1;
-    else if (skip?.pnlEligibility === "dust") coverage.dust += 1;
-    else if (row.basisStatus === "not-recorded" || !nonNegative(row.costBasisUsd) || !finite(row.pnlUsd)) coverage.notRecorded += 1;
+    if (row.basisStatus === "not-recorded" || !nonNegative(row.costBasisUsd) || !finite(row.pnlUsd)) coverage.notRecorded += 1;
     else if (row.pnlEligibility !== "eligible" || !reconciles(row.valueUsd!, row.costBasisUsd, row.pnlUsd)) coverage.unreconciled += 1;
     else { coverage.eligible += 1; eligible.push(row); }
   }

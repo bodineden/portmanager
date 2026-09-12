@@ -131,6 +131,20 @@ describe("on-chain conservative classification", () => {
 });
 
 describe("joined P&L aggregation", () => {
+  it("omits suppressed rows from all coverage counts even when a stale caller marks them eligible", () => {
+    const rows = [null, 0, 0.99, 1].map((valueUsd) => ({
+      ...tokenHolding, valueUsd,
+      ...pnl.deriveOnchainPnl({ ...tokenHolding, valueUsd: 1 }, 36, freeEvidence()),
+      costBasisUsd: 0, costBasisThb: 0, pnlUsd: valueUsd, pnlThb: valueUsd === null ? null : valueUsd * 36,
+    }));
+    const classes: Record<pnl.PnlClass, pnl.PnlClassInput> = {
+      t212: { holdings: [], sourceComplete: true }, nfts: { holdings: [], sourceComplete: true },
+      walletNative: { holdings: [], sourceComplete: true }, walletTokens: { holdings: rows, sourceComplete: true },
+    };
+    expect(pnl.aggregatePnl(classes, 36)).toMatchObject({ costBasisUsd: 0, pnlUsd: 1, pnlThb: 36,
+      pnlCoverage: { totalHoldings: 1, eligible: 1, notRecorded: 0, dust: 0, unpriced: 0, unreconciled: 0, status: "complete", sourcesComplete: true } });
+  });
+
   it("preserves USD when THB FX is missing and does not call an unknown aggregate complete", () => {
     const classes: Record<pnl.PnlClass, pnl.PnlClassInput> = {
       t212: { holdings: [], sourceComplete: true }, nfts: { holdings: [], sourceComplete: true },
@@ -182,9 +196,11 @@ describe("joined P&L aggregation", () => {
     data.basisEvidence = { [`token:8453:${tokenHolding.assetId}`]: purchaseEvidence() };
     const portfolio = buildJoinedPortfolio(data, AS_OF);
     expect(portfolio.wallet.tokens[0].basisStatus).toBe("onchain-derived");
+    expect(portfolio.wallet.tokens.map((row) => row.symbol)).toEqual(["SYNTHETIC", "USDG"]);
+    expect(portfolio.wallet.tokens.some((row) => row.pnlEligibility === "dust" || row.pnlEligibility === "unpriced")).toBe(false);
     expect(portfolio.totals).toMatchObject({
       costBasisUsd: 210, costBasisThb: 7_560, pnlUsd: 20, pnlThb: 720, pnlPct: 20 / 210 * 100,
-      pnlCoverage: { totalHoldings: 5, eligible: 2, notRecorded: 1, dust: 1, unpriced: 1, unreconciled: 0, status: "partial" },
+      pnlCoverage: { totalHoldings: 3, eligible: 2, notRecorded: 1, dust: 0, unpriced: 0, unreconciled: 0, status: "partial" },
       pnlByClass: { t212: { costBasisUsd: 190, pnlUsd: 10 }, walletTokens: { costBasisUsd: 20, pnlUsd: 10 } },
     });
     const eligible = [...portfolio.t212.investments, ...portfolio.wallet.tokens].filter((row) => row.pnlEligibility === "eligible");
@@ -234,7 +250,16 @@ describe("required current-book fixture QA", () => {
     ]);
     const book = buildJoinedPortfolio(data, AS_OF);
     const rows: string[][] = [["T212 positions: 0", "N/A (no holding)", "no-op", "GBP 487 cash is value only; no P&L"]];
-    for (const holding of book.wallet.native) rows.push([`${holding.chainName} ETH ${holding.amount}`, holding.basisStatus, holding.pnlEligibility, holding.basisNote]);
+    for (const source of data.walletNative.data!) {
+      const holding = book.wallet.native.find((row) => row.chainId === source.chainId);
+      if (source.chainId === 8453) {
+        expect(holding).toBeUndefined();
+        rows.push([`${source.chainName} ETH ${source.amount}`, "N/A (not displayed)", "no-op", "Absent from joined holdings and coverage"]);
+      } else {
+        expect(holding).toBeDefined();
+        rows.push([`${holding!.chainName} ETH ${holding!.amount}`, holding!.basisStatus, holding!.pnlEligibility, holding!.basisNote]);
+      }
+    }
     const usdg = book.wallet.tokens[0];
     rows.push(["USDG 1.475", usdg.basisStatus, usdg.pnlEligibility, usdg.basisNote]);
     for (const symbol of ["STACK", "GME"]) {
