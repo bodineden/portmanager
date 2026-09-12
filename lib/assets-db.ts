@@ -1,5 +1,15 @@
 import { neon, type NeonQueryFunction } from "@neondatabase/serverless";
 
+/** Acquisition-evidence cache only; independent of archive schema and seeds. */
+export const BASIS_EVIDENCE_DDL = `
+  CREATE TABLE IF NOT EXISTS basis_evidence (
+    holding_key text PRIMARY KEY,
+    evidence jsonb NOT NULL,
+    source text NOT NULL,
+    collected_at timestamptz NOT NULL DEFAULT now()
+  );
+`;
+
 export type Currency = {
   code: string;
   name: string;
