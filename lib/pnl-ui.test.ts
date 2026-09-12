@@ -14,9 +14,9 @@ function fixture(ethPrice: LiveResult<number> = live(2_400)): JoinedPortfolio {
     t212Summary: live({ currency: "USD", cashAvailable: 487, totalValue: 717, investmentsCurrentValue: 230 }),
     t212Positions: live([
       { ticker: "RECORDED", name: "Recorded security", quantity: 1, averagePrice: 100, currentPrice: 110,
-        ppl: 10, currency: "USD", pplCurrency: "USD", valueNative: 110, valueAccount: 110 },
+        ppl: 10, currency: "USD", pplCurrency: "USD", valueNative: 110, costAccount: null, valueAccount: 110 },
       { ticker: "FX-DIFFERENCE", name: "Unreconciled security", quantity: 1, averagePrice: 100, currentPrice: 120,
-        ppl: 15, currency: "USD", pplCurrency: "USD", valueNative: 120, valueAccount: 120 },
+        ppl: 15, currency: "USD", pplCurrency: "USD", valueNative: 120, costAccount: null, valueAccount: 120 },
     ]),
     nfts: live([{ collection: "unknown-nft", collectionName: "Unknown NFT", tokenCount: 2, floorEth: 0.1 }]),
     walletNative: live([

@@ -1,6 +1,13 @@
 {
   "description": "Synthetic values only. History and wallet scenarios extracted from the prior temporary browser QA; no provider records, credentials or generated bundles.",
   "asOf": "2026-09-05T12:00:00.000Z",
+  "unreconciledT212Positions": [{
+    "instrument": { "ticker": "INCONSISTENT_US_EQ", "name": "Synthetic inconsistent security", "currency": "USD" },
+    "quantity": 1,
+    "averagePricePaid": 90,
+    "currentPrice": 100,
+    "walletImpact": { "currency": "USD", "currentValue": 100, "totalCost": 90, "unrealizedProfitLoss": 5 }
+  }],
   "portfolio": {
     "asOf": "2026-09-05T12:00:00.000Z",
     "t212": {

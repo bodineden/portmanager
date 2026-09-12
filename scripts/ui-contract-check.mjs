@@ -1780,6 +1780,26 @@ async function auditDustFixtures(browser, fixtureUrl, viewport) {
         await checkNoMutationControls(page, label);
       }
     }
+    await check(`${prefix} inconsistent same-currency T212 triple still exercises the unreconciled alert`, async () => {
+      const response = await page.goto(`${fixtureUrl}/?scenario=dust-unreconciled-home`, { waitUntil: "networkidle", timeout: 15_000 });
+      requireCondition(response?.ok(), `fixture HTTP ${response?.status() ?? "unavailable"}`);
+      const row = page.locator('.pnl-asset-table tr[data-pnl-eligibility="unreconciled"]');
+      await row.waitFor();
+      const portfolio = await page.evaluate(() => window.__dustFixturePortfolio);
+      const holding = portfolio.t212.investments[0];
+      requireCondition(holding.currency === "USD" && holding.pplCurrency === "USD"
+        && holding.valueAccount === 100 && holding.costAccount === 90 && holding.pnlUsd === 5,
+      "fixture no longer derives a genuinely inconsistent same-currency provider triple");
+      requireCondition(portfolio.totals.pnlCoverage.unreconciled === 1 && portfolio.totals.pnlCoverage.eligible === 0,
+        "inconsistent holding was not excluded from recorded P&L");
+      requireCondition((await row.innerText()).includes("Unreconciled · excluded from P&L"), "unreconciled eligibility chip changed");
+      requireCondition((await page.locator("[data-pnl-summary]").innerText()).includes("Recorded P&L unavailable — unreconciled holdings are excluded"),
+        "unreconciled-only holdings lost the unavailable P&L explanation");
+      await assertMascot(page, "alert");
+      requireCondition(/holdings are unreconciled/i.test(await page.locator("[data-mascot-bubble]").innerText()),
+        "provider inconsistency no longer drives the mascot unreconciled bubble");
+      return "USD 100 - 90 != 5: real joined row, exclusion chip, unavailable summary and alert bubble retained";
+    });
     await check(`${prefix} all scenarios keep browser console clean`, async () => {
       requireCondition(browserErrors.length === 0, browserErrors.join(" | "));
     });

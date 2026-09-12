@@ -71,19 +71,33 @@ export function deriveT212Pnl(position: NormalizedT212Position, fx: FiatRates | 
     : usd(position.valueNative, position.currency, fx);
   const skip = excluded(valueUsd);
   if (skip) return { ...skip, valueUsd };
-  const basis = nonNegative(position.averagePrice) && positive(position.quantity)
-    ? usd(position.averagePrice * position.quantity, position.currency, fx) : null;
+  const walletTriple = nonNegative(position.valueAccount) && nonNegative(position.costAccount)
+    && finite(position.ppl) && position.pplCurrency !== null;
+  const basis = walletTriple
+    ? usd(position.costAccount, position.pplCurrency, fx)
+    : nonNegative(position.averagePrice) && positive(position.quantity)
+      ? usd(position.averagePrice * position.quantity, position.currency, fx) : null;
   const pnl = position.ppl !== null
     ? usd(position.ppl, position.pplCurrency, fx)
     : nonNegative(position.currentPrice) && nonNegative(position.averagePrice)
       ? usd((position.currentPrice - position.averagePrice) * position.quantity, position.currency, fx) : null;
   if (basis === null || pnl === null) return { ...unknown("T212 average cost, P&L currency or FX not recorded"), valueUsd };
-  const result = recorded(basis, pnl, "t212-live", position.ppl === null
-    ? "T212 average cost; (current - average) × quantity fallback"
-    : "T212 average cost; API unrealized P&L", fx?.usdToThb);
-  // API FX P&L can differ from spot-converted average cost. Preserve both facts,
-  // but never include an inconsistent row in the value-minus-basis aggregate.
-  if (valueUsd !== null && !reconciles(valueUsd, basis, pnl)) {
+  const result = recorded(basis, pnl, "t212-live", walletTriple
+    ? "T212 account-currency total cost; API unrealized P&L"
+    : position.ppl === null
+      ? "T212 average cost; (current - average) × quantity fallback"
+      : "T212 average cost; API unrealized P&L", fx?.usdToThb);
+  // The provider's complete wallet triple is authoritative in its native currency.
+  // Spot-converted instrument average cost is a different basis frame.
+  const ties = walletTriple
+    ? reconciles(position.valueAccount!, position.costAccount!, position.ppl!)
+    : valueUsd !== null && reconciles(valueUsd, basis, pnl);
+  if (!ties) {
+    const valueCurrency = position.valueAccount !== null ? position.pplCurrency ?? accountCurrency : position.currency;
+    const pnlCurrency = position.ppl !== null ? position.pplCurrency : position.currency;
+    if (!walletTriple && (position.currency === null || valueCurrency !== position.currency || pnlCurrency !== position.currency)) {
+      return { ...unknown("T212 incomplete wallet impact; mixed-currency basis/P&L cannot be reconciled"), valueUsd };
+    }
     result.pnlEligibility = "unreconciled";
     result.basisNote += "; P&L does not reconcile with current value minus basis; excluded from totals";
   }

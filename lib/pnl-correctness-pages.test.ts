@@ -42,7 +42,7 @@ function displayBoundaryBook() {
     t212Summary: live({ currency: "USD", cashAvailable: 100, totalValue: 101.5, investmentsCurrentValue: 1.5 }),
     t212Positions: live([0.5, 1].map((value) => ({
       ticker: value < 1 ? "SMALL-SECURITY" : "ONE-SECURITY", name: "Security fixture", quantity: 1,
-      averagePrice: value, currentPrice: value, ppl: 0, currency: "USD", pplCurrency: "USD", valueNative: value, valueAccount: value,
+      averagePrice: value, currentPrice: value, ppl: 0, currency: "USD", pplCurrency: "USD", valueNative: value, costAccount: null, valueAccount: value,
     }))),
     nfts: live([
       { collection: "small-nft", collectionName: "Small collection", tokenCount: 1, floorEth: 0.00025 },

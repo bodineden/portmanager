@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { shouldSuppressHolding } from "./dust-filter";
-import { buildJoinedPortfolio, RH_ERC20_REGISTRY, type JoinedPortfolioInputs, type LiveResult } from "./live-data";
+import { buildJoinedPortfolio, normalizeT212Positions, RH_ERC20_REGISTRY, type JoinedPortfolioInputs, type LiveResult } from "./live-data";
 
 import * as pnl from "./pnl";
 
@@ -10,7 +10,7 @@ const inputs = (): JoinedPortfolioInputs => ({
   t212Summary: live({ currency: "GBP", cashAvailable: 487, totalValue: 647, investmentsCurrentValue: 160 }),
   t212Positions: live([{
     ticker: "TEST_US_EQ", name: "Synthetic test equity", quantity: 2, averagePrice: 95,
-    currentPrice: 100, ppl: 8, currency: "USD", pplCurrency: "GBP", valueNative: 200, valueAccount: 160,
+    currentPrice: 100, ppl: 8, currency: "USD", pplCurrency: "GBP", valueNative: 200, costAccount: null, valueAccount: 160,
   }]),
   nfts: live([]), walletNative: live([]), walletTokens: live([]),
   fiatFx: live({ usdToThb: 36, gbpToThb: 45, eurToThb: 40, asOf: AS_OF }),
@@ -288,9 +288,76 @@ describe("required current-book fixture QA", () => {
 });
 
 describe("T212 P&L assembly", () => {
+  it("reconciles the CMCSA account-currency triple without changing its current value", () => {
+    const data = inputs();
+    data.fiatFx = live({ usdToThb: 33.025828, gbpToThb: 33.025828 / 0.739517, eurToThb: 40, asOf: AS_OF });
+    data.t212Positions = normalizeT212Positions([{
+      instrument: { ticker: "CMCSA_US_EQ", currency: "USD" },
+      quantity: 0.5, currentPrice: 25.16, averagePricePaid: 26.32,
+      walletImpact: { currency: "GBP", currentValue: 9.29, totalCost: 9.71, unrealizedProfitLoss: -0.42, fxImpact: 0.01 },
+    }], "GBP", AS_OF);
+    const book = buildJoinedPortfolio(data, AS_OF);
+    const row = book.t212.investments[0];
+    expect(row).toMatchObject({ basisStatus: "t212-live", pnlEligibility: "eligible" });
+    const rate = data.fiatFx.data!.gbpToThb! / data.fiatFx.data!.usdToThb!;
+    expect(row.valueUsd).toBe(9.29 * rate);
+    expect(row.valueUsd).toBeCloseTo(12.562253470846512, 12);
+    expect(row.costBasisUsd).toBe(9.71 * rate);
+    expect(row.pnlUsd).toBe(-0.42 * rate);
+    expect(Math.abs(row.valueUsd! - row.costBasisUsd! - row.pnlUsd!))
+      .toBeLessThanOrEqual(Number.EPSILON * 16 * row.costBasisUsd!);
+    expect(book.totals).toMatchObject({ costBasisUsd: row.costBasisUsd, pnlUsd: row.pnlUsd,
+      pnlCoverage: { eligible: 1, unreconciled: 0, notRecorded: 0 } });
+  });
+
+  it.each(["totalCost", "currentValue", "unrealizedProfitLoss"] as const)("does not flag incomplete cross-currency wallet data (%s) as unreconciled", (missing) => {
+    const data = inputs();
+    const walletImpact: Record<string, unknown> = { currency: "GBP", currentValue: 9.29, totalCost: 9.71, unrealizedProfitLoss: -0.42 };
+    delete walletImpact[missing];
+    data.t212Positions = normalizeT212Positions([{
+      instrument: { ticker: "CMCSA_US_EQ", currency: "USD" },
+      quantity: 0.5, currentPrice: 25.16, averagePricePaid: 26.32, walletImpact,
+    }], "GBP", AS_OF);
+    const book = buildJoinedPortfolio(data, AS_OF);
+    expect(book.t212.investments[0]).toMatchObject({ basisStatus: "not-recorded", pnlEligibility: "not-recorded", costBasisUsd: null, pnlUsd: null });
+    expect(book.totals.pnlCoverage).toMatchObject({ eligible: 0, notRecorded: 1, unreconciled: 0 });
+  });
+
+  it.each([null, 10, 0, 5])("preserves same-currency fallback when walletImpact is absent (ppl %s)", (apiPnl) => {
+    const position = normalizeT212Positions([{
+      ticker: "LEGACY_US_EQ", quantity: 1, averagePrice: 90, currentPrice: 100, currencyCode: "USD", ppl: apiPnl,
+    }], "USD", AS_OF).data![0];
+    expect(position).toMatchObject({ valueAccount: null, costAccount: null });
+    expect(pnl.deriveT212Pnl(position, inputs().fiatFx.data, "USD")).toMatchObject({
+      valueUsd: 100, costBasisUsd: 90, pnlUsd: apiPnl ?? 10,
+      pnlEligibility: apiPnl === null || apiPnl === 10 ? "eligible" : "unreconciled",
+    });
+  });
+
+  it("uses a complete wallet triple even when instrument cost and currency are unavailable", () => {
+    const position = { ...inputs().t212Positions.data![0], costAccount: 152, averagePrice: null, currency: null };
+    expect(pnl.deriveT212Pnl(position, inputs().fiatFx.data, "GBP"))
+      .toMatchObject({ valueUsd: 200, costBasisUsd: 190, pnlUsd: 10, pnlEligibility: "eligible" });
+  });
+
+  it.each([null, "JPY"])("leaves an unconvertible API P&L currency %s not recorded", (pplCurrency) => {
+    const position = { ...inputs().t212Positions.data![0], valueAccount: null, costAccount: 152, pplCurrency };
+    expect(pnl.deriveT212Pnl(position, inputs().fiatFx.data, "GBP"))
+      .toMatchObject({ valueUsd: 200, costBasisUsd: null, pnlUsd: null, pnlEligibility: "not-recorded" });
+  });
+
+  it.each([5, 9.99])("preserves genuinely inconsistent same-currency wallet triples (ppl %s)", (apiPnl) => {
+    const position = normalizeT212Positions([{
+      instrument: { ticker: "INCONSISTENT_US_EQ", currency: "USD" }, quantity: 1, currentPrice: 100, averagePricePaid: 90,
+      walletImpact: { currency: "USD", currentValue: 100, totalCost: 90, unrealizedProfitLoss: apiPnl },
+    }], "USD", AS_OF).data![0];
+    expect(pnl.deriveT212Pnl(position, inputs().fiatFx.data, "USD"))
+      .toMatchObject({ valueUsd: 100, costBasisUsd: 90, pnlUsd: apiPnl, pnlEligibility: "unreconciled" });
+  });
+
   it("keeps API P&L but excludes a non-reconciling quote from aggregate eligibility", () => {
     const data = inputs();
-    data.t212Positions.data![0].ppl = 12;
+    Object.assign(data.t212Positions.data![0], { currency: "GBP", averagePrice: 76, currentPrice: 80, valueNative: 160, costAccount: 152, ppl: 12 });
     expect(buildJoinedPortfolio(data, AS_OF).t212.investments[0]).toMatchObject({
       basisStatus: "t212-live", costBasisUsd: 190, pnlUsd: 15, pnlEligibility: "unreconciled",
     });
@@ -298,7 +365,7 @@ describe("T212 P&L assembly", () => {
 
   it("falls back only when ppl is null and preserves an explicit zero", () => {
     const data = inputs();
-    data.t212Positions.data![0].ppl = null;
+    Object.assign(data.t212Positions.data![0], { currency: "GBP", averagePrice: 76, currentPrice: 80, valueNative: 160, ppl: null });
     expect(buildJoinedPortfolio(data, AS_OF).t212.investments[0].pnlUsd).toBe(10);
     data.t212Positions.data![0].ppl = 0;
     expect(buildJoinedPortfolio(data, AS_OF).t212.investments[0].pnlUsd).toBe(0);

@@ -119,9 +119,9 @@ describe("snapshot currency and value allocation", () => {
       t212Summary: live({ currency: "USD", cashAvailable: 100, totalValue: 101.5, investmentsCurrentValue: 1.5 }),
       t212Positions: live([
         { ticker: "BOUNDARY", name: "Boundary security", quantity: 1, averagePrice: 1, currentPrice: 1,
-          ppl: 0, currency: "USD", pplCurrency: "USD", valueNative: 1, valueAccount: 1 },
+          ppl: 0, currency: "USD", pplCurrency: "USD", valueNative: 1, costAccount: null, valueAccount: 1 },
         { ticker: "SMALL", name: "Small security", quantity: 1, averagePrice: 0.5, currentPrice: 0.5,
-          ppl: 0, currency: "USD", pplCurrency: "USD", valueNative: 0.5, valueAccount: 0.5 },
+          ppl: 0, currency: "USD", pplCurrency: "USD", valueNative: 0.5, costAccount: null, valueAccount: 0.5 },
       ]),
       nfts: live([{ collection: "small-nft", collectionName: "Small NFT", tokenCount: 1, floorEth: 0.00025 }]),
       walletNative: live([{ chainId: 1, chainName: "Ethereum", symbol: "ETH", amount: 0.00025 }]),
@@ -152,7 +152,7 @@ describe("snapshot currency and value allocation", () => {
       t212Summary: live({ currency: "USD", cashAvailable: 10, totalValue: 160, investmentsCurrentValue: 100 }),
       t212Positions: live([
         { ticker: "STOCK", name: "Security", quantity: 1, averagePrice: 100, currentPrice: 100,
-          ppl: 0, currency: "USD", pplCurrency: "USD", valueNative: 100, valueAccount: 100 },
+          ppl: 0, currency: "USD", pplCurrency: "USD", valueNative: 100, costAccount: null, valueAccount: 100 },
       ]),
       nfts: live([]), walletNative: live([]), walletTokens: live([]), fiatFx: live(fx), ethPrice: live(2_400),
     }, DATE);

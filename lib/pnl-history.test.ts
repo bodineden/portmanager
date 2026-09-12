@@ -40,7 +40,7 @@ describe("daily snapshot recorder", () => {
     const book = portfolio({
       t212Summary: live({ currency: "GBP", totalValue: 9.62, cashAvailable: 0.28, investmentsCurrentValue: 9.34 }),
       t212Positions: live([{ ticker: "CMCSA_US_EQ", name: "Comcast", quantity: 0.5, averagePrice: 26.32,
-        currentPrice: 25.25, ppl: -0.37, currency: "USD", pplCurrency: "GBP", valueNative: 12.625, valueAccount: 9.34 }]),
+        currentPrice: 25.25, ppl: -0.37, currency: "USD", pplCurrency: "GBP", valueNative: 12.625, costAccount: null, valueAccount: 9.34 }]),
       manualHoldings: live([{ id: "opening", label: "T212 cash pot", kind: "cash", currency: "GBP", amount: 2000, recordedAt: DATE, createdAt: DATE }]),
       capitalEvents: live([{ occurredAt: DATE, kind: "contribution", amountThb: 120000 }]),
       fiatFx: live({ usdToThb: 33.003871, gbpToThb: 44.6154, eurToThb: null, asOf: DATE }), ethPrice: live(2578.15),

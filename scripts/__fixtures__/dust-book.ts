@@ -1,4 +1,5 @@
-import { buildJoinedPortfolio, type JoinedPortfolioInputs, type LiveResult, type NormalizedT212Position } from "../../lib/live-data";
+import { buildJoinedPortfolio, normalizeT212Positions, type JoinedPortfolioInputs, type LiveResult, type NormalizedT212Position } from "../../lib/live-data";
+import browserFixture from "./pnl-browser.json";
 import type { AcquisitionEvidence } from "../../lib/pnl";
 
 const AS_OF = "2026-09-05T12:00:00.000Z";
@@ -9,7 +10,7 @@ const unavailable = <T>(): LiveResult<T> => ({ data: null, state: { status: "una
 
 function position(ticker: string, value: number | null): NormalizedT212Position {
   return { ticker, name: ticker, quantity: 1, averagePrice: 0.5, currentPrice: value,
-    ppl: value === null ? null : value - 0.5, currency: "USD", pplCurrency: "USD", valueNative: value, valueAccount: value };
+    ppl: value === null ? null : value - 0.5, currency: "USD", pplCurrency: "USD", valueNative: value, costAccount: null, valueAccount: value };
 }
 
 function evidence(chainId: number, assetId: string, quantityRaw: string, decimals: number, native = false): AcquisitionEvidence {
@@ -53,7 +54,14 @@ export function dustBook(scenario: string) {
       [`token:1:${TOKEN}`]: evidence(1, TOKEN, "1000000000000000000", 18),
     },
   };
-  if (scenario === "empty") {
+  if (scenario === "unreconciled") {
+    inputs.t212Summary = live({ currency: "USD", totalValue: 100, cashAvailable: 0, investmentsCurrentValue: 100 });
+    inputs.t212Positions = normalizeT212Positions(browserFixture.unreconciledT212Positions, "USD", AS_OF);
+    inputs.nfts = live([]);
+    inputs.walletNative = live([]);
+    inputs.walletTokens = live([]);
+    inputs.manualHoldings = live([]);
+  } else if (scenario === "empty") {
     inputs.t212Positions.data = inputs.t212Positions.data!.slice(1);
     inputs.t212Summary = live({ currency: "USD", totalValue: 0.999, cashAvailable: 0, investmentsCurrentValue: 0.999 });
     inputs.nfts.data = inputs.nfts.data!.slice(1);

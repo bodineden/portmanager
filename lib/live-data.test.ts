@@ -254,7 +254,7 @@ describe("buildJoinedPortfolio", () => {
     inputs.t212Positions = live(values.map((value, index) => ({
       ticker: `POSITION_${index}`, name: `Position ${index}`, quantity: 1, averagePrice: 1,
       currentPrice: value, ppl: value === null ? null : value - 1, currency: "USD", pplCurrency: "USD",
-      valueNative: value, valueAccount: value,
+      valueNative: value, costAccount: null, valueAccount: value,
     })));
     inputs.nfts = live(values.map((value, index) => ({
       collection: `collection-${index}`, collectionName: `Collection ${index}`, tokenCount: 1,
@@ -307,7 +307,7 @@ describe("buildJoinedPortfolio", () => {
     const inputs = fixtureInputs();
     inputs.t212Summary = live({ currency: "USD", cashAvailable: 5, totalValue: 5.25, investmentsCurrentValue: 0.25 });
     inputs.t212Positions = live([{ ticker: "SMALL", name: "Small", quantity: 1, averagePrice: 0,
-      currentPrice: 0.25, ppl: 0.25, currency: "USD", pplCurrency: "USD", valueNative: 0.25, valueAccount: 0.25 }]);
+      currentPrice: 0.25, ppl: 0.25, currency: "USD", pplCurrency: "USD", valueNative: 0.25, costAccount: null, valueAccount: 0.25 }]);
     inputs.nfts = live([{ collection: "small", collectionName: "Small", tokenCount: 1, floorEth: 0.0001 },
       { collection: "unknown", collectionName: "Unknown", tokenCount: 1, floorEth: null }]);
     inputs.walletNative = live([{ chainId: 1, chainName: "Ethereum", symbol: "ETH", amount: 0.0001 }]);
@@ -336,7 +336,7 @@ describe("buildJoinedPortfolio", () => {
     inputs.walletNative = live([{ chainId: 1, chainName: "Ethereum", symbol: "ETH", amount: 1 }]);
     inputs.walletTokens = live([]);
     inputs.t212Positions = live([{ ticker: "UNKNOWN", name: "Unknown", quantity: 1, averagePrice: null,
-      currentPrice: null, ppl: null, currency: "GBP", pplCurrency: "GBP", valueNative: null, valueAccount: null }]);
+      currentPrice: null, ppl: null, currency: "GBP", pplCurrency: "GBP", valueNative: null, costAccount: null, valueAccount: null }]);
     const portfolio = buildJoinedPortfolio(inputs, AS_OF);
     expect(portfolio.wallet.native).toMatchObject([{ chainId: 1, valueUsd: null }]);
     expect(portfolio.t212.investments).toMatchObject([{ ticker: "UNKNOWN", valueUsd: null }]);
@@ -416,7 +416,7 @@ describe("buildJoinedPortfolio", () => {
         currency: "GBP",
         pplCurrency: "GBP",
         valueNative: 20,
-        valueAccount: 20,
+        costAccount: null, valueAccount: 20,
       },
       {
         ticker: "USD_EQ",
@@ -428,7 +428,7 @@ describe("buildJoinedPortfolio", () => {
         currency: "USD",
         pplCurrency: null,
         valueNative: 2,
-        valueAccount: null,
+        costAccount: null, valueAccount: null,
       },
       {
         ticker: "EUR_EQ",
@@ -440,7 +440,7 @@ describe("buildJoinedPortfolio", () => {
         currency: "EUR",
         pplCurrency: null,
         valueNative: 6,
-        valueAccount: null,
+        costAccount: null, valueAccount: null,
       },
     ]);
 
@@ -457,7 +457,7 @@ describe("buildJoinedPortfolio", () => {
     inputs.t212Summary = live({ currency: "USD", cashAvailable: 10, totalValue: 160.5, investmentsCurrentValue: 100.5 });
     inputs.t212Positions = live([100, 0.5].map((value, index) => ({
       ticker: `POSITION_${index}`, name: `Position ${index}`, quantity: 1, averagePrice: 0,
-      currentPrice: value, ppl: value, currency: "USD", pplCurrency: "USD", valueNative: value, valueAccount: value,
+      currentPrice: value, ppl: value, currency: "USD", pplCurrency: "USD", valueNative: value, costAccount: null, valueAccount: value,
     })));
     const portfolio = buildJoinedPortfolio(inputs, AS_OF);
     const withoutSmallRow = buildJoinedPortfolio({ ...inputs, t212Positions: live(inputs.t212Positions.data!.slice(0, 1)) }, AS_OF);
@@ -503,7 +503,7 @@ describe("buildJoinedPortfolio", () => {
     const inputs = fixtureInputs();
     inputs.t212Summary = live({ currency: "USD", cashAvailable: 0, totalValue: 0.999, investmentsCurrentValue: 0.999 });
     inputs.t212Positions = live([{ ticker: "SMALL", name: "Small", quantity: 1, averagePrice: 0,
-      currentPrice: 0.999, ppl: 0.999, currency: "USD", pplCurrency: "USD", valueNative: 0.999, valueAccount: 0.999 }]);
+      currentPrice: 0.999, ppl: 0.999, currency: "USD", pplCurrency: "USD", valueNative: 0.999, costAccount: null, valueAccount: 0.999 }]);
     inputs.nfts = live([{ collection: "small", collectionName: "Small", tokenCount: 1, floorEth: 0.999 / 2_000 }]);
     inputs.walletNative = live([{ chainId: 1, chainName: "Ethereum", symbol: "ETH", amount: 0.999 / 2_000 }]);
     inputs.walletTokens = live([{ chainId: 1, chainName: "Ethereum", symbol: "SMALL", name: "Small",
@@ -693,7 +693,7 @@ describe("Trading 212 normalisation", () => {
         currentPrice: 100,
         quantity: 2,
         instrument: { ticker: "TEST_US_EQ", name: "Test Plc", currency: "USD" },
-        walletImpact: { currency: "GBP", currentValue: 160, unrealizedProfitLoss: 8 },
+        walletImpact: { currency: "GBP", currentValue: 160, totalCost: 152, unrealizedProfitLoss: 8 },
       },
     ], "GBP", AS_OF);
 
@@ -710,6 +710,7 @@ describe("Trading 212 normalisation", () => {
         pplCurrency: "GBP",
         valueNative: 200,
         valueAccount: 160,
+        costAccount: 152,
       },
     ]);
   });
@@ -727,6 +728,7 @@ describe("Trading 212 normalisation", () => {
       ppl: 3,
       currency: "EUR",
       valueNative: 18,
+      costAccount: null,
     });
   });
 });

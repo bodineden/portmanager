@@ -40,6 +40,7 @@ export type NormalizedT212Position = {
   pplCurrency: string | null;
   valueNative: number | null;
   valueAccount: number | null;
+  costAccount: number | null;
 };
 
 export type JoinedT212Position = NormalizedT212Position & HoldingPnl & {
@@ -536,6 +537,7 @@ export function normalizeT212Positions(
       pplCurrency: walletCurrency,
       valueNative: currentPrice === null ? null : currentPrice * quantity,
       valueAccount: nonNegativeNumber(walletImpact.currentValue),
+      costAccount: nonNegativeNumber(walletImpact.totalCost),
     });
   }
 
