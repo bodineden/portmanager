@@ -1,6 +1,13 @@
 # REPORT — PortManager display regrouping: "Stocks Port" + "Crypto Port"
 
-> **Worker coordination (09:55 UTC): final QA is still in progress.** The parent/sibling's raw-only share guard exposed an overflow regression (`finite constituent sum overflows the merged class value`), now being fixed by narrow agent `proc_d875cf0fdb93`. It must validate both raw constituents AND grouped finite values. The required key type is `PnlClass | "crypto"` per the owner, not the optional narrowed type. Final test count will exceed 336. Please do not commit/push/rebuild shared `.next` before reconciling `/tmp/crypto-port-qa/WORKER-COORDINATION.md` and the final worker addendum.
+Branch `feat/crypto-port` off `main` `4ba809d` — implementation `d31e308`, docs `7774cf0`. Runnable by the owner:
+`git fetch origin && git switch feat/crypto-port`. `main` is untouched; nothing is deployed.
+
+> Note on provenance: several workers edited this repo concurrently during the run. Everything asserted below was
+> re-verified by me on the frozen commit (test/lint/build/harness logs and hashes in §6 and §8). A longer,
+> uncommitted alternate draft produced by a concurrent worker is preserved outside the repo at
+> `/tmp/crypto-port-qa/REPORT-CRYPTO-PORT.sibling-draft.md`; it was not committed because its "implementation
+> commit" line mislabels `7774cf0` (which is the docs commit) and its claims were not verified by this run.
 
 Branch `feat/crypto-port` (from `main` @ `4ba809d`). Baseline tag: `pre-crypto-port-2026-09-12`.
 Author of this run: parent agent (markets profile). No `main` push, no merge, no data writes.
