@@ -20,11 +20,11 @@ export function PnlAssetTable({ portfolio, previousHoldings = null }: { portfoli
   ].filter((row) => !shouldSuppressHolding(row));
   const hasPnl = totals.pnlCoverage.eligible > 0;
   return <section className="panel pnl-assets">
-    <div className="panel-header"><div><p className="eyebrow">VALUE &amp; RECORDED BASIS</p><h2 className="panel-title">Per-asset P&amp;L</h2></div><span className="panel-count">{rows.length} holdings · all rows</span></div>
+    <div className="panel-header"><div><p className="eyebrow">VALUE &amp; RECORDED BASIS</p><h2 className="panel-title">Per-asset P&amp;L</h2></div><span className="panel-count">{rows.length} holdings to display</span></div>
     <p className="pnl-panel-note">Recorded basis only. Cash has no P&amp;L. Unreconciled holdings are excluded from P&amp;L totals. Basis is not a tax-cost figure.</p>
-    {rows.length === 0 ? <div className="home-empty"><strong>{totals.pnlCoverage.sourcesComplete ? "No holdings in this snapshot" : "Holdings unavailable — P&L coverage is incomplete"}</strong><p>No recorded cost basis is available to display. Missing source data is never treated as an empty account.</p></div> :
+    {rows.length === 0 ? <div className="home-empty"><strong>{totals.pnlCoverage.sourcesComplete ? "No holdings to display in this snapshot." : "Holdings unavailable — P&L coverage is incomplete"}</strong><p>No recorded cost basis is available to display. Missing source data is never treated as an empty account.</p></div> :
       <div className="table-scroll"><table className="data-table pnl-asset-table">
-        <caption className="sr-only">Every joined holding with current value, basis provenance and unrealized P&amp;L; USD first, THB secondary. Day is holding value change, not a return; quantity changes and internal transfers may affect it.</caption>
+        <caption className="sr-only">Holdings with current value, basis provenance and unrealized P&amp;L; USD first, THB secondary. Day is holding value change, not a return; quantity changes and internal transfers may affect it.</caption>
         <thead><tr><th>Asset / quantity</th><th className="numeric">Current value · USD</th><th className="numeric">Cost basis · USD</th><th className="numeric">P&amp;L · USD / %</th><th className="numeric">Day</th><th>Basis status / eligibility</th></tr></thead>
         <tbody>{rows.map((row) => {
           const unknown = row.basisStatus === "not-recorded";

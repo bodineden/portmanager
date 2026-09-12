@@ -4,6 +4,7 @@ import MascotCompanion from "../mascot-companion";
 import { deriveMascotState } from "@/lib/mascot";
 import { readPortfolioSnapshotHistory } from "@/lib/pnl-history";
 import { WalletAssetRegistry } from "./wallet-asset-registry";
+import { WalletInventorySnapshot } from "../wallet-inventory-snapshot";
 import {
   formatCurrency,
   formatEth,
@@ -174,6 +175,7 @@ export default async function AssetListPage() {
             </article>
           </section>
 
+          <WalletInventorySnapshot portfolio={portfolio} />
           <section className="panel asset-live-panel asset-wallet-panel" aria-label="Wallet asset registry">
             <WalletAssetRegistry
               nativeRows={walletNativeRows}
@@ -254,7 +256,7 @@ export default async function AssetListPage() {
               <div className="asset-empty-state is-partial">
                 <span className="asset-empty-code">T212 / !</span>
                 <div>
-                  <strong>No complete positions available</strong>
+                  <strong>No positions to display.</strong>
                   <p>{portfolio.sources.t212Positions.message}</p>
                 </div>
               </div>
@@ -262,8 +264,8 @@ export default async function AssetListPage() {
               <div className="asset-empty-state">
                 <span className="asset-empty-code">T212 / 00</span>
                 <div>
-                  <strong>No positions yet</strong>
-                  <p>Stocks/ETFs you buy in T212 appear here live. Cash is already represented in the account summary above.</p>
+                  <strong>No positions to display.</strong>
+                  <p>Account cash and investment values are represented in the summary above.</p>
                 </div>
               </div>
             ) : (
@@ -339,8 +341,8 @@ export default async function AssetListPage() {
               <div className="asset-empty-state">
                 <span className="asset-empty-code">NFT / 00</span>
                 <div>
-                  <strong>No NFT collections found</strong>
-                  <p>The connected Robinhood Chain wallet currently has no collection holdings to display.</p>
+                  <strong>No NFT collections to display.</strong>
+                  <p>Collection values are represented in the portfolio summary.</p>
                 </div>
               </div>
             ) : (

@@ -146,7 +146,40 @@ async function assertWalletRows(panel, usdColumn) {
   return `${rows.length} priced wallet rows in native/token order`;
 }
 
-async function assertWalletTotals(panel, usdColumn, thbColumn, expected = null) {
+async function readWalletInventoryExpectation(page) {
+  const snapshot = page.locator('script[type="application/json"][data-wallet-inventory]');
+  requireCondition(await snapshot.count() === 1, "same-page wallet inventory snapshot is missing or duplicated");
+  const sources = JSON.parse(await snapshot.textContent());
+  requireCondition(Array.isArray(sources) && sources.length === 2, "wallet inventory must contain native and token sources");
+  for (const source of sources) {
+    requireCondition(["live", "partial", "unavailable"].includes(source.status) && Array.isArray(source.rows), "wallet inventory source is malformed");
+    for (const row of source.rows) {
+      requireCondition(Number.isFinite(row.amount), "wallet inventory amount is not finite");
+      for (const key of ["valueUsd", "valueThb"]) requireCondition(row[key] === null || Number.isFinite(row[key]), `wallet inventory ${key} is neither finite nor null`);
+    }
+  }
+  const fullTotal = (key) => {
+    const subtotals = sources.map((source) => {
+      if (source.status === "unavailable") return null;
+      const positive = source.rows.filter((row) => row.amount > 0);
+      if (positive.length === 0) return source.status === "live" ? 0 : null;
+      const known = positive.map((row) => row[key]).filter((value) => value !== null);
+      return known.length ? known.reduce((sum, value) => sum + value, 0) : null;
+    });
+    if (subtotals.every((value) => value === 0)) return 0;
+    const known = subtotals.filter((value) => value !== null);
+    return known.some((value) => value > 0) ? known.reduce((sum, value) => sum + value, 0) : null;
+  };
+  return {
+    rows: sources.flatMap((source) => source.rows.map((row) => source.status !== "unavailable" && row.amount > 0
+      ? row : { valueUsd: null, valueThb: null })),
+    totalUsd: fullTotal("valueUsd"), totalThb: fullTotal("valueThb"),
+  };
+}
+
+async function assertWalletTotals(panel, usdColumn, thbColumn, expected) {
+  requireCondition(expected && Array.isArray(expected.rows), "full joined wallet inventory expectation is required");
+  for (const key of ["totalUsd", "totalThb"]) requireCondition(expected[key] === null || Number.isFinite(expected[key]), `full joined wallet ${key} is neither finite nor null`);
   const table = panel.locator("table");
   if (await table.count() === 0) return;
   const rows = await table.locator("tbody tr[data-wallet-kind]").evaluateAll((elements) => elements.map((element) =>
@@ -156,31 +189,62 @@ async function assertWalletTotals(panel, usdColumn, thbColumn, expected = null) 
   for (const [column, totalIndex, label] of [[usdColumn, totalCells.length - 2, "USD"], [thbColumn, totalCells.length - 1, "THB"]]) {
     const values = rows.map((cells) => parseDisplayedUsd(cells[column]));
     const total = parseDisplayedUsd(totalCells[totalIndex]);
-    if (expected) {
-      const fullTotal = label === "USD" ? expected.totalUsd : expected.totalThb;
-      const formatted = label === "USD" ? expectedUsd(fullTotal) : expectedThb(fullTotal);
-      requireCondition(compactText(totalCells[totalIndex]) === formatted, `${label} wallet total differs from the full joined inventory`);
-    }
+    const fullTotal = label === "USD" ? expected.totalUsd : expected.totalThb;
+    const formatted = label === "USD" ? expectedUsd(fullTotal) : expectedThb(fullTotal);
+    requireCondition(compactText(totalCells[totalIndex]) === formatted, `${label} wallet total differs from the full joined inventory`);
     if (values.some((value) => value === null)) {
       requireCondition(total === null, `${label} wallet total invents a value despite unavailable conversion`);
     } else if (total !== null) {
       const sum = values.reduce((result, value) => result + value, 0);
-      requireCondition(total - sum >= -(rows.length + 1) * 0.005 - 0.000001, `${label} wallet total ${total} omits displayed holdings worth ${sum}`);
-      if (expected) {
-        const key = label === "USD" ? "valueUsd" : "valueThb";
-        const suppressed = expected.rows.filter((row) => !Number.isFinite(row.valueUsd) || row.valueUsd < 1);
-        const knownSuppressed = suppressed.filter((row) => Number.isFinite(row[key]));
-        requireCondition(knownSuppressed.every((row) => row.valueUsd >= 0 && row.valueUsd < 1), "a suppressed known holding is outside the strict sub-$1 boundary");
-        const suppressedSum = knownSuppressed.reduce((result, row) => result + row[key], 0);
-        requireCondition(Math.abs(total - sum - suppressedSum) <= (rows.length + 1) * 0.005 + 0.000001,
-          `${label} total/displayed difference ${total - sum} differs from suppressed holdings ${suppressedSum}`);
-        if (suppressedSum > 0) requireCondition(rows.length < expected.rows.length && total > sum,
-          `${label} displayed rows are not a strict subset of the full nonzero total`);
-      }
+      const key = label === "USD" ? "valueUsd" : "valueThb";
+      const suppressed = expected.rows.filter((row) => !Number.isFinite(row.valueUsd) || row.valueUsd < 1);
+      const knownSuppressed = suppressed.filter((row) => Number.isFinite(row[key]));
+      requireCondition(knownSuppressed.every((row) => row.valueUsd >= 0 && row.valueUsd < 1), "a suppressed known holding is outside the strict sub-$1 boundary");
+      const suppressedSum = knownSuppressed.reduce((result, row) => result + row[key], 0);
+      requireCondition(Math.abs(total - sum - suppressedSum) <= (rows.length + 1) * 0.005 + 0.000001,
+        `${label} total/displayed difference ${total - sum} differs from suppressed holdings ${suppressedSum}`);
+      const displayedRawSum = expected.rows.filter((row) => Number.isFinite(row.valueUsd) && row.valueUsd >= 1)
+        .reduce((result, row) => result + (row[key] ?? 0), 0);
+      if (suppressedSum > 0) requireCondition(rows.length < expected.rows.length && fullTotal >= displayedRawSum,
+        `${label} displayed rows are not a strict subset of the full nonzero total`);
     } else {
       requireCondition(await panel.locator(".is-unavailable").count() > 0, `${label} wallet total is unknown despite complete priced rows`);
     }
   }
+}
+
+async function assertWalletTotalNegativeControls(page, surface) {
+  const panel = page.locator(surface === "home" ? ".home-wallet-panel" : ".asset-wallet-panel");
+  const usdColumn = surface === "home" ? 4 : 5;
+  const thbColumn = usdColumn + 1;
+  const expected = await readWalletInventoryExpectation(page);
+  await assertWalletTotals(panel, usdColumn, thbColumn, expected);
+  for (const [key, footerOffset, formatter] of [["valueUsd", 2, expectedUsd], ["valueThb", 1, expectedThb]]) {
+    const totalKey = key === "valueUsd" ? "totalUsd" : "totalThb";
+    const known = expected.rows.find((row) => row.valueUsd > 0 && row.valueUsd < 1 && Number.isFinite(row[key]));
+    requireCondition(known && known[key] > 0, "wallet negative control requires a known positive suppressed holding");
+    requireCondition(expected.rows.some((row) => row.valueUsd === null), "wallet negative control requires a null-valued holding");
+    const footer = panel.locator("tfoot td");
+    const cell = footer.nth(await footer.count() - footerOffset);
+    const original = await cell.innerHTML();
+    const displayedSum = expected.rows.filter((row) => Number.isFinite(row.valueUsd) && row.valueUsd >= 1)
+      .reduce((sum, row) => sum + row[key], 0);
+    for (const [name, wrongTotal] of [["inflated by 1,000,000", displayedSum + 1_000_000], ["missing a known suppressed holding", expected[totalKey] - known[key]]]) {
+      let rejection = "";
+      try {
+        await cell.evaluate((element, value) => { element.textContent = value; }, formatter(wrongTotal));
+        await assertWalletTotals(panel, usdColumn, thbColumn, await readWalletInventoryExpectation(page));
+      } catch (error) {
+        rejection = error instanceof Error ? error.message : String(error);
+      } finally {
+        await cell.evaluate((element, html) => { element.innerHTML = html; }, original);
+      }
+      requireCondition(rejection === `${key === "valueUsd" ? "USD" : "THB"} wallet total differs from the full joined inventory`,
+        `${key} footer ${name} was not rejected by the live full-inventory equality: ${rejection || "accepted"}`);
+    }
+  }
+  await assertWalletTotals(panel, usdColumn, thbColumn, await readWalletInventoryExpectation(page));
+  return "USD and THB: displayed sum + 1,000,000 and omission of one known $0.999 holding both rejected; null holding contributes nothing; original footer restored";
 }
 
 async function readHomeWalletSummaryCount(page) {
@@ -525,17 +589,17 @@ async function checkHomeContract(page) {
     return `${nativeCount} native + ${tokenCount} tokens = header and hero counts`;
   });
 
-  await check("H3 home wallet full totals cover displayed rows and remain stable", async () => {
+  await check("H3 home wallet totals equal the full joined inventory and remain stable", async () => {
     const panel = page.locator(".home-wallet-panel");
     const rowsBefore = await panel.locator("tr[data-wallet-kind]").allTextContents();
     const totalsBefore = await panel.locator("tfoot").allTextContents();
-    await assertWalletTotals(panel, 4, 5);
+    await assertWalletTotals(panel, 4, 5, await readWalletInventoryExpectation(page));
     const overflow = await page.evaluate(() => Math.max(document.documentElement.scrollWidth, document.body.scrollWidth) - document.documentElement.clientWidth);
     requireCondition(overflow <= 1, `wallet creates ${overflow}px of horizontal body overflow`);
     requireCondition(JSON.stringify(await panel.locator("tr[data-wallet-kind]").allTextContents()) === JSON.stringify(rowsBefore), "wallet rows changed during the read-only audit");
     await assertNoSuppressionTrace(page);
     requireCondition(JSON.stringify(await panel.locator("tfoot").allTextContents()) === JSON.stringify(totalsBefore), "wallet totals changed during the read-only audit");
-    return `${rowsBefore.length} displayed rows; full USD/THB totals cover their values`;
+    return `${rowsBefore.length} displayed rows; USD/THB totals equal the independently summed full inventory`;
   });
 
   await check("home wallet rows keep native/token order and exclude unknown current values", async () => {
@@ -578,14 +642,14 @@ async function checkAssetWalletContract(page) {
     requireCondition(match && parseGroupedCount(match[1], "registry wallet count") === rowCount, "registry wallet summary differs from displayed rows");
     requireCondition(compactText((await panel.locator(".asset-wallet-count .panel-count").textContent()) ?? "") === `${rowCount} ASSETS`, "registry header differs from displayed rows");
     await assertWalletRows(panel, 5);
-    await assertWalletTotals(panel, 5, 6);
+    await assertWalletTotals(panel, 5, 6, await readWalletInventoryExpectation(page));
     if (rowCount === 0) {
       requireCondition(await panel.locator(".asset-wallet-table").count() === 0, "empty registry renders a holding table");
       requireCondition(compactText(await panel.locator(".asset-empty-state strong").innerText()) === "No wallet holdings to display in this snapshot.", "registry neutral empty copy changed");
     }
     requireCondition(JSON.stringify(await panel.locator("tr[data-wallet-kind]").allTextContents()) === JSON.stringify(rowsBefore), "registry rows changed during the read-only audit");
     requireCondition(JSON.stringify(await panel.locator("tfoot").allTextContents()) === JSON.stringify(totalsBefore), "registry totals changed during the read-only audit");
-    return `${rowCount} displayed rows = registry header and summary; full USD/THB totals cover their values`;
+    return `${rowCount} displayed rows = registry header and summary; USD/THB totals equal the independently summed full inventory`;
   });
 
   await check("asset-list wallet rows keep native/token order and exclude unknown current values", async () => {
@@ -1580,6 +1644,10 @@ async function auditDustFixtures(browser, fixtureUrl, viewport) {
           await assertWalletTotals(wallet, surface === "home" ? 4 : 5, surface === "home" ? 5 : 6, {
             rows: [...portfolio.wallet.native, ...portfolio.wallet.tokens], totalUsd: portfolio.totals.walletUsd, totalThb: portfolio.totals.walletThb,
           });
+          const liveExpectation = await readWalletInventoryExpectation(page);
+          requireCondition(liveExpectation.totalUsd === portfolio.totals.walletUsd && liveExpectation.totalThb === portfolio.totals.walletThb,
+            "same-page full inventory sums differ from joined wallet totals/null semantics");
+          await assertWalletTotals(wallet, surface === "home" ? 4 : 5, surface === "home" ? 5 : 6, liveExpectation);
         });
         await check(`${label} pins independent totals, boundary, cash exemption and outage behavior`, async () => {
           const expectedMarketCount = ["empty", "wholesale", "fiat-outage"].includes(scenario) ? 0 : scenario === "failed" ? 1 : scenario === "eth-outage" ? 2 : 4;
@@ -1604,7 +1672,7 @@ async function auditDustFixtures(browser, fixtureUrl, viewport) {
             const cash = await page.locator('[data-manual-cash="true"] [data-pnl-cell="value"]').evaluateAll((cells) => cells.map((cell) => cell.firstChild?.textContent ?? ""));
             requireCondition(JSON.stringify(cash.map(parseDisplayedUsd)) === JSON.stringify(expectedCash), "manual quarter/zero cash pot exemption changed");
             requireCondition(await page.locator('.pnl-assets tbody tr').count() === expectedMarketCount + expectedCash.length, "P&L table lost cash exemption or reintroduced market rows");
-            requireCondition(compactText(await page.locator(".pnl-assets .panel-count").innerText()) === `${expectedMarketCount + expectedCash.length} holdings · all rows`,
+            requireCondition(compactText(await page.locator(".pnl-assets .panel-count").innerText()) === `${expectedMarketCount + expectedCash.length} holdings to display`,
               "P&L holdings count includes suppressed market rows or omits manual cash");
           }
           if (scenario === "mixed" || scenario === "inventory") {
@@ -1640,12 +1708,28 @@ async function auditDustFixtures(browser, fixtureUrl, viewport) {
             requireCondition(Object.values(portfolio.sources).every((source) => source.status === "live"), "all-small mixed pricing book invents incomplete sources");
             requireCondition(portfolio.totals.pnlCoverage.status === "complete" && portfolio.totals.pnlCoverage.eligible === 0, "known zero displayed holdings invented partial coverage");
             requireCondition(!/(?:under|below)\s+\$1|hidden under|(?:wallet|asset) filter/i.test(await renderedText(page)), "all-small/unknown page exposes threshold or wallet-filter copy");
+            const text = await renderedText(page);
+            for (const claim of ["No holdings in this snapshot", "No positions yet", "No NFT collections found"]) {
+              requireCondition(!text.includes(claim), `all-suppressed inventory falsely claims ${claim}`);
+            }
+            requireCondition(text.includes("No positions to display."), "all-suppressed securities lack neutral empty copy");
+            if (surface === "home") {
+              requireCondition(compactText(await page.locator(".pnl-assets .home-empty strong").innerText()) === "No holdings to display in this snapshot.", "all-suppressed P&L lacks neutral empty copy");
+              requireCondition(compactText(await page.locator('[data-book-pnl="available"] .pnl-metric-line > strong').innerText()) === expectedUsd(-0.254),
+                "all-suppressed book P&L omits the $3.996 full inventory value");
+            } else {
+              requireCondition(text.includes("No NFT collections to display."), "all-suppressed NFT registry lacks neutral empty copy");
+            }
           } else if (scenario === "wholesale" || scenario === "failed") {
             for (const key of ["nfts", "walletNative", "walletTokens"]) requireCondition(portfolio.sources[key].status === "unavailable", `${key} outage became a zero/live class`);
             for (const key of ["nftsUsd", "walletNativeUsd", "walletTokensUsd"]) requireCondition(portfolio.totals[key] === null, `${key} outage became zero`);
             requireCondition(portfolio.totals.pnlCoverage.sourcesComplete === false && portfolio.totals.pnlCoverage.status === "partial", "outage no longer makes coverage incomplete");
           }
         });
+        if (scenario === "mixed") {
+          await check(`${label} live wallet-total assertion rejects inflated and omitted-value footers`, async () =>
+            assertWalletTotalNegativeControls(page, surface));
+        }
         if (scenario === "eth-outage" || scenario === "fiat-outage") {
           await check(`${label} keeps unavailable conversion dependencies null and renders no zero valuation`, async () => {
             const ethOutage = scenario === "eth-outage";

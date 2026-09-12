@@ -104,7 +104,8 @@ describe("rendered per-asset P&L honesty (offline fixtures)", () => {
     const original = structuredClone(book);
     const html = markup(book);
     expect(rows(html)).toHaveLength(6);
-    expect(text(html)).toContain("6 holdings · all rows");
+    expect(text(html)).toContain("6 holdings to display");
+    expect(text(html)).not.toMatch(/all rows|Every joined holding/);
     expect(book.wallet.native).toHaveLength(2);
     expect(book.wallet.tokens).toHaveLength(4);
     for (const name of ["RECORDED", "FX-DIFFERENCE", "Unknown NFT", "NATIVE", "FREE", "PURCHASED"]) {

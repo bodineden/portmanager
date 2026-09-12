@@ -8,6 +8,7 @@ import { buildJoinedPortfolio, getJoinedPortfolio, type LiveResult } from "./liv
 import { createSnapshotRecorder } from "./pnl-history";
 import { shouldSuppressHolding } from "./dust-filter";
 import { observedNftFloors, oneUnpricedNft } from "./__fixtures__/nft-floors";
+import { dustBook } from "../scripts/__fixtures__/dust-book";
 
 vi.mock("./live-data", async (original) => ({ ...await original<typeof import("./live-data")>(), getJoinedPortfolio: vi.fn() }));
 vi.mock("./assets-db", async (original) => ({ ...await original<typeof import("./assets-db")>(), isNeonConfigured: () => false }));
@@ -67,6 +68,81 @@ beforeEach(() => vi.stubGlobal("React", React));
 afterEach(() => { vi.unstubAllGlobals(); vi.clearAllMocks(); });
 
 describe("render-only holding suppression", () => {
+  it.each(["all-suppressed", "genuinely-empty"] as const)("uses neutral empty-view copy for %s inventory while preserving full portfolio value and book P&L", async (scenario) => {
+    const portfolio = scenario === "all-suppressed" ? dustBook("empty") : buildJoinedPortfolio({
+      t212Summary: live({ currency: "USD", cashAvailable: 0, totalValue: 0, investmentsCurrentValue: 0 }),
+      t212Positions: live([]), nfts: live([]), walletNative: live([]), walletTokens: live([]), manualHoldings: live([]),
+      fiatFx: live({ usdToThb: 36, gbpToThb: 45, eurToThb: 40, asOf: AS_OF }), ethPrice: live(1000),
+      capitalEvents: live([{ occurredAt: AS_OF, kind: "contribution", amountThb: 153 }]),
+    }, AS_OF);
+    const original = structuredClone(portfolio);
+    const holdings = [...portfolio.t212.investments, ...portfolio.nfts, ...portfolio.wallet.native, ...portfolio.wallet.tokens];
+    const fullValueUsd = scenario === "all-suppressed" ? 3.996 : 0;
+    expect(holdings).toHaveLength(scenario === "all-suppressed" ? 7 : 0);
+    expect(holdings.filter((row) => !shouldSuppressHolding(row))).toHaveLength(0);
+    expect(holdings.reduce((sum, row) => sum + (row.valueUsd ?? 0), 0)).toBeCloseTo(fullValueUsd, 10);
+    expect(portfolio.totals.grandTotalUsd).toBeCloseTo(fullValueUsd, 10);
+    expect(portfolio.totals.grandTotalThb).toBeCloseTo(fullValueUsd * 36, 10);
+    expect(portfolio.totals.bookPnl!.pnlUsd).toBeCloseTo(fullValueUsd - 4.25, 10);
+    expect(portfolio.totals.bookPnl!.pnlThb).toBeCloseTo(fullValueUsd * 36 - 153, 10);
+    expect(portfolio.totals.pnlCoverage).toMatchObject({ totalHoldings: 0, eligible: 0, dust: 0, unpriced: 0, sourcesComplete: true });
+
+    vi.mocked(getJoinedPortfolio).mockResolvedValue(portfolio);
+    const home = renderToStaticMarkup(await Home());
+    const registry = renderToStaticMarkup(await AssetListPage());
+    for (const html of [home, registry]) {
+      expect(text(html)).not.toMatch(/No holdings in this snapshot|No positions yet|No NFT collections found|No complete positions available/);
+      expect(text(html)).not.toMatch(/dust|unpriced|hidden|filter|threshold|under \$1|all rows|Every joined holding/i);
+      expect(text(html)).toContain("No positions to display.");
+      expect(html).not.toMatch(/data-holding-id=|data-wallet-kind=/);
+    }
+    expect(text(home)).toContain("No holdings to display in this snapshot.");
+    expect(text(home)).toContain("0 holdings to display");
+    expect(text(home)).not.toContain("Holdings unavailable — P&L coverage is incomplete");
+    expect(text(registry)).toContain("No NFT collections to display.");
+    expect(text(registry)).toContain("Account cash and investment values are represented in the summary above.");
+    expect(text(registry)).toContain("Collection values are represented in the portfolio summary.");
+    expect(text(registry)).not.toMatch(/Live positions are unavailable|Live NFT collections are unavailable/);
+    const displayedValue = scenario === "all-suppressed" ? "US$4.00" : "US$0.00";
+    expect(home.match(/data-value-currency="USD">([^<]*)<\/strong>/)?.[1]).toBe(displayedValue);
+    expect(registry.match(/id="asset-registry-total"[^>]*>([^<]*)<\/h2>/)?.[1]).toBe(displayedValue);
+    const bookPnl = text(home.match(/<article[^>]*data-book-pnl="available"[\s\S]*?<\/article>/)![0]);
+    expect(bookPnl).toContain(scenario === "all-suppressed" ? "-US$0.25 -5.98%" : "-US$4.25 -100.00%");
+    expect(bookPnl).toContain(scenario === "all-suppressed" ? "฿-9.14 THB" : "฿-153.00 THB");
+    expect(bookPnl).toContain("Contributed capital ฿153.00");
+    expect(portfolio).toEqual(original);
+  });
+
+  it("keeps a partial securities source explanation with neutral copy when all positions are suppressed", async () => {
+    const portfolio = dustBook("empty");
+    portfolio.sources.t212Positions = { status: "partial", asOf: AS_OF, message: "Position pagination is incomplete." };
+    vi.mocked(getJoinedPortfolio).mockResolvedValue(portfolio);
+    const registry = renderToStaticMarkup(await AssetListPage());
+    expect(registry).toContain('class="asset-empty-state is-partial"');
+    expect(text(registry)).toContain("No positions to display. Position pagination is incomplete.");
+    expect(text(registry)).not.toContain("No complete positions available");
+    expect(portfolio.t212.investments).toHaveLength(2);
+  });
+
+  it("preserves unavailable inventory messages instead of using the neutral empty-view copy", async () => {
+    const unavailable = <T,>(): LiveResult<T> => ({ data: null, state: { status: "unavailable", asOf: null, message: "Provider request failed." } });
+    vi.mocked(getJoinedPortfolio).mockResolvedValue(buildJoinedPortfolio({
+      t212Summary: unavailable(), t212Positions: unavailable(), nfts: unavailable(),
+      walletNative: unavailable(), walletTokens: unavailable(), fiatFx: unavailable(), ethPrice: unavailable(),
+      manualHoldings: live([]), capitalEvents: live([]),
+    }, AS_OF));
+    const home = renderToStaticMarkup(await Home());
+    const registry = renderToStaticMarkup(await AssetListPage());
+    expect(text(home)).toContain("Holdings unavailable — P&L coverage is incomplete");
+    expect(text(home)).toContain("No recorded cost basis is available to display. Missing source data is never treated as an empty account.");
+    expect(text(home)).toContain("Open positions — Trading 212 positions unavailable");
+    expect(text(registry)).toContain("Live positions are unavailable Provider request failed.");
+    expect(text(registry)).toContain("Live NFT collections are unavailable Provider request failed.");
+    for (const html of [home, registry]) {
+      expect(text(html)).not.toMatch(/No holdings to display in this snapshot|No positions to display|No NFT collections to display/);
+    }
+  });
+
   it("keeps small holdings in hero/class totals and recorded inventory while every row and count shows the displayable subset", async () => {
     const portfolio = displayBoundaryBook();
     const allHoldings = [...portfolio.t212.investments, ...portfolio.nfts, ...portfolio.wallet.native, ...portfolio.wallet.tokens];
@@ -99,7 +175,8 @@ describe("render-only holding suppression", () => {
     expect(home).toContain('data-wallet-native-count="1" data-wallet-token-count="2"');
     expect(text(home)).toContain("1 NATIVE · 2 TOKENS");
     expect(text(home)).toContain("Open positions 1 Included in per-asset P&L");
-    expect(text(home)).toContain("6 holdings · all rows");
+    expect(text(home)).toContain("6 holdings to display");
+    expect(text(home)).not.toMatch(/all rows|Every joined holding/);
     expect(home).toContain('data-manual-cash="true"');
     expect(home).toContain("Operator cash");
     expect(home).toMatch(/data-value-class="nfts">[\s\S]*?<strong>US\$1\.50<\/strong>/);

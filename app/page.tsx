@@ -3,6 +3,7 @@ import { AppSidebar } from "./components/app-sidebar";
 import MascotCompanion from "./mascot-companion";
 import { deriveMascotState } from "@/lib/mascot";
 import { WalletBalancesPanel } from "./home-wallet-panel";
+import { WalletInventorySnapshot } from "./wallet-inventory-snapshot";
 import { PnlPerformance, PnlCalendar } from "./pnl-history-panels";
 import { PnlAssetTable } from "./pnl-asset-table";
 import { BookPnlMetric } from "./book-pnl-metric";
@@ -128,9 +129,10 @@ export default async function Home() {
           <section className="panel pnl-account-context">
             <div><p className="eyebrow">TRADING 212 / CASH &amp; POSITIONS</p><h2 className="panel-title">Account context</h2></div>
             <div><small>Cash available · no P&amp;L</small><strong>{formatUsd(snapshotFiatUsd(t212.cashAvailable, t212.currency, fx))}</strong><span>{formatCurrency(t212.cashAvailable, t212.currency)} · account currency</span></div>
-            <div><small>Open positions</small><strong>{sources.t212Positions.status === "unavailable" ? "—" : positionCount}</strong><span>{sources.t212Positions.status === "unavailable" ? "Trading 212 positions unavailable" : positionCount === 0 ? "No positions yet" : "Included in per-asset P&L"}</span></div>
+            <div><small>Open positions</small><strong>{sources.t212Positions.status === "unavailable" ? "—" : positionCount}</strong><span>{sources.t212Positions.status === "unavailable" ? "Trading 212 positions unavailable" : positionCount === 0 ? "No positions to display." : "Included in per-asset P&L"}</span></div>
             {sources.t212Summary.status === "unavailable" && <p>Trading 212 account summary unavailable. Cash and account totals remain blank.</p>}
           </section>
+          <WalletInventorySnapshot portfolio={portfolio} />
           <WalletBalancesPanel nativeRows={nativeRows} tokenRows={tokenRows} nativeSource={sources.walletNative} tokenSource={sources.walletTokens}
             walletSourcesComplete={sources.walletNative.status === "live" && sources.walletTokens.status === "live"}
             totalWalletUsd={formatUsd(totals.walletUsd)} totalWalletThb={formatThb(totals.walletThb)} />

@@ -2539,3 +2539,724 @@ Branch: feat/dust-removal
  scripts/ui-fixture-server.mjs            |   3 +
  21 files changed, 1201 insertions(+), 161 deletions(-)
 ```
+
+## Fix pass 3
+
+Completed on `feat/dust-removal` against reviewed commit `1d005d6` on 2026-09-12. This section supersedes the correction pass's empty-state copy and its claim that a live lower-bound wallet-total assertion sufficiently validates full inventory. Earlier report sections remain intact as an audit trail. Only the two findings in FIX-BRIEF-3.md are addressed. No push, operation on `main`, or `git add -A` was performed; only explicit fix/report paths were staged. Pre-existing untracked briefs, reports, screenshots and backups remain untouched.
+
+### Both findings, verbatim
+
+> "An empty rendered subset incorrectly implies empty inventory. Reproduced with dustBook('empty'): seven holdings remain, contributing $3.996, but P&L says 'No holdings in this snapshot'. Securities/NFT sections similarly claim no positions or collections."
+
+> "The correction weakens wallet-total validation to an unbounded lower-bound check. Live callers at lines 532 and 581 omit the optional full-inventory expectations. Reproduced: a $1 row with a $1,000,000 footer passes 1d005d6's helper; 1e1c263 rejects it. Stronger fixture checks do not restore the live assertion."
+
+### Copy changes
+
+- `app/pnl-asset-table.tsx`: `No holdings in this snapshot` becomes `No holdings to display in this snapshot.`; `N holdings · all rows` becomes `N holdings to display`; the accessible caption begins `Holdings with current value...` instead of `Every joined holding with current value...`.
+- `app/page.tsx`: `No positions yet` becomes `No positions to display.`.
+- `app/asset-list/page.tsx`: both `No positions yet` and the partial-inventory branch's `No complete positions available` become `No positions to display.`. The latter retains its actual source explanation. `Stocks/ETFs you buy in T212 appear here live. Cash is already represented in the account summary above.` becomes `Account cash and investment values are represented in the summary above.`.
+- `app/asset-list/page.tsx`: `No NFT collections found` becomes `No NFT collections to display.`; `The connected Robinhood Chain wallet currently has no collection holdings to display.` becomes `Collection values are represented in the portfolio summary.`.
+
+All genuinely unavailable branches are unchanged. New product copy contains no size, hiding, filtering, threshold or price-rule explanation. No control is added.
+
+### Restored live wallet assertion and negative controls
+
+`WalletInventorySnapshot` is rendered by Home and Asset List from the same `JoinedPortfolio` object used for the footer. Its inert `application/json` payload contains only each source's existing status and each full-inventory row's numeric amount, USD value and THB value (including nulls). It contains no aggregate expected total, holding identities, symbols, omission count, rule metadata, user-visible copy or control. Serialization escapes `<`. The browser harness independently calculates each source subtotal from positive-amount rows, excludes null values from known sums, preserves unavailable-source nulls, and combines classes with the existing rules: two known zeros are zero; a positive known subtotal may remain beside an unavailable class; a lone zero cannot disguise an unavailable class. No second live fetch or timestamp mismatch is involved.
+
+`assertWalletTotals` requires an expectation, and both live call sites provide that independent same-page expectation. Each USD/THB footer must exactly equal the formatted full-inventory sum. Additionally, `abs(footer - displayedSum - knownSuppressedSum) <= (displayedRows + 1) * 0.005 + 0.000001` bounds both sides of rounding error. There is no optional lower-bound-only path. The existing source-unavailable and null-conversion assertions remain intact.
+
+Four new browser checks cover desktop/mobile × Home/Asset List. Each starts with a valid mixed-book footer and a full inventory containing a known $0.999 holding and a null-valued holding. For each currency, it replaces the footer first with the displayed sum plus 1,000,000, then with the correct full total minus that known holding. Every corrupted footer must throw the exact full-inventory-equality error, for **16 required rejection assertions**. Each footer is restored in `finally`, then the original full-total assertion runs again. Independent fixture scalar totals are retained, and all seven source/valuation scenarios also reconcile the new same-page transport against the real joined builder.
+
+### Complete touched-assertion inventory
+
+No unrelated assertion or test case was removed. Every changed assertion and every added assertion is listed below, grouped where the same assertion is parameterized over currencies, sources, pages or scenarios.
+
+Existing unit assertions replaced:
+
+1. `lib/pnl-ui.test.ts`: `toContain("6 holdings · all rows")` → `toContain("6 holdings to display")`; adds rejection of `/all rows|Every joined holding/`.
+2. `lib/pnl-correctness-pages.test.ts`: the same header assertion receives the same replacement and added completeness-copy rejection. All existing market-row, full-value, allocation, cash, snapshot identity, source-state and outage assertions remain.
+
+Added render assertions in `lib/pnl-correctness-pages.test.ts`:
+
+3. Parameterized all-suppressed/genuinely-empty books require full inventory length 7/0, displayed inventory length 0, known inventory sum $3.996/$0, grand USD equal to that full sum, grand THB equal to that sum ×36, book P&L USD equal to full value minus $4.25, book P&L THB equal to full value minus ฿153, and coverage `{totalHoldings:0, eligible:0, dust:0, unpriced:0, sourcesComplete:true}`.
+4. Each rendered page rejects `No holdings in this snapshot`, `No positions yet`, `No NFT collections found`, and `No complete positions available`; rejects suppression/threshold/completeness wording; requires neutral positions copy; and rejects market-row DOM attributes.
+5. Home requires neutral P&L empty copy and `0 holdings to display`, and rejects unavailable P&L wording. Registry requires neutral NFT copy and both replacement explanatory sentences, and rejects unavailable positions/NFT wording.
+6. Both heroes require `US$4.00`/`US$0.00`. Home book P&L requires `-US$0.25 -5.98%`/`-US$4.25 -100.00%`, THB `฿-9.14`/`฿-153.00`, and contributed capital `฿153.00`. The portfolio must equal its clone after rendering.
+7. The partial-securities case requires the partial CSS state, neutral positions copy followed by the unchanged pagination explanation, absence of the old complete-positions claim, and retention of both joined positions.
+8. The unavailable case requires the exact existing P&L title and detail, Home positions wording, and Registry positions/NFT titles and provider explanation. Both pages must reject every new neutral empty title on this unavailable path.
+
+Browser assertion replacements/additions in `scripts/ui-contract-check.mjs`:
+
+9. Adds transport checks for exactly one same-page inventory payload, exactly two native/token sources, valid source status plus rows array, finite amount, and each USD/THB value finite or null.
+10. Adds helper preconditions requiring an expectation with a rows array and each expected currency total finite or explicitly null. These run even before an absent-table return.
+11. The existing formatted USD/THB full-inventory equality is moved out of `if (expected)` and becomes unconditional.
+12. The unbounded `total - sum >= -(rows.length + 1) * 0.005 - 0.000001` assertion is replaced by the existing symmetric suppressed-value reconciliation, now unconditional: `abs(total - sum - suppressedSum) <= (rows.length + 1) * 0.005 + 0.000001`.
+13. The existing known-suppressed strict-range check (`0 <= valueUsd < 1`) and exact suppressed-sum reconciliation are also mandatory for every known footer; their predicates/formula otherwise remain unchanged.
+14. The supplementary subset assertion `rows.length < expected.rows.length && total > sum` becomes `rows.length < expected.rows.length && fullTotal >= displayedRawSum`. It compares raw values so cents rounding or binary precision absorbing a tiny positive addition does not create a false failure. Exact formatted full-total equality and symmetric rounding reconciliation remain mandatory.
+15. Home H3 and the live Registry wallet check now pass `readWalletInventoryExpectation(page)` rather than omitting the expectation. H3 and both detail strings say totals equal the full joined inventory. All existing label, null-conversion, unavailable badge, row order/count/stability, control/trace and overflow assertions are retained.
+16. All real-builder dust scenarios retain their original explicit expected-total assertion; they add exact same-page USD/THB total/null equality against the fixture's joined totals, then call the footer helper again through the same expectation path as production.
+17. The existing parameterized P&L count assertion changes `N holdings · all rows` to `N holdings to display`; count arithmetic and cash exemption are unchanged.
+18. Existing all-suppressed browser scenarios add absence assertions for each of the three false inventory claims, neutral securities copy on both pages, exact neutral P&L empty copy on Home, exact Home book P&L `expectedUsd(-0.254)`, and neutral NFT copy on Registry. Existing independent seven-holding/$3.996/฿143.856/full-hero assertions remain.
+19. Negative controls require a known positive suppressed value in each currency and a null-valued holding, require the exact currency-specific full-inventory-equality rejection for each inflated/omitted-value footer, and reassert the original totals after restoration. Four labeled checks contain all 16 corruption rejections. No application state, provider data or stored snapshot is mutated.
+
+### Updated risk flags
+
+1. **Both blocking findings resolved.** Empty rendered sections make neutral display claims, and live wallet validation has mandatory exact full-inventory equality plus two-sided rounding bounds. Independent read-only review found no remaining brief blocker or unrelated weakened assertion.
+2. **Numeric inventory transport.** Home and Asset List now include an inert same-snapshot payload proportional to wallet inventory size, containing numeric amounts/values and source status only. It adds no network request, aggregate expected total, holding identity, visible omission count, threshold wording or control. Provider changes between page loads do not invalidate within-page reconciliation.
+3. **Preserved financial behavior.** Broker-authoritative T212 totals, full joined inventory/class/book/snapshot values, strict `< 1` rendering with exactly $1 visible, manual-cash exemption and displayable-only P&L coverage are unchanged. Unknown values contribute no numeric amount; they remain null in inventory. Suppressed or unknown rows cannot alone create partial coverage.
+4. **Preserved availability behavior.** Dead ETH/FX dependencies still produce unavailable sources and null dependent totals, never fabricated zero. Genuine partial inventory and positive known combined-wallet subtotals retain their previous meaning. The nine-source recorder gate is unchanged.
+5. **Historical limitations unchanged.** Historical snapshots are not rewritten; comparisons against an older pruned inventory may still be unavailable. This pass adds no migration, historical rewrite, provider/pricing change, deployment or remote branch operation. Deterministic fixtures prove the arithmetic and both negative controls independently of live provider availability.
+
+### Verbatim required self-QA
+
+Acceptance results: **328/328 tests in 19 files**, **0 lint errors** (only the pre-existing `proxy.ts` warning), successful **fresh production build**, **readiness HTTP 200 on unused port 59337**, and **503/503 browser checks** (all 499 existing labeled checks retained, plus four wallet corruption-control checks). Every finite required command exited 0. The production server ran these newly built artifacts and was stopped after browser QA. The focused dust browser run also passed 154/154 before full QA; the independent read-only review passed.
+
+Command labels are separate from the complete captured stdout/stderr below. Logs are retained in `/tmp/pm-dust-removal-fix3-qa/`. The required diff stat was captured after staging the seven explicit implementation/test paths and before this report section was appended; the commit additionally includes this report. Existing report bytes and captured QA output, including the build progress carriage returns/trailing spaces, are preserved verbatim. The implementation-only whitespace check and harness syntax check passed.
+
+`npm test`
+
+```text
+npm notice run portmanager@0.1.0 test
+npm notice run vitest run
+
+ RUN  v4.1.10 /home/user/projects/portmanager
+
+
+CURRENT_BOOK_TABLE_BEGIN
+Fixture ETH/USD=2400; USD/THB=36, GBP/THB=45; not live quotes.
+| Holding | basisStatus | P&L bucket | Reason |
+|---|---|---|---|
+| T212 positions: 0 | N/A (no holding) | no-op | GBP 487 cash is value only; no P&L |
+| Arbitrum One ETH 0.248396 | not-recorded | not-recorded | Native balance only; no clean purchase provenance (bridge/deposit is not a basis) |
+| Ethereum ETH 0.000781 | not-recorded | not-recorded | Native balance only; no clean purchase provenance (bridge/deposit is not a basis) |
+| Base ETH 0.000099 | N/A (not displayed) | no-op | Included in joined holdings and value totals; excluded from displayed rows and coverage |
+| Robinhood Chain ETH 0.000526 | not-recorded | not-recorded | Native balance only; no clean purchase provenance (bridge/deposit is not a basis) |
+| USDG 1.475 | not-recorded | not-recorded | Token balance only; no clean acquisition/payment history recorded |
+| STACK token (sub-cent) | not-recorded | dust | Operator reports sub-cent value; no basis derivation; exact quantity not supplied |
+| GME token (sub-cent) | not-recorded | dust | Operator reports sub-cent value; no basis derivation; exact quantity not supplied |
+| 2× Stackers NFT | not-recorded | not-recorded | OpenSea inventory/floor only; acquisition and payment history not recorded |
+| 2× G00fyz NFT | not-recorded | not-recorded | OpenSea inventory/floor only; acquisition and payment history not recorded |
+Current-book P&L: costBasisUsd=null; pnlUsd=null; pnlPct=null; eligible=0.
+CURRENT_BOOK_TABLE_END
+
+ Test Files  19 passed (19)
+      Tests  328 passed (328)
+   Start at  07:32:10
+   Duration  2.05s (transform 1.82s, setup 0ms, import 3.70s, tests 2.21s, environment 2ms)
+
+```
+
+`npm run lint`
+
+```text
+npm notice run portmanager@0.1.0 lint
+npm notice run eslint
+
+/home/user/projects/portmanager/proxy.ts
+  19:10  warning  'b64urlEncode' is defined but never used  @typescript-eslint/no-unused-vars
+
+✖ 1 problem (0 errors, 1 warning)
+
+```
+
+`npm run build`
+
+```text
+npm notice run portmanager@0.1.0 build
+npm notice run next build
+▲ Next.js 16.2.6 (Turbopack)
+
+  Creating an optimized production build ...
+✓ Compiled successfully in 4.0s
+  Running TypeScript ...
+  Finished TypeScript in 2.7s ...
+  Collecting page data using 7 workers ...
+  Generating static pages using 7 workers (0/5) ...
+  Generating static pages using 7 workers (1/5) 
+  Generating static pages using 7 workers (2/5) 
+  Generating static pages using 7 workers (3/5) 
+✓ Generating static pages using 7 workers (5/5) in 99ms
+  Finalizing page optimization ...
+
+Route (app)
+┌ ƒ /
+├ ○ /_not-found
+├ ƒ /api/auth/callback
+├ ƒ /api/auth/login
+├ ƒ /api/auth/logout
+├ ƒ /api/cron/snapshot
+├ ƒ /asset-list
+├ ○ /asset-master
+├ ƒ /exchange-rate
+├ ○ /icon.svg
+├ ƒ /login
+└ ƒ /portfolio
+
+
+ƒ Proxy (Middleware)
+
+○  (Static)   prerendered as static content
+ƒ  (Dynamic)  server-rendered on demand
+
+```
+
+`Unused-port bind probe`
+
+```text
+Port 59337 verified unused by successful bind before startup.
+```
+
+`npm run start -- --hostname 127.0.0.1 --port 59337`
+
+```text
+npm notice run portmanager@0.1.0 start
+npm notice run next start --hostname 127.0.0.1 --port 59337
+▲ Next.js 16.2.6
+- Local:         http://127.0.0.1:59337
+- Network:       http://127.0.0.1:59337
+✓ Ready in 62ms
+```
+
+`curl --fail --silent --show-error --retry 10 --retry-connrefused --retry-delay 1 --max-time 45 -o /dev/null -w 'Readiness HTTP %{http_code}\n' http://127.0.0.1:59337/`
+
+```text
+Readiness HTTP 200
+```
+
+`UI_BASE_URL=http://127.0.0.1:59337 node scripts/ui-contract-check.mjs`
+
+```text
+PASS | desktop / responds successfully — HTTP 200 · /
+PASS | desktop / mascot server HTML defaults visible only after login — collapsed static sprite is the pre-hydration exception; state unset and no canvas/video or controls row
+PASS | desktop / mascot renders an accessible chip and expanded read-only controls — 64×95px chip · 2:3 motion surface · tiny status dot · no visible bubble or controls · data-mascot-3d=on · idle · clips idle,happy_clap,excited_bounce · 62×93px unchanged box · DPR 1 · no video
+PASS | desktop / mascot preserves navigation, page hit targets and viewport bounds — 0px overflow · nav clickable · blank overlay passes through
+PASS | desktop / uses the light Outfit design
+PASS | desktop / uses the reference card tokens — 12 white cards · 10px radius · reference border/shadow
+PASS | desktop / has no horizontal body overflow — 1440px / 1440px
+PASS | desktop / renders no undefined/null/NaN
+PASS | desktop home exposes no mutation forms or controls
+PASS | desktop home has no suppressed market rows or disclosure traces
+PASS | desktop home renders no owner/investor names or language
+PASS | desktop / uses a POST-only sidebar logout control — POST form · no logout link
+PASS | home follows the P&L-center section order
+PASS | home P&L summary distinguishes none, partial and complete honestly — P&L state: none
+PASS | home per-asset P&L keeps unknown basis null and exclusions explicit — 3 joined rows · 3 basis not recorded
+PASS | home performance uses snapshot history or the honest empty state — history starts today · empty period controls disabled
+PASS | home allocation remains value-based even when P&L is unavailable
+PASS | home calendar displays recorded coverage or an honest empty month — no recorded days; no historical P&L invented
+PASS | home retains all seven source statuses and unavailable-source honesty — seven original plus two ledger source statuses retained
+PASS | home permits value allocation while banning retired ownership copy
+PASS | home renders the USD-primary value hero and P&L metric strip
+PASS | home wallet panel exposes both sources and the wallet table contract
+PASS | H1 home wallet has no retired filter controls or suppression traces
+PASS | H2 home wallet headers and hero count exactly the displayable rows — 2 native + 1 tokens = header and hero counts
+PASS | H3 home wallet totals equal the full joined inventory and remain stable — 3 displayed rows; USD/THB totals equal the independently summed full inventory
+PASS | home wallet rows keep native/token order and exclude unknown current values — 3 priced wallet rows in native/token order
+PASS | H4 desktop home wallet/history paths keep the browser console clean
+PASS | desktop /asset-list responds successfully — HTTP 200 · /asset-list
+PASS | desktop /asset-list mascot server HTML defaults visible only after login — collapsed static sprite is the pre-hydration exception; state unset and no canvas/video or controls row
+PASS | desktop /asset-list mascot renders an accessible chip and expanded read-only controls — 64×95px chip · 2:3 motion surface · tiny status dot · no visible bubble or controls · data-mascot-3d=on · idle · clips idle,happy_clap,excited_bounce · 62×93px unchanged box · DPR 1 · no video
+PASS | desktop /asset-list mascot preserves navigation, page hit targets and viewport bounds — 0px overflow · nav clickable · blank overlay passes through
+PASS | desktop /asset-list uses the light Outfit design
+PASS | desktop /asset-list uses the reference card tokens — 16 white cards · 10px radius · reference border/shadow
+PASS | desktop /asset-list has no horizontal body overflow — 1440px / 1440px
+PASS | desktop /asset-list renders no undefined/null/NaN
+PASS | desktop asset-list exposes no mutation forms or controls
+PASS | desktop asset-list has no suppressed market rows or disclosure traces
+PASS | desktop asset-list renders no owner/investor names or language
+PASS | desktop /asset-list uses a POST-only sidebar logout control — POST form · no logout link
+PASS | desktop asset-list is labelled live and read-only
+PASS | asset-list renders the read-only wallet registry
+PASS | asset-list wallet registry has no filter and counts only displayed holdings — 3 displayed rows = registry header and summary; USD/THB totals equal the independently summed full inventory
+PASS | asset-list wallet rows keep native/token order and exclude unknown current values — 3 priced wallet rows in native/token order
+PASS | desktop /asset-list keeps the browser console clean
+PASS | desktop /portfolio responds successfully — HTTP 200 · /portfolio
+PASS | desktop /portfolio mascot server HTML defaults visible only after login — collapsed static sprite is the pre-hydration exception; state unset and no canvas/video or controls row
+PASS | desktop /portfolio mascot renders an accessible chip and expanded read-only controls — 64×95px chip · 2:3 motion surface · tiny status dot · no visible bubble or controls · data-mascot-3d=on · idle · clips idle,happy_clap,excited_bounce · 62×93px unchanged box · DPR 1 · no video
+PASS | desktop /portfolio mascot preserves navigation, page hit targets and viewport bounds — 0px overflow · nav clickable · blank overlay passes through
+PASS | desktop /portfolio uses the light Outfit design
+PASS | desktop /portfolio uses the reference card tokens — 6 white cards · 10px radius · reference border/shadow
+PASS | desktop /portfolio has no horizontal body overflow — 1440px / 1440px
+PASS | desktop /portfolio renders no undefined/null/NaN
+PASS | desktop portfolio exposes no mutation forms or controls
+PASS | desktop portfolio has no suppressed market rows or disclosure traces
+PASS | desktop portfolio renders no owner/investor names or language
+PASS | desktop /portfolio uses a POST-only sidebar logout control — POST form · no logout link
+PASS | portfolio separates live value from legacy context
+PASS | portfolio Plottable chart contract — no chart host · explicit unavailable valuation state
+PASS | desktop /portfolio keeps the browser console clean
+PASS | desktop /exchange-rate responds successfully — HTTP 200 · /exchange-rate
+PASS | desktop /exchange-rate mascot server HTML defaults visible only after login — collapsed static sprite is the pre-hydration exception; state unset and no canvas/video or controls row
+PASS | desktop /exchange-rate mascot renders an accessible chip and expanded read-only controls — 64×95px chip · 2:3 motion surface · tiny status dot · no visible bubble or controls · data-mascot-3d=on · idle · clips idle,happy_clap,excited_bounce · 62×93px unchanged box · DPR 1 · no video
+PASS | desktop /exchange-rate mascot preserves navigation, page hit targets and viewport bounds — 0px overflow · nav clickable · blank overlay passes through
+PASS | desktop /exchange-rate uses the light Outfit design
+PASS | desktop /exchange-rate uses the reference card tokens — 7 white cards · 10px radius · reference border/shadow
+PASS | desktop /exchange-rate has no horizontal body overflow — 1440px / 1440px
+PASS | desktop /exchange-rate renders no undefined/null/NaN
+PASS | desktop exchange-rate exposes no mutation forms or controls
+PASS | desktop exchange-rate has no suppressed market rows or disclosure traces
+PASS | desktop exchange-rate renders no owner/investor names or language
+PASS | desktop /exchange-rate uses a POST-only sidebar logout control — POST form · no logout link
+PASS | desktop exchange-rate is labelled live and read-only
+PASS | desktop /exchange-rate keeps the browser console clean
+PASS | desktop /asset-master responds successfully — HTTP 200 · /asset-list
+PASS | desktop /asset-master mascot server HTML defaults visible only after login — collapsed static sprite is the pre-hydration exception; state unset and no canvas/video or controls row
+PASS | desktop /asset-master mascot renders an accessible chip and expanded read-only controls — 64×95px chip · 2:3 motion surface · tiny status dot · no visible bubble or controls · data-mascot-3d=on · idle · clips idle,happy_clap,excited_bounce · 62×93px unchanged box · DPR 1 · no video
+PASS | desktop /asset-master mascot preserves navigation, page hit targets and viewport bounds — 0px overflow · nav clickable · blank overlay passes through
+PASS | desktop /asset-master uses the light Outfit design
+PASS | desktop /asset-master uses the reference card tokens — 16 white cards · 10px radius · reference border/shadow
+PASS | desktop /asset-master has no horizontal body overflow — 1440px / 1440px
+PASS | desktop /asset-master renders no undefined/null/NaN
+PASS | desktop asset-master exposes no mutation forms or controls
+PASS | desktop asset-master has no suppressed market rows or disclosure traces
+PASS | desktop asset-master renders no owner/investor names or language
+PASS | desktop /asset-master uses a POST-only sidebar logout control — POST form · no logout link
+PASS | desktop asset-master is labelled live and read-only
+PASS | asset-list renders the read-only wallet registry
+PASS | asset-list wallet registry has no filter and counts only displayed holdings — 3 displayed rows = registry header and summary; USD/THB totals equal the independently summed full inventory
+PASS | asset-list wallet rows keep native/token order and exclude unknown current values — 3 priced wallet rows in native/token order
+PASS | desktop /asset-master keeps the browser console clean
+PASS | desktop /login responds successfully — HTTP 200 · /login
+PASS | desktop /login mascot server HTML defaults visible only after login — absent from login HTML
+PASS | desktop /login mascot remains absent after hydration
+PASS | desktop /login uses the light Outfit design
+PASS | desktop /login uses the reference card tokens — 1 white cards · 10px radius · reference border/shadow
+PASS | desktop /login has no horizontal body overflow — 1440px / 1440px
+PASS | desktop /login renders no undefined/null/NaN
+PASS | desktop login exposes no mutation forms or controls
+PASS | desktop login has no suppressed market rows or disclosure traces
+PASS | desktop login renders no owner/investor names or language
+PASS | desktop login preserves the Google sign-in gate
+PASS | desktop /login keeps the browser console clean
+PASS | desktop production mascot interaction route loads
+PASS | desktop production mascot DOM transient bubble is opaque white without alpha — computed background rgb(255, 255, 255) · opacity 1 through every ancestor · #DFE5F2 border · 10px radius · app body font Outfit, Arial, sans-serif, Arial, sans-serif
+PASS | desktop production mascot DOM resting chip has no visible bubble or controls after six seconds — 64×95px chip · 2:3 motion surface · tiny status dot · no visible bubble or controls · data-mascot-3d=on · idle · clips idle,happy_clap,excited_bounce · 62×93px unchanged box · DPR 1 · no video · settled in 4982ms after initial DOM checks · opaque through fade · no repeat
+PASS | desktop production mascot DOM resting occlusion leaves home hero as-of/status metadata visible and hittable — hero as-of/status metadata: 3/3 text targets intersect first view and are unoccluded/hittable; 0 outside/partial first-view targets separately scrolled fully into view and hit-tested
+PASS | desktop production mascot DOM resting occlusion leaves home class legend visible and hittable — five-class legend labels and USD/THB values: 15/15 text targets intersect first view and are unoccluded/hittable; 0 outside/partial first-view targets separately scrolled fully into view and hit-tested
+PASS | desktop production mascot DOM WebGL 3D click expands the live viewer; panel stays expanded — 128px panel · aria-expanded=true · visible safe controls · current bubble visible · data-mascot-3d=on · idle · clips idle,happy_clap,excited_bounce · 126×189px unchanged box · DPR 1 · no video · exact gltf.animations log · bubble/controls/live loop remain beyond the transient deadline
+PASS | desktop production mascot DOM second click collapses back to the resting chip — 64×95px chip · 2:3 motion surface · tiny status dot · no visible bubble or controls · data-mascot-3d=on · idle · clips idle,happy_clap,excited_bounce · 62×93px unchanged box · DPR 1 · no video
+PASS | desktop production mascot DOM keyboard expands cached 3D viewer; Escape collapses and restores chip focus — Enter and Space expand cached 3D bytes without another GLB request; Escape from Mute guide and Hide guide collapses, aria-expanded=false, focus returns to chip
+PASS | desktop production mascot DOM mute hides the bubble, retains the a11y sprite underlay and persists on reload — mute checkbox/aria-pressed/localStorage agree · accessible sprite DOM underlay retained beneath motion surface · reload rests silently · Space/Enter unmute restore current bubble
+PASS | desktop production mascot DOM hide removes the companion, survives client navigation and resets on reload — companion absent across all four pages in one document; collapsed chip restored after reload; independent mute preference retained
+PASS | desktop production mascot DOM interaction and hydration console stays clean — zero page errors, hydration errors or console errors
+PASS | desktop production mascot DOM reduced motion plays video without mounting WebGL — data-mascot-3d=video · idle · /mascot/motion-idle.webm · readyState 4 · 720×720 · 0.67s/7.00s advancing · no canvas · static sprite hidden · 64×95px chip · 2:3 motion surface · tiny status dot · no visible bubble or controls · data-mascot-3d=video · idle · /mascot/motion-idle.webm · readyState 4 · 720×720 · 6.26s/7.00s advancing · no canvas · static sprite hidden · 245/5766 pixels changed across 700ms (62x93) · hidden pauses/visible resumes (/mascot/motion-idle.webm · readyState 4 · 720×720 · 1.71s/7.00s advancing) · zero WebGL probes/GLB requests · CSS animation/fade disabled · hydration boundary retained only visible motion surfaces; 3 advancing-video proof(s) · clean console
+PASS | mobile / responds successfully — HTTP 200 · /
+PASS | mobile / mascot server HTML defaults visible only after login — collapsed static sprite is the pre-hydration exception; state unset and no canvas/video or controls row
+PASS | mobile / mascot renders an accessible chip and expanded read-only controls — 64×95px chip · 2:3 motion surface · tiny status dot · no visible bubble or controls · data-mascot-3d=on · idle · clips idle,happy_clap,excited_bounce · 62×93px unchanged box · DPR 1 · no video
+PASS | mobile / mascot preserves navigation, page hit targets and viewport bounds — 0px overflow · nav clickable · blank overlay passes through
+PASS | mobile / uses the light Outfit design
+PASS | mobile / uses the reference card tokens — 12 white cards · 10px radius · reference border/shadow
+PASS | mobile / has no horizontal body overflow — 390px / 390px
+PASS | mobile / renders no undefined/null/NaN
+PASS | mobile home exposes no mutation forms or controls
+PASS | mobile home has no suppressed market rows or disclosure traces
+PASS | mobile home renders no owner/investor names or language
+PASS | mobile / uses a POST-only sidebar logout control — POST form · no logout link
+PASS | home follows the P&L-center section order
+PASS | home P&L summary distinguishes none, partial and complete honestly — P&L state: none
+PASS | home per-asset P&L keeps unknown basis null and exclusions explicit — 1 joined rows · 1 basis not recorded
+PASS | home performance uses snapshot history or the honest empty state — history starts today · empty period controls disabled
+PASS | home allocation remains value-based even when P&L is unavailable
+PASS | home calendar displays recorded coverage or an honest empty month — no recorded days; no historical P&L invented
+PASS | home retains all seven source statuses and unavailable-source honesty — seven original plus two ledger source statuses retained
+PASS | home permits value allocation while banning retired ownership copy
+PASS | home renders the USD-primary value hero and P&L metric strip
+PASS | home wallet panel exposes both sources and the wallet table contract
+PASS | H1 home wallet has no retired filter controls or suppression traces
+PASS | H2 home wallet headers and hero count exactly the displayable rows — 0 native + 1 tokens = header and hero counts
+PASS | H3 home wallet totals equal the full joined inventory and remain stable — 1 displayed rows; USD/THB totals equal the independently summed full inventory
+PASS | home wallet rows keep native/token order and exclude unknown current values — 1 priced wallet rows in native/token order
+PASS | H4 mobile home wallet/history paths keep the browser console clean
+PASS | mobile /asset-list responds successfully — HTTP 200 · /asset-list
+PASS | mobile /asset-list mascot server HTML defaults visible only after login — collapsed static sprite is the pre-hydration exception; state unset and no canvas/video or controls row
+PASS | mobile /asset-list mascot renders an accessible chip and expanded read-only controls — 64×95px chip · 2:3 motion surface · tiny status dot · no visible bubble or controls · data-mascot-3d=on · idle · clips idle,happy_clap,excited_bounce · 62×93px unchanged box · DPR 1 · no video
+PASS | mobile /asset-list mascot preserves navigation, page hit targets and viewport bounds — 0px overflow · nav clickable · blank overlay passes through
+PASS | mobile /asset-list uses the light Outfit design
+PASS | mobile /asset-list uses the reference card tokens — 16 white cards · 10px radius · reference border/shadow
+PASS | mobile /asset-list has no horizontal body overflow — 390px / 390px
+PASS | mobile /asset-list renders no undefined/null/NaN
+PASS | mobile asset-list exposes no mutation forms or controls
+PASS | mobile asset-list has no suppressed market rows or disclosure traces
+PASS | mobile asset-list renders no owner/investor names or language
+PASS | mobile /asset-list uses a POST-only sidebar logout control — POST form · no logout link
+PASS | mobile asset-list is labelled live and read-only
+PASS | asset-list renders the read-only wallet registry
+PASS | asset-list wallet registry has no filter and counts only displayed holdings — 1 displayed rows = registry header and summary; USD/THB totals equal the independently summed full inventory
+PASS | asset-list wallet rows keep native/token order and exclude unknown current values — 1 priced wallet rows in native/token order
+PASS | mobile /asset-list keeps the browser console clean
+PASS | mobile /portfolio responds successfully — HTTP 200 · /portfolio
+PASS | mobile /portfolio mascot server HTML defaults visible only after login — collapsed static sprite is the pre-hydration exception; state unset and no canvas/video or controls row
+PASS | mobile /portfolio mascot renders an accessible chip and expanded read-only controls — 64×95px chip · 2:3 motion surface · tiny status dot · no visible bubble or controls · data-mascot-3d=on · idle · clips idle,happy_clap,excited_bounce · 62×93px unchanged box · DPR 1 · no video
+PASS | mobile /portfolio mascot preserves navigation, page hit targets and viewport bounds — 0px overflow · nav clickable · blank overlay passes through
+PASS | mobile /portfolio uses the light Outfit design
+PASS | mobile /portfolio uses the reference card tokens — 6 white cards · 10px radius · reference border/shadow
+PASS | mobile /portfolio has no horizontal body overflow — 390px / 390px
+PASS | mobile /portfolio renders no undefined/null/NaN
+PASS | mobile portfolio exposes no mutation forms or controls
+PASS | mobile portfolio has no suppressed market rows or disclosure traces
+PASS | mobile portfolio renders no owner/investor names or language
+PASS | mobile /portfolio uses a POST-only sidebar logout control — POST form · no logout link
+PASS | portfolio separates live value from legacy context
+PASS | portfolio Plottable chart contract — no chart host · explicit unavailable valuation state
+PASS | mobile /portfolio keeps the browser console clean
+PASS | mobile /exchange-rate responds successfully — HTTP 200 · /exchange-rate
+PASS | mobile /exchange-rate mascot server HTML defaults visible only after login — collapsed static sprite is the pre-hydration exception; state unset and no canvas/video or controls row
+PASS | mobile /exchange-rate mascot renders an accessible chip and expanded read-only controls — 64×95px chip · 2:3 motion surface · tiny status dot · no visible bubble or controls · data-mascot-3d=on · idle · clips idle,happy_clap,excited_bounce · 62×93px unchanged box · DPR 1 · no video
+PASS | mobile /exchange-rate mascot preserves navigation, page hit targets and viewport bounds — 0px overflow · nav clickable · blank overlay passes through
+PASS | mobile /exchange-rate uses the light Outfit design
+PASS | mobile /exchange-rate uses the reference card tokens — 7 white cards · 10px radius · reference border/shadow
+PASS | mobile /exchange-rate has no horizontal body overflow — 390px / 390px
+PASS | mobile /exchange-rate renders no undefined/null/NaN
+PASS | mobile exchange-rate exposes no mutation forms or controls
+PASS | mobile exchange-rate has no suppressed market rows or disclosure traces
+PASS | mobile exchange-rate renders no owner/investor names or language
+PASS | mobile /exchange-rate uses a POST-only sidebar logout control — POST form · no logout link
+PASS | mobile exchange-rate is labelled live and read-only
+PASS | mobile /exchange-rate keeps the browser console clean
+PASS | mobile /asset-master responds successfully — HTTP 200 · /asset-list
+PASS | mobile /asset-master mascot server HTML defaults visible only after login — collapsed static sprite is the pre-hydration exception; state unset and no canvas/video or controls row
+PASS | mobile /asset-master mascot renders an accessible chip and expanded read-only controls — 64×95px chip · 2:3 motion surface · tiny status dot · no visible bubble or controls · data-mascot-3d=on · idle · clips idle,happy_clap,excited_bounce · 62×93px unchanged box · DPR 1 · no video
+PASS | mobile /asset-master mascot preserves navigation, page hit targets and viewport bounds — 0px overflow · nav clickable · blank overlay passes through
+PASS | mobile /asset-master uses the light Outfit design
+PASS | mobile /asset-master uses the reference card tokens — 16 white cards · 10px radius · reference border/shadow
+PASS | mobile /asset-master has no horizontal body overflow — 390px / 390px
+PASS | mobile /asset-master renders no undefined/null/NaN
+PASS | mobile asset-master exposes no mutation forms or controls
+PASS | mobile asset-master has no suppressed market rows or disclosure traces
+PASS | mobile asset-master renders no owner/investor names or language
+PASS | mobile /asset-master uses a POST-only sidebar logout control — POST form · no logout link
+PASS | mobile asset-master is labelled live and read-only
+PASS | asset-list renders the read-only wallet registry
+PASS | asset-list wallet registry has no filter and counts only displayed holdings — 1 displayed rows = registry header and summary; USD/THB totals equal the independently summed full inventory
+PASS | asset-list wallet rows keep native/token order and exclude unknown current values — 1 priced wallet rows in native/token order
+PASS | mobile /asset-master keeps the browser console clean
+PASS | mobile /login responds successfully — HTTP 200 · /login
+PASS | mobile /login mascot server HTML defaults visible only after login — absent from login HTML
+PASS | mobile /login mascot remains absent after hydration
+PASS | mobile /login uses the light Outfit design
+PASS | mobile /login uses the reference card tokens — 1 white cards · 10px radius · reference border/shadow
+PASS | mobile /login has no horizontal body overflow — 390px / 390px
+PASS | mobile /login renders no undefined/null/NaN
+PASS | mobile login exposes no mutation forms or controls
+PASS | mobile login has no suppressed market rows or disclosure traces
+PASS | mobile login renders no owner/investor names or language
+PASS | mobile login preserves the Google sign-in gate
+PASS | mobile /login keeps the browser console clean
+PASS | mobile production mascot interaction route loads
+PASS | mobile production mascot DOM transient bubble is opaque white without alpha — computed background rgb(255, 255, 255) · opacity 1 through every ancestor · #DFE5F2 border · 10px radius · app body font Outfit, Arial, sans-serif, Arial, sans-serif
+PASS | mobile production mascot DOM resting chip has no visible bubble or controls after six seconds — 64×95px chip · 2:3 motion surface · tiny status dot · no visible bubble or controls · data-mascot-3d=on · idle · clips idle,happy_clap,excited_bounce · 62×93px unchanged box · DPR 1 · no video · settled in 5099ms after initial DOM checks · opaque through fade · no repeat
+PASS | mobile production mascot DOM resting occlusion leaves home hero as-of/status metadata visible and hittable — hero as-of/status metadata: 3/3 text targets intersect first view and are unoccluded/hittable; 0 outside/partial first-view targets separately scrolled fully into view and hit-tested
+PASS | mobile production mascot DOM resting occlusion leaves home class legend visible and hittable — five-class legend labels and USD/THB values: 15/15 text targets intersect first view and are unoccluded/hittable; 0 outside/partial first-view targets separately scrolled fully into view and hit-tested
+PASS | mobile production mascot DOM WebGL 3D click expands the live viewer; panel stays expanded — 128px panel · aria-expanded=true · visible safe controls · current bubble visible · data-mascot-3d=on · idle · clips idle,happy_clap,excited_bounce · 126×189px unchanged box · DPR 1 · no video · exact gltf.animations log · bubble/controls/live loop remain beyond the transient deadline
+PASS | mobile production mascot DOM second click collapses back to the resting chip — 64×95px chip · 2:3 motion surface · tiny status dot · no visible bubble or controls · data-mascot-3d=on · idle · clips idle,happy_clap,excited_bounce · 62×93px unchanged box · DPR 1 · no video
+PASS | mobile production mascot DOM keyboard expands cached 3D viewer; Escape collapses and restores chip focus — Enter and Space expand cached 3D bytes without another GLB request; Escape from Mute guide and Hide guide collapses, aria-expanded=false, focus returns to chip
+PASS | mobile production mascot DOM mute hides the bubble, retains the a11y sprite underlay and persists on reload — mute checkbox/aria-pressed/localStorage agree · accessible sprite DOM underlay retained beneath motion surface · reload rests silently · Space/Enter unmute restore current bubble
+PASS | mobile production mascot DOM hide removes the companion, survives client navigation and resets on reload — companion absent across all four pages in one document; collapsed chip restored after reload; independent mute preference retained
+PASS | mobile production mascot DOM interaction and hydration console stays clean — zero page errors, hydration errors or console errors
+PASS | mobile production mascot DOM reduced motion plays video without mounting WebGL — data-mascot-3d=video · idle · /mascot/motion-idle.webm · readyState 4 · 720×720 · 0.76s/7.00s advancing · no canvas · static sprite hidden · 64×95px chip · 2:3 motion surface · tiny status dot · no visible bubble or controls · data-mascot-3d=video · idle · /mascot/motion-idle.webm · readyState 4 · 720×720 · 6.30s/7.00s advancing · no canvas · static sprite hidden · 205/5766 pixels changed across 700ms (62x93) · hidden pauses/visible resumes (/mascot/motion-idle.webm · readyState 4 · 720×720 · 1.77s/7.00s advancing) · zero WebGL probes/GLB requests · CSS animation/fade disabled · hydration boundary retained only visible motion surfaces; 3 advancing-video proof(s) · clean console
+PASS | committed independent browser fixtures build and start locally — scripts/__fixtures__/pnl-browser.json + real app components; temporary assets and ephemeral localhost port
+PASS | desktop capital fixture full book capital metric renders exact opening THB basis — THB 120000 opening basis · full GBP 2000 pot included · book USD/THB/%
+PASS | desktop capital fixture manual cash is value-only with no fabricated basis or P&L — one manual-cash row · value USD/THB · basis/P&L — · excluded from asset buckets
+PASS | desktop capital fixture Day column and adjusted day change use signs plus direction — up +USD/+% and down -USD/-% · adjusted book day +USD9
+PASS | desktop capital fixture exactly zero adjusted change is neutral rather than a gain — zero adjusted change · neutral is-flat class and → arrow
+PASS | desktop capital fixture empty capital stays unavailable and read-only at both viewports — capital — not zero · no mutation controls · no overflow or browser errors
+PASS | desktop fixture portfolio-live renders real app components
+PASS | desktop fixture finding #2 known live source requires exact live marker and USD/THB value — independent source=live · USD 1250.50 · THB 45018.00 · exact live marker/KPI/register
+PASS | desktop fixture finding #2 rejects hidden live marker plus a false unavailable legend — negative control rejected; UI unavailable copy cannot waive known fixture data
+PASS | desktop fixture finding #2 rejects a missing host for independently known live data — negative control rejected before empty-state return
+PASS | desktop fixture portfolio-unavailable renders real app components
+PASS | desktop fixture independently unavailable live data retains honest legacy-only chart — 2 axes · 0 live markers
+PASS | desktop fixture recent renders real app components
+PASS | desktop fixture finding #4 populated periods are enabled and filter exact recorded rows — 1M/3M/All enabled · 6/7/8 exact observations · repeated period changes draw charts
+PASS | desktop fixture finding #4 clicking 2026-09-01 shows exact recorded USD/THB and coverage — 2026-09-01 · value US$1,100.00 / ฿39,600.00 · P&L US$200.00 / ฿7,200.00 · partial 2/3
+PASS | desktop fixture finding #4 clicking 2026-09-02 shows exact recorded USD/THB and coverage — 2026-09-02 · value US$1,200.00 / ฿43,200.00 · P&L — / — · partial 0/3
+PASS | desktop fixture finding #4 clicking 2026-09-03 shows exact recorded USD/THB and coverage — 2026-09-03 · value US$40.00 / ฿1,440.00 · P&L US$40.00 / ฿1,440.00 · complete 1/1
+PASS | desktop fixture finding #4 previous/next month changes grid and exact selected observation — September → August (2026-08-31) → September (2026-09-05); exact grid/value/basis/P&L/coverage
+PASS | desktop fixture wallet keeps exact $1 rows while totals include suppressed values — $3.009 / ฿108.324 total = $2 / ฿72 displayed + $0.999 and $0.01 suppressed holdings
+PASS | desktop fixture populated page fits viewport and keeps numbers honest — 0px horizontal overflow
+PASS | desktop fixture older renders real app components
+PASS | desktop fixture older history keeps enabled empty-period controls and restores All
+PASS | desktop fixture empty renders real app components
+PASS | desktop fixture empty history disables periods/days and states history starts today
+PASS | desktop fixture filtered-empty renders real app components
+PASS | desktop fixture all-small/unknown wallet has zero rows and only neutral empty copy
+PASS | desktop fixture populated/empty/live/legacy interactions keep browser console clean
+PASS | desktop render-only fixture mixed home renders the real page through buildJoinedPortfolio
+PASS | desktop render-only fixture mixed home has no suppressed rows, labels, attributes or comments
+PASS | desktop render-only fixture mixed home counts exactly its DOM rows and preserves source truth
+PASS | desktop render-only fixture mixed home pins independent totals, boundary, cash exemption and outage behavior — $8.246 / ฿296.856 hero/book = $4.25 displayed + four $0.999 holdings ($3.996 < $4); all 13 recording identities retained
+PASS | desktop render-only fixture mixed home live wallet-total assertion rejects inflated and omitted-value footers — USD and THB: displayed sum + 1,000,000 and omission of one known $0.999 holding both rejected; null holding contributes nothing; original footer restored
+PASS | desktop render-only fixture mixed home exposes no mutation forms or controls
+PASS | desktop render-only fixture mixed registry renders the real page through buildJoinedPortfolio
+PASS | desktop render-only fixture mixed registry has no suppressed rows, labels, attributes or comments
+PASS | desktop render-only fixture mixed registry counts exactly its DOM rows and preserves source truth
+PASS | desktop render-only fixture mixed registry pins independent totals, boundary, cash exemption and outage behavior — $8.246 / ฿296.856 hero/book = $4.25 displayed + four $0.999 holdings ($3.996 < $4); all 13 recording identities retained
+PASS | desktop render-only fixture mixed registry live wallet-total assertion rejects inflated and omitted-value footers — USD and THB: displayed sum + 1,000,000 and omission of one known $0.999 holding both rejected; null holding contributes nothing; original footer restored
+PASS | desktop render-only fixture mixed registry exposes no mutation forms or controls
+PASS | desktop render-only fixture empty home renders the real page through buildJoinedPortfolio
+PASS | desktop render-only fixture empty home has no suppressed rows, labels, attributes or comments
+PASS | desktop render-only fixture empty home counts exactly its DOM rows and preserves source truth
+PASS | desktop render-only fixture empty home pins independent totals, boundary, cash exemption and outage behavior
+PASS | desktop render-only fixture empty home exposes no mutation forms or controls
+PASS | desktop render-only fixture empty registry renders the real page through buildJoinedPortfolio
+PASS | desktop render-only fixture empty registry has no suppressed rows, labels, attributes or comments
+PASS | desktop render-only fixture empty registry counts exactly its DOM rows and preserves source truth
+PASS | desktop render-only fixture empty registry pins independent totals, boundary, cash exemption and outage behavior
+PASS | desktop render-only fixture empty registry exposes no mutation forms or controls
+PASS | desktop render-only fixture wholesale home renders the real page through buildJoinedPortfolio
+PASS | desktop render-only fixture wholesale home has no suppressed rows, labels, attributes or comments
+PASS | desktop render-only fixture wholesale home counts exactly its DOM rows and preserves source truth
+PASS | desktop render-only fixture wholesale home pins independent totals, boundary, cash exemption and outage behavior
+PASS | desktop render-only fixture wholesale home exposes no mutation forms or controls
+PASS | desktop render-only fixture wholesale registry renders the real page through buildJoinedPortfolio
+PASS | desktop render-only fixture wholesale registry has no suppressed rows, labels, attributes or comments
+PASS | desktop render-only fixture wholesale registry counts exactly its DOM rows and preserves source truth
+PASS | desktop render-only fixture wholesale registry pins independent totals, boundary, cash exemption and outage behavior
+PASS | desktop render-only fixture wholesale registry exposes no mutation forms or controls
+PASS | desktop render-only fixture failed home renders the real page through buildJoinedPortfolio
+PASS | desktop render-only fixture failed home has no suppressed rows, labels, attributes or comments
+PASS | desktop render-only fixture failed home counts exactly its DOM rows and preserves source truth
+PASS | desktop render-only fixture failed home pins independent totals, boundary, cash exemption and outage behavior
+PASS | desktop render-only fixture failed home exposes no mutation forms or controls
+PASS | desktop render-only fixture failed registry renders the real page through buildJoinedPortfolio
+PASS | desktop render-only fixture failed registry has no suppressed rows, labels, attributes or comments
+PASS | desktop render-only fixture failed registry counts exactly its DOM rows and preserves source truth
+PASS | desktop render-only fixture failed registry pins independent totals, boundary, cash exemption and outage behavior
+PASS | desktop render-only fixture failed registry exposes no mutation forms or controls
+PASS | desktop render-only fixture inventory home renders the real page through buildJoinedPortfolio
+PASS | desktop render-only fixture inventory home has no suppressed rows, labels, attributes or comments
+PASS | desktop render-only fixture inventory home counts exactly its DOM rows and preserves source truth
+PASS | desktop render-only fixture inventory home pins independent totals, boundary, cash exemption and outage behavior — $8.246 / ฿296.856 hero/book = $4.25 displayed + four $0.999 holdings ($3.996 < $4); all 13 recording identities retained
+PASS | desktop render-only fixture inventory home exposes no mutation forms or controls
+PASS | desktop render-only fixture inventory registry renders the real page through buildJoinedPortfolio
+PASS | desktop render-only fixture inventory registry has no suppressed rows, labels, attributes or comments
+PASS | desktop render-only fixture inventory registry counts exactly its DOM rows and preserves source truth
+PASS | desktop render-only fixture inventory registry pins independent totals, boundary, cash exemption and outage behavior — $8.246 / ฿296.856 hero/book = $4.25 displayed + four $0.999 holdings ($3.996 < $4); all 13 recording identities retained
+PASS | desktop render-only fixture inventory registry exposes no mutation forms or controls
+PASS | desktop render-only fixture eth-outage home renders the real page through buildJoinedPortfolio
+PASS | desktop render-only fixture eth-outage home has no suppressed rows, labels, attributes or comments
+PASS | desktop render-only fixture eth-outage home counts exactly its DOM rows and preserves source truth
+PASS | desktop render-only fixture eth-outage home pins independent totals, boundary, cash exemption and outage behavior
+PASS | desktop render-only fixture eth-outage home keeps unavailable conversion dependencies null and renders no zero valuation — 0 and 0.1 ETH floors cannot mask failed NFT/native pricing; dependent totals stay null/—
+PASS | desktop render-only fixture eth-outage home exposes no mutation forms or controls
+PASS | desktop render-only fixture eth-outage registry renders the real page through buildJoinedPortfolio
+PASS | desktop render-only fixture eth-outage registry has no suppressed rows, labels, attributes or comments
+PASS | desktop render-only fixture eth-outage registry counts exactly its DOM rows and preserves source truth
+PASS | desktop render-only fixture eth-outage registry pins independent totals, boundary, cash exemption and outage behavior
+PASS | desktop render-only fixture eth-outage registry keeps unavailable conversion dependencies null and renders no zero valuation — 0 and 0.1 ETH floors cannot mask failed NFT/native pricing; dependent totals stay null/—
+PASS | desktop render-only fixture eth-outage registry exposes no mutation forms or controls
+PASS | desktop render-only fixture fiat-outage home renders the real page through buildJoinedPortfolio
+PASS | desktop render-only fixture fiat-outage home has no suppressed rows, labels, attributes or comments
+PASS | desktop render-only fixture fiat-outage home counts exactly its DOM rows and preserves source truth
+PASS | desktop render-only fixture fiat-outage home pins independent totals, boundary, cash exemption and outage behavior
+PASS | desktop render-only fixture fiat-outage home keeps unavailable conversion dependencies null and renders no zero valuation — all four market inputs are $0.999; failed fiat conversion keeps dependent totals null/—
+PASS | desktop render-only fixture fiat-outage home exposes no mutation forms or controls
+PASS | desktop render-only fixture fiat-outage registry renders the real page through buildJoinedPortfolio
+PASS | desktop render-only fixture fiat-outage registry has no suppressed rows, labels, attributes or comments
+PASS | desktop render-only fixture fiat-outage registry counts exactly its DOM rows and preserves source truth
+PASS | desktop render-only fixture fiat-outage registry pins independent totals, boundary, cash exemption and outage behavior
+PASS | desktop render-only fixture fiat-outage registry keeps unavailable conversion dependencies null and renders no zero valuation — all four market inputs are $0.999; failed fiat conversion keeps dependent totals null/—
+PASS | desktop render-only fixture fiat-outage registry exposes no mutation forms or controls
+PASS | desktop render-only fixture all scenarios keep browser console clean
+PASS | desktop mascot fixture portfolio-live derives calm and maps fallback video — Healthy empty joined holding set, no recorded gain or loss.
+PASS | desktop mascot fixture portfolio-unavailable derives sad and maps fallback video — Every source offline and joined total unknown.
+PASS | desktop mascot fixture portfolio-mascot-thinking derives thinking and maps fallback video — Sources all live; one holding has no acquisition basis.
+PASS | desktop mascot fixture portfolio-mascot-worried derives worried and maps fallback video — Eligible recorded loss beats otherwise complete coverage.
+PASS | desktop mascot fixture portfolio-mascot-happy derives happy and maps fallback video — Recorded gain below threshold; dust excluded, no missing basis.
+PASS | desktop mascot fixture portfolio-mascot-excited derives excited and maps fallback video — Recorded gain with full basis coverage, even below threshold.
+PASS | desktop mascot fixture portfolio-mascot-proud derives proud and maps fallback video — Flat recorded P&L and every holding eligible.
+PASS | desktop mascot fixture portfolio-mascot-sleepy derives sleepy and maps fallback video — Healthy flat eligible subset with dust; no higher priority state.
+PASS | desktop mascot fixture portfolio-mascot-alert derives alert and maps fallback video — One partial source outranks a recorded gain.
+PASS | desktop mascot fixture portfolio-mascot-history-unavailable derives alert and maps fallback video — All sources live but snapshot history unavailable.
+PASS | desktop mascot fixture portfolio-mascot-unreconciled derives alert and maps fallback video — An unreconciled holding outranks missing acquisition basis.
+PASS | desktop mascot fixture portfolio-mascot-excited-partial derives excited and maps fallback video — Threshold reached with excluded dust, without claiming full coverage.
+PASS | desktop mascot fixture portfolio-mascot-airdrop derives happy and maps fallback video — Verified free acquisition has positive recorded P&L and no percentage; dust keeps coverage partial.
+PASS | desktop mascot fixture portfolio-mascot-null-pnl derives calm and maps fallback video — Only excluded dust; unknown P&L never implies a gain or loss.
+PASS | desktop mascot fixture covers all nine distinct moods and video mappings — 9 mood sprites retain intrinsic dimensions/alt text; all mapped videos play across reload and in-document mood changes; proud→idle collapse restarts; zero GLB requests · hydration boundary retained only visible motion surfaces; 10 advancing-video proof(s)
+PASS | desktop mascot fixture DOM WebGL 3D switches all nine mapped mood motions without re-downloading — data-mascot-3d=on · calm→idle, happy→happy_clap, excited→excited_bounce, thinking→idle, worried→idle, sad→idle, sleepy→idle, proud→happy_clap, alert→idle · on→video→on (data-mascot-3d=video · idle · /mascot/motion-idle.webm · readyState 4 · 720×720 · 0.32s/7.00s advancing · no canvas · static sprite hidden; data-mascot-3d=on · idle · clips idle,happy_clap,excited_bounce · 126×189px unchanged box · DPR 1 · no video) · hydration boundary retained only visible motion surfaces; 1 advancing-video proof(s) · one GLB request
+PASS | desktop mascot fixture DOM new server props refresh mood and preserve expanded mute — thinking → worried while muted: expanded controls retained, checkbox/aria-pressed/localStorage stay true, no bubble; unmute shows latest message
+PASS | desktop mascot fixture DOM new mood restarts a finite transient bubble without expanding — 64×95px chip · 2:3 motion surface · tiny status dot · no visible bubble or controls · data-mascot-3d=on · idle · clips idle,happy_clap,excited_bounce · 62×93px unchanged box · DPR 1 · no video
+PASS | desktop mascot fixture DOM changed message with the same mood restarts the bubble — alert source message expired; alert unreconciled message is newly visible while controls remain hidden
+PASS | desktop mascot fixture DOM reduced motion keeps fallback video moving while CSS animation/fade is disabled — data-mascot-3d=video · idle · /mascot/motion-idle.webm · readyState 4 · 720×720 · 4.78s/7.00s advancing · no canvas · static sprite hidden · 13 expanded companion elements: CSS animation-name=none, transition durations=0; native video continues; collapse leaves compact chip · hydration boundary retained only visible motion surfaces; 2 advancing-video proof(s)
+PASS | desktop mascot fixture console remains clean across every mood and prop transition
+PASS | desktop fixture mascot DOM reduced motion plays video without mounting WebGL — data-mascot-3d=video · idle · /mascot/motion-idle.webm · readyState 4 · 720×720 · 0.76s/7.00s advancing · no canvas · static sprite hidden · 64×95px chip · 2:3 motion surface · tiny status dot · no visible bubble or controls · data-mascot-3d=video · idle · /mascot/motion-idle.webm · readyState 4 · 720×720 · 6.33s/7.00s advancing · no canvas · static sprite hidden · 205/5766 pixels changed across 700ms (62x93) · hidden pauses/visible resumes (/mascot/motion-idle.webm · readyState 4 · 720×720 · 1.76s/7.00s advancing) · zero WebGL probes/GLB requests · CSS animation/fade disabled · hydration boundary retained only visible motion surfaces; 3 advancing-video proof(s) · clean console
+PASS | desktop mascot fixture DOM WebGL loading plays video then hands off to the live canvas — video → on · data-mascot-3d=video · idle · /mascot/motion-idle.webm · readyState 4 · 720×720 · 0.33s/7.00s advancing · no canvas · static sprite hidden · data-mascot-3d=on · idle · clips idle,happy_clap,excited_bounce · 62×93px unchanged box · DPR 1 · no video · stopped/removed video · 64×95px unchanged card · one GLB · WebM-only request · hydration boundary retained only visible motion surfaces; 1 advancing-video proof(s)
+PASS | desktop mascot fixture DOM WebGL resting chip plays idle without a click — 64×95px chip · 2:3 motion surface · tiny status dot · no visible bubble or controls · data-mascot-3d=on · idle · clips idle,happy_clap,excited_bounce · 62×93px unchanged box · DPR 1 · no video · no click · one GLB request
+PASS | desktop mascot fixture WebGL resting idle changes rendered frames continuously — 3/3 distinct rendered frames · idle still live after announcement · same canvas
+PASS | desktop mascot fixture DOM WebGL expand/collapse preserves canvas and switches idle to excited_bounce — idle → excited_bounce → idle twice (click + Escape) · same canvas/WebGL context · 126×189px expanded box / 128×262px card · 1 total GLB request
+PASS | desktop mascot fixture DOM WebGL collapsed mood updates retain idle and the mounted canvas — excited → happy server props · still collapsed/idle · same canvas · one GLB request
+PASS | desktop mascot fixture DOM WebGL resting reduced-motion toggle hands idle to video and restores live — on → video → on while collapsed · data-mascot-3d=video · idle · /mascot/motion-idle.webm · readyState 4 · 720×720 · 0.17s/7.00s advancing · no canvas · static sprite hidden · data-mascot-3d=on · idle · clips idle,happy_clap,excited_bounce · 62×93px unchanged box · DPR 1 · no video · cached GLB
+PASS | desktop mascot fixture DOM WebGL context loss switches the live idle canvas to playing video — data-mascot-3d=video · idle · /mascot/motion-idle.webm · readyState 4 · 720×720 · 0.16s/7.00s advancing · no canvas · static sprite hidden · one cached GLB request · hydration boundary retained only visible motion surfaces; 2 advancing-video proof(s)
+PASS | desktop mascot fixture WebGL resting idle and transition console stays clean — zero page/console errors or Three/WebGL warnings
+PASS | desktop mascot fixture DOM WebGL disabled plays video and restarts clips on expand/collapse — data-mascot-3d=video · idle · /mascot/motion-idle.webm · readyState 4 · 720×720 · 0.77s/7.00s advancing · no canvas · static sprite hidden · idle→happy_clap→idle with near-zero restarts · data-mascot-3d=video · happy_clap · /mascot/motion-happy-clap.webm · readyState 4 · 720×720 · 0.17s/7.00s advancing · no canvas · static sprite hidden · 64×95px chip · 2:3 motion surface · tiny status dot · no visible bubble or controls · data-mascot-3d=video · idle · /mascot/motion-idle.webm · readyState 4 · 720×720 · 0.16s/7.00s advancing · no canvas · static sprite hidden · zero GLB requests · hydration boundary retained only visible motion surfaces; 3 advancing-video proof(s)
+PASS | desktop mascot fixture WebGL-disabled mascot fallback console is clean — zero page errors or Three/WebGL warnings
+PASS | desktop mascot fixture DOM WebGL malformed GLB keeps playing video at rest and after expansion — data-mascot-3d=video · happy_clap · /mascot/motion-happy-clap.webm · readyState 4 · 720×720 · 0.16s/7.00s advancing · no canvas · static sprite hidden · 64×95px chip · 2:3 motion surface · tiny status dot · no visible bubble or controls · data-mascot-3d=video · idle · /mascot/motion-idle.webm · readyState 4 · 720×720 · 0.16s/7.00s advancing · no canvas · static sprite hidden · one request · hydration boundary retained only visible motion surfaces; 3 advancing-video proof(s) · zero page/video errors or Three/WebGL warnings
+PASS | mobile capital fixture full book capital metric renders exact opening THB basis — THB 120000 opening basis · full GBP 2000 pot included · book USD/THB/%
+PASS | mobile capital fixture manual cash is value-only with no fabricated basis or P&L — one manual-cash row · value USD/THB · basis/P&L — · excluded from asset buckets
+PASS | mobile capital fixture Day column and adjusted day change use signs plus direction — up +USD/+% and down -USD/-% · adjusted book day +USD9
+PASS | mobile capital fixture exactly zero adjusted change is neutral rather than a gain — zero adjusted change · neutral is-flat class and → arrow
+PASS | mobile capital fixture empty capital stays unavailable and read-only at both viewports — capital — not zero · no mutation controls · no overflow or browser errors
+PASS | mobile fixture portfolio-live renders real app components
+PASS | mobile fixture finding #2 known live source requires exact live marker and USD/THB value — independent source=live · USD 1250.50 · THB 45018.00 · exact live marker/KPI/register
+PASS | mobile fixture finding #2 rejects hidden live marker plus a false unavailable legend — negative control rejected; UI unavailable copy cannot waive known fixture data
+PASS | mobile fixture finding #2 rejects a missing host for independently known live data — negative control rejected before empty-state return
+PASS | mobile fixture portfolio-unavailable renders real app components
+PASS | mobile fixture independently unavailable live data retains honest legacy-only chart — 2 axes · 0 live markers
+PASS | mobile fixture recent renders real app components
+PASS | mobile fixture finding #4 populated periods are enabled and filter exact recorded rows — 1M/3M/All enabled · 6/7/8 exact observations · repeated period changes draw charts
+PASS | mobile fixture finding #4 clicking 2026-09-01 shows exact recorded USD/THB and coverage — 2026-09-01 · value US$1,100.00 / ฿39,600.00 · P&L US$200.00 / ฿7,200.00 · partial 2/3
+PASS | mobile fixture finding #4 clicking 2026-09-02 shows exact recorded USD/THB and coverage — 2026-09-02 · value US$1,200.00 / ฿43,200.00 · P&L — / — · partial 0/3
+PASS | mobile fixture finding #4 clicking 2026-09-03 shows exact recorded USD/THB and coverage — 2026-09-03 · value US$40.00 / ฿1,440.00 · P&L US$40.00 / ฿1,440.00 · complete 1/1
+PASS | mobile fixture finding #4 previous/next month changes grid and exact selected observation — September → August (2026-08-31) → September (2026-09-05); exact grid/value/basis/P&L/coverage
+PASS | mobile fixture wallet keeps exact $1 rows while totals include suppressed values — $3.009 / ฿108.324 total = $2 / ฿72 displayed + $0.999 and $0.01 suppressed holdings
+PASS | mobile fixture populated page fits viewport and keeps numbers honest — 0px horizontal overflow
+PASS | mobile fixture older renders real app components
+PASS | mobile fixture older history keeps enabled empty-period controls and restores All
+PASS | mobile fixture empty renders real app components
+PASS | mobile fixture empty history disables periods/days and states history starts today
+PASS | mobile fixture filtered-empty renders real app components
+PASS | mobile fixture all-small/unknown wallet has zero rows and only neutral empty copy
+PASS | mobile fixture populated/empty/live/legacy interactions keep browser console clean
+PASS | mobile render-only fixture mixed home renders the real page through buildJoinedPortfolio
+PASS | mobile render-only fixture mixed home has no suppressed rows, labels, attributes or comments
+PASS | mobile render-only fixture mixed home counts exactly its DOM rows and preserves source truth
+PASS | mobile render-only fixture mixed home pins independent totals, boundary, cash exemption and outage behavior — $8.246 / ฿296.856 hero/book = $4.25 displayed + four $0.999 holdings ($3.996 < $4); all 13 recording identities retained
+PASS | mobile render-only fixture mixed home live wallet-total assertion rejects inflated and omitted-value footers — USD and THB: displayed sum + 1,000,000 and omission of one known $0.999 holding both rejected; null holding contributes nothing; original footer restored
+PASS | mobile render-only fixture mixed home exposes no mutation forms or controls
+PASS | mobile render-only fixture mixed registry renders the real page through buildJoinedPortfolio
+PASS | mobile render-only fixture mixed registry has no suppressed rows, labels, attributes or comments
+PASS | mobile render-only fixture mixed registry counts exactly its DOM rows and preserves source truth
+PASS | mobile render-only fixture mixed registry pins independent totals, boundary, cash exemption and outage behavior — $8.246 / ฿296.856 hero/book = $4.25 displayed + four $0.999 holdings ($3.996 < $4); all 13 recording identities retained
+PASS | mobile render-only fixture mixed registry live wallet-total assertion rejects inflated and omitted-value footers — USD and THB: displayed sum + 1,000,000 and omission of one known $0.999 holding both rejected; null holding contributes nothing; original footer restored
+PASS | mobile render-only fixture mixed registry exposes no mutation forms or controls
+PASS | mobile render-only fixture empty home renders the real page through buildJoinedPortfolio
+PASS | mobile render-only fixture empty home has no suppressed rows, labels, attributes or comments
+PASS | mobile render-only fixture empty home counts exactly its DOM rows and preserves source truth
+PASS | mobile render-only fixture empty home pins independent totals, boundary, cash exemption and outage behavior
+PASS | mobile render-only fixture empty home exposes no mutation forms or controls
+PASS | mobile render-only fixture empty registry renders the real page through buildJoinedPortfolio
+PASS | mobile render-only fixture empty registry has no suppressed rows, labels, attributes or comments
+PASS | mobile render-only fixture empty registry counts exactly its DOM rows and preserves source truth
+PASS | mobile render-only fixture empty registry pins independent totals, boundary, cash exemption and outage behavior
+PASS | mobile render-only fixture empty registry exposes no mutation forms or controls
+PASS | mobile render-only fixture wholesale home renders the real page through buildJoinedPortfolio
+PASS | mobile render-only fixture wholesale home has no suppressed rows, labels, attributes or comments
+PASS | mobile render-only fixture wholesale home counts exactly its DOM rows and preserves source truth
+PASS | mobile render-only fixture wholesale home pins independent totals, boundary, cash exemption and outage behavior
+PASS | mobile render-only fixture wholesale home exposes no mutation forms or controls
+PASS | mobile render-only fixture wholesale registry renders the real page through buildJoinedPortfolio
+PASS | mobile render-only fixture wholesale registry has no suppressed rows, labels, attributes or comments
+PASS | mobile render-only fixture wholesale registry counts exactly its DOM rows and preserves source truth
+PASS | mobile render-only fixture wholesale registry pins independent totals, boundary, cash exemption and outage behavior
+PASS | mobile render-only fixture wholesale registry exposes no mutation forms or controls
+PASS | mobile render-only fixture failed home renders the real page through buildJoinedPortfolio
+PASS | mobile render-only fixture failed home has no suppressed rows, labels, attributes or comments
+PASS | mobile render-only fixture failed home counts exactly its DOM rows and preserves source truth
+PASS | mobile render-only fixture failed home pins independent totals, boundary, cash exemption and outage behavior
+PASS | mobile render-only fixture failed home exposes no mutation forms or controls
+PASS | mobile render-only fixture failed registry renders the real page through buildJoinedPortfolio
+PASS | mobile render-only fixture failed registry has no suppressed rows, labels, attributes or comments
+PASS | mobile render-only fixture failed registry counts exactly its DOM rows and preserves source truth
+PASS | mobile render-only fixture failed registry pins independent totals, boundary, cash exemption and outage behavior
+PASS | mobile render-only fixture failed registry exposes no mutation forms or controls
+PASS | mobile render-only fixture inventory home renders the real page through buildJoinedPortfolio
+PASS | mobile render-only fixture inventory home has no suppressed rows, labels, attributes or comments
+PASS | mobile render-only fixture inventory home counts exactly its DOM rows and preserves source truth
+PASS | mobile render-only fixture inventory home pins independent totals, boundary, cash exemption and outage behavior — $8.246 / ฿296.856 hero/book = $4.25 displayed + four $0.999 holdings ($3.996 < $4); all 13 recording identities retained
+PASS | mobile render-only fixture inventory home exposes no mutation forms or controls
+PASS | mobile render-only fixture inventory registry renders the real page through buildJoinedPortfolio
+PASS | mobile render-only fixture inventory registry has no suppressed rows, labels, attributes or comments
+PASS | mobile render-only fixture inventory registry counts exactly its DOM rows and preserves source truth
+PASS | mobile render-only fixture inventory registry pins independent totals, boundary, cash exemption and outage behavior — $8.246 / ฿296.856 hero/book = $4.25 displayed + four $0.999 holdings ($3.996 < $4); all 13 recording identities retained
+PASS | mobile render-only fixture inventory registry exposes no mutation forms or controls
+PASS | mobile render-only fixture eth-outage home renders the real page through buildJoinedPortfolio
+PASS | mobile render-only fixture eth-outage home has no suppressed rows, labels, attributes or comments
+PASS | mobile render-only fixture eth-outage home counts exactly its DOM rows and preserves source truth
+PASS | mobile render-only fixture eth-outage home pins independent totals, boundary, cash exemption and outage behavior
+PASS | mobile render-only fixture eth-outage home keeps unavailable conversion dependencies null and renders no zero valuation — 0 and 0.1 ETH floors cannot mask failed NFT/native pricing; dependent totals stay null/—
+PASS | mobile render-only fixture eth-outage home exposes no mutation forms or controls
+PASS | mobile render-only fixture eth-outage registry renders the real page through buildJoinedPortfolio
+PASS | mobile render-only fixture eth-outage registry has no suppressed rows, labels, attributes or comments
+PASS | mobile render-only fixture eth-outage registry counts exactly its DOM rows and preserves source truth
+PASS | mobile render-only fixture eth-outage registry pins independent totals, boundary, cash exemption and outage behavior
+PASS | mobile render-only fixture eth-outage registry keeps unavailable conversion dependencies null and renders no zero valuation — 0 and 0.1 ETH floors cannot mask failed NFT/native pricing; dependent totals stay null/—
+PASS | mobile render-only fixture eth-outage registry exposes no mutation forms or controls
+PASS | mobile render-only fixture fiat-outage home renders the real page through buildJoinedPortfolio
+PASS | mobile render-only fixture fiat-outage home has no suppressed rows, labels, attributes or comments
+PASS | mobile render-only fixture fiat-outage home counts exactly its DOM rows and preserves source truth
+PASS | mobile render-only fixture fiat-outage home pins independent totals, boundary, cash exemption and outage behavior
+PASS | mobile render-only fixture fiat-outage home keeps unavailable conversion dependencies null and renders no zero valuation — all four market inputs are $0.999; failed fiat conversion keeps dependent totals null/—
+PASS | mobile render-only fixture fiat-outage home exposes no mutation forms or controls
+PASS | mobile render-only fixture fiat-outage registry renders the real page through buildJoinedPortfolio
+PASS | mobile render-only fixture fiat-outage registry has no suppressed rows, labels, attributes or comments
+PASS | mobile render-only fixture fiat-outage registry counts exactly its DOM rows and preserves source truth
+PASS | mobile render-only fixture fiat-outage registry pins independent totals, boundary, cash exemption and outage behavior
+PASS | mobile render-only fixture fiat-outage registry keeps unavailable conversion dependencies null and renders no zero valuation — all four market inputs are $0.999; failed fiat conversion keeps dependent totals null/—
+PASS | mobile render-only fixture fiat-outage registry exposes no mutation forms or controls
+PASS | mobile render-only fixture all scenarios keep browser console clean
+PASS | mobile mascot fixture portfolio-live derives calm and maps fallback video — Healthy empty joined holding set, no recorded gain or loss.
+PASS | mobile mascot fixture portfolio-unavailable derives sad and maps fallback video — Every source offline and joined total unknown.
+PASS | mobile mascot fixture portfolio-mascot-thinking derives thinking and maps fallback video — Sources all live; one holding has no acquisition basis.
+PASS | mobile mascot fixture portfolio-mascot-worried derives worried and maps fallback video — Eligible recorded loss beats otherwise complete coverage.
+PASS | mobile mascot fixture portfolio-mascot-happy derives happy and maps fallback video — Recorded gain below threshold; dust excluded, no missing basis.
+PASS | mobile mascot fixture portfolio-mascot-excited derives excited and maps fallback video — Recorded gain with full basis coverage, even below threshold.
+PASS | mobile mascot fixture portfolio-mascot-proud derives proud and maps fallback video — Flat recorded P&L and every holding eligible.
+PASS | mobile mascot fixture portfolio-mascot-sleepy derives sleepy and maps fallback video — Healthy flat eligible subset with dust; no higher priority state.
+PASS | mobile mascot fixture portfolio-mascot-alert derives alert and maps fallback video — One partial source outranks a recorded gain.
+PASS | mobile mascot fixture portfolio-mascot-history-unavailable derives alert and maps fallback video — All sources live but snapshot history unavailable.
+PASS | mobile mascot fixture portfolio-mascot-unreconciled derives alert and maps fallback video — An unreconciled holding outranks missing acquisition basis.
+PASS | mobile mascot fixture portfolio-mascot-excited-partial derives excited and maps fallback video — Threshold reached with excluded dust, without claiming full coverage.
+PASS | mobile mascot fixture portfolio-mascot-airdrop derives happy and maps fallback video — Verified free acquisition has positive recorded P&L and no percentage; dust keeps coverage partial.
+PASS | mobile mascot fixture portfolio-mascot-null-pnl derives calm and maps fallback video — Only excluded dust; unknown P&L never implies a gain or loss.
+PASS | mobile mascot fixture covers all nine distinct moods and video mappings — 9 mood sprites retain intrinsic dimensions/alt text; all mapped videos play across reload and in-document mood changes; proud→idle collapse restarts; zero GLB requests · hydration boundary retained only visible motion surfaces; 10 advancing-video proof(s)
+PASS | mobile mascot fixture DOM WebGL 3D switches all nine mapped mood motions without re-downloading — data-mascot-3d=on · calm→idle, happy→happy_clap, excited→excited_bounce, thinking→idle, worried→idle, sad→idle, sleepy→idle, proud→happy_clap, alert→idle · on→video→on (data-mascot-3d=video · idle · /mascot/motion-idle.webm · readyState 4 · 720×720 · 0.32s/7.00s advancing · no canvas · static sprite hidden; data-mascot-3d=on · idle · clips idle,happy_clap,excited_bounce · 126×189px unchanged box · DPR 1 · no video) · hydration boundary retained only visible motion surfaces; 1 advancing-video proof(s) · one GLB request
+PASS | mobile mascot fixture DOM new server props refresh mood and preserve expanded mute — thinking → worried while muted: expanded controls retained, checkbox/aria-pressed/localStorage stay true, no bubble; unmute shows latest message
+PASS | mobile mascot fixture DOM new mood restarts a finite transient bubble without expanding — 64×95px chip · 2:3 motion surface · tiny status dot · no visible bubble or controls · data-mascot-3d=on · idle · clips idle,happy_clap,excited_bounce · 62×93px unchanged box · DPR 1 · no video
+PASS | mobile mascot fixture DOM changed message with the same mood restarts the bubble — alert source message expired; alert unreconciled message is newly visible while controls remain hidden
+PASS | mobile mascot fixture DOM reduced motion keeps fallback video moving while CSS animation/fade is disabled — data-mascot-3d=video · idle · /mascot/motion-idle.webm · readyState 4 · 720×720 · 4.68s/7.00s advancing · no canvas · static sprite hidden · 13 expanded companion elements: CSS animation-name=none, transition durations=0; native video continues; collapse leaves compact chip · hydration boundary retained only visible motion surfaces; 2 advancing-video proof(s)
+PASS | mobile mascot fixture console remains clean across every mood and prop transition
+PASS | mobile fixture mascot DOM reduced motion plays video without mounting WebGL — data-mascot-3d=video · idle · /mascot/motion-idle.webm · readyState 4 · 720×720 · 0.76s/7.00s advancing · no canvas · static sprite hidden · 64×95px chip · 2:3 motion surface · tiny status dot · no visible bubble or controls · data-mascot-3d=video · idle · /mascot/motion-idle.webm · readyState 4 · 720×720 · 6.25s/7.00s advancing · no canvas · static sprite hidden · 202/5766 pixels changed across 700ms (62x93) · hidden pauses/visible resumes (/mascot/motion-idle.webm · readyState 4 · 720×720 · 1.74s/7.00s advancing) · zero WebGL probes/GLB requests · CSS animation/fade disabled · hydration boundary retained only visible motion surfaces; 3 advancing-video proof(s) · clean console
+PASS | mobile mascot fixture DOM WebGL loading plays video then hands off to the live canvas — video → on · data-mascot-3d=video · idle · /mascot/motion-idle.webm · readyState 4 · 720×720 · 0.34s/7.00s advancing · no canvas · static sprite hidden · data-mascot-3d=on · idle · clips idle,happy_clap,excited_bounce · 62×93px unchanged box · DPR 1 · no video · stopped/removed video · 64×95px unchanged card · one GLB · WebM-only request · hydration boundary retained only visible motion surfaces; 1 advancing-video proof(s)
+PASS | mobile mascot fixture DOM WebGL resting chip plays idle without a click — 64×95px chip · 2:3 motion surface · tiny status dot · no visible bubble or controls · data-mascot-3d=on · idle · clips idle,happy_clap,excited_bounce · 62×93px unchanged box · DPR 1 · no video · no click · one GLB request
+PASS | mobile mascot fixture WebGL resting idle changes rendered frames continuously — 3/3 distinct rendered frames · idle still live after announcement · same canvas
+PASS | mobile mascot fixture DOM WebGL expand/collapse preserves canvas and switches idle to excited_bounce — idle → excited_bounce → idle twice (click + Escape) · same canvas/WebGL context · 126×189px expanded box / 128×262px card · 1 total GLB request
+PASS | mobile mascot fixture DOM WebGL collapsed mood updates retain idle and the mounted canvas — excited → happy server props · still collapsed/idle · same canvas · one GLB request
+PASS | mobile mascot fixture DOM WebGL resting reduced-motion toggle hands idle to video and restores live — on → video → on while collapsed · data-mascot-3d=video · idle · /mascot/motion-idle.webm · readyState 4 · 720×720 · 0.17s/7.00s advancing · no canvas · static sprite hidden · data-mascot-3d=on · idle · clips idle,happy_clap,excited_bounce · 62×93px unchanged box · DPR 1 · no video · cached GLB
+PASS | mobile mascot fixture DOM WebGL context loss switches the live idle canvas to playing video — data-mascot-3d=video · idle · /mascot/motion-idle.webm · readyState 4 · 720×720 · 0.13s/7.00s advancing · no canvas · static sprite hidden · one cached GLB request · hydration boundary retained only visible motion surfaces; 2 advancing-video proof(s)
+PASS | mobile mascot fixture WebGL resting idle and transition console stays clean — zero page/console errors or Three/WebGL warnings
+PASS | mobile mascot fixture DOM WebGL disabled plays video and restarts clips on expand/collapse — data-mascot-3d=video · idle · /mascot/motion-idle.webm · readyState 4 · 720×720 · 0.69s/7.00s advancing · no canvas · static sprite hidden · idle→happy_clap→idle with near-zero restarts · data-mascot-3d=video · happy_clap · /mascot/motion-happy-clap.webm · readyState 4 · 720×720 · 0.16s/7.00s advancing · no canvas · static sprite hidden · 64×95px chip · 2:3 motion surface · tiny status dot · no visible bubble or controls · data-mascot-3d=video · idle · /mascot/motion-idle.webm · readyState 4 · 720×720 · 0.10s/7.00s advancing · no canvas · static sprite hidden · zero GLB requests · hydration boundary retained only visible motion surfaces; 3 advancing-video proof(s)
+PASS | mobile mascot fixture WebGL-disabled mascot fallback console is clean — zero page errors or Three/WebGL warnings
+PASS | mobile mascot fixture DOM WebGL malformed GLB keeps playing video at rest and after expansion — data-mascot-3d=video · happy_clap · /mascot/motion-happy-clap.webm · readyState 4 · 720×720 · 0.16s/7.00s advancing · no canvas · static sprite hidden · 64×95px chip · 2:3 motion surface · tiny status dot · no visible bubble or controls · data-mascot-3d=video · idle · /mascot/motion-idle.webm · readyState 4 · 720×720 · 0.14s/7.00s advancing · no canvas · static sprite hidden · one request · hydration boundary retained only visible motion surfaces; 3 advancing-video proof(s) · zero page/video errors or Three/WebGL warnings
+PASS | Mascot motion surfaces never settle on the static fallback in codec-capable Chromium — post-hydration states observed: on/video
+PASS | Mascot video fallback selects every contracted VP9 WebM clip — selected sources observed: /mascot/motion-excited-bounce.webm, /mascot/motion-happy-clap.webm, /mascot/motion-idle.webm
+
+PASS | Mascot resting/occlusion summary — 10/10 checks passed at 1440×1000 and 390×844
+PASS | Mascot DOM assertion summary — 50/50 checks passed (individual assertions printed above)
+PASS | Mascot 3D/video fallback summary — 65/65 checks passed · data-mascot-3d states observed: on/video · selected video sources: /mascot/motion-excited-bounce.webm, /mascot/motion-happy-clap.webm, /mascot/motion-idle.webm
+
+PASS | Mascot contract summary — 126/126 checks passed
+
+PASS | UI contract summary — 503/503 checks passed
+```
+
+`git diff --stat 1d005d6`
+
+```text
+ app/asset-list/page.tsx           |  12 ++--
+ app/page.tsx                      |   4 +-
+ app/pnl-asset-table.tsx           |   6 +-
+ app/wallet-inventory-snapshot.tsx |  15 +++++
+ lib/pnl-correctness-pages.test.ts |  79 ++++++++++++++++++++++-
+ lib/pnl-ui.test.ts                |   3 +-
+ scripts/ui-contract-check.mjs     | 132 +++++++++++++++++++++++++++++++-------
+ 7 files changed, 216 insertions(+), 35 deletions(-)
+```
+
+`Task-owned production server cleanup and branch verification`
+
+```text
+Stopped only task-owned production process group 564656 on 127.0.0.1:59337.
+Port 59337 is unused after shutdown (bind verified).
+Branch: feat/dust-removal
+```
+
