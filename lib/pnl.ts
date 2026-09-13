@@ -2,7 +2,7 @@ import { shouldSuppressHolding } from "./dust-filter";
 import type { FiatRates, NormalizedT212Position } from "./live-data";
 
 /** Recorded does not mean free. Only verified no-payment acquisitions are free. */
-export type BasisStatus = "t212-live" | "onchain-derived" | "arrival-priced" | "airdrop-free" | "not-recorded";
+export type BasisStatus = "t212-live" | "onchain-derived" | "operator-recorded" | "arrival-priced" | "airdrop-free" | "not-recorded";
 /** Mutually exclusive coverage buckets; unpriced is not also counted as dust. */
 export type PnlEligibility = "eligible" | "not-recorded" | "dust" | "unpriced" | "unreconciled";
 
@@ -116,6 +116,19 @@ export type OnchainHolding = {
   valueUsd: number | null;
 };
 
+/** Desk-stated total USD basis for the holding key, independent of chain lots. */
+export type ManualBasis = { costUsd: number; asOf: string; note: string };
+
+/** Shared reader/engine guard: a cost without a dated derivation is not a basis. */
+export function isManualBasis(value: unknown): value is ManualBasis {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const row = value as Partial<ManualBasis>;
+  if (!nonNegative(row.costUsd) || typeof row.note !== "string" || !row.note.trim()
+    || typeof row.asOf !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(row.asOf)) return false;
+  const day = Date.parse(`${row.asOf}T00:00:00.000Z`);
+  return Number.isFinite(day) && new Date(day).toISOString().slice(0, 10) === row.asOf;
+}
+
 /**
  * Auditable normalized evidence, NOT a provider response or an operator cost override.
  * A future collector must prove full history, owned acquisition quantities and all
@@ -176,9 +189,15 @@ function evidenceMatches(holding: OnchainHolding, evidence: AcquisitionEvidence)
 }
 
 /** Pure and fail-independent; balance/floor endpoints alone prove no basis. */
-export function deriveOnchainPnl(holding: OnchainHolding, usdToThb: number | null, evidence?: AcquisitionEvidence | null): HoldingPnl {
+export function deriveOnchainPnl(holding: OnchainHolding, usdToThb: number | null, evidence?: AcquisitionEvidence | null, manualBasis?: ManualBasis | null): HoldingPnl {
   const skip = excluded(holding.valueUsd);
-  if (skip) return skip; // Never even inspect evidence for dust/unpriced holdings.
+  if (skip) return skip; // Never even inspect either basis channel for dust/unpriced holdings.
+  // Owner authority wins regardless of chain collection time; never mutate its evidence.
+  if (manualBasis) {
+    if (!isManualBasis(manualBasis)) return unknown("Invalid operator-recorded basis");
+    return recorded(manualBasis.costUsd, holding.valueUsd! - manualBasis.costUsd,
+      "operator-recorded", `operator-recorded: ${manualBasis.note}`, usdToThb);
+  }
   if (!evidence) return unknown(holding.kind === "native"
     ? "Native balance only; no clean purchase provenance (bridge/deposit is not a basis)"
     : holding.kind === "nft"

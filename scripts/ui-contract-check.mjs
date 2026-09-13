@@ -367,7 +367,7 @@ async function checkPnlContract(page) {
       return "no joined rows; unavailable/empty state remains explicit";
     }
     for (const row of rows) {
-      requireCondition(["t212-live", "onchain-derived", "arrival-priced", "airdrop-free", "not-recorded"].includes(row.status), `invalid basisStatus ${row.status}`);
+      requireCondition(["t212-live", "onchain-derived", "operator-recorded", "arrival-priced", "airdrop-free", "not-recorded"].includes(row.status), `invalid basisStatus ${row.status}`);
       requireCondition(["eligible", "not-recorded", "unreconciled"].includes(row.eligibility), `invalid pnlEligibility ${row.eligibility}`);
       requireCondition(row.value.length > 0 && row.basis.length > 0 && row.pnl.length > 0, "P&L row omits value/basis/P&L cells");
       requireCondition(row.text.includes(row.status), `basisStatus chip ${row.status} is not visible`);
@@ -1576,6 +1576,75 @@ async function auditPopulatedFixtures(browser, fixtureUrl, viewport) {
   }
 }
 
+async function auditOperatorBasisFixtures(browser, fixtureUrl, viewport) {
+  const page = await browser.newPage({ viewport: { width: viewport.width, height: viewport.height } });
+  const browserErrors = [];
+  page.on("pageerror", (error) => browserErrors.push(`page: ${error.message}`));
+  page.on("console", (message) => captureBrowserConsole(browserErrors, message));
+  const prefix = `${viewport.name} operator basis`;
+  try {
+    for (const scenario of ["operator", "operator-missing"]) {
+      const positive = scenario === "operator";
+      const label = `${prefix} ${positive ? "positive" : "fail-closed"}`;
+      if (!await check(`${label} renders real joined inputs`, async () => {
+        const response = await page.goto(`${fixtureUrl}/?scenario=dust-${scenario}-home`, { waitUntil: "networkidle", timeout: 15_000 });
+        requireCondition(response?.ok(), `fixture HTTP ${response?.status() ?? "unavailable"}`);
+        await page.locator(".pnl-asset-table").waitFor();
+      })) continue;
+      const book = await page.evaluate(() => window.__dustFixturePortfolio);
+      await check(`${label} pins operator-only arithmetic, coverage and source identities`, async () => {
+        const rows = [book.nfts[0], book.wallet.native[0], book.wallet.tokens[0]];
+        const unknown = [null, null, null, "not-recorded", "not-recorded"];
+        const expected = [positive ? [80, 20, 25, "operator-recorded", "eligible"] : unknown, unknown, unknown];
+        requireCondition(JSON.stringify(rows.map((row) => [row.costBasisUsd, row.pnlUsd, row.pnlPct, row.basisStatus, row.pnlEligibility])) === JSON.stringify(expected), "operator basis/P&L or no-basis exclusions differ");
+        requireCondition(rows.every((row) => row.valueUsd === 100) && book.totals.grandTotalUsd === 300, "basis changed full book valuation");
+        requireCondition(book.totals.costBasisUsd === (positive ? 80 : null) && book.totals.pnlUsd === (positive ? 20 : null), "operator-only holding did not enter recorded P&L exactly once");
+        const c = book.totals.pnlCoverage;
+        requireCondition(c.totalHoldings === 3 && c.eligible === (positive ? 1 : 0) && c.notRecorded === (positive ? 2 : 3)
+          && c.dust === 0 && c.unpriced === 0 && c.unreconciled === 0 && c.status === "partial" && c.sourcesComplete, "operator coverage buckets differ");
+        requireCondition(c.eligible + c.notRecorded + c.dust + c.unpriced + c.unreconciled === c.totalHoldings, "coverage bucket identity changed");
+        requireCondition(JSON.stringify(Object.keys(book.sources).sort()) === JSON.stringify(["capital", "ethPrice", "fiatFx", "manualHoldings", "nfts", "t212Positions", "t212Summary", "walletNative", "walletTokens"]), "operator basis added/lost a source");
+        return JSON.stringify({ rows: expected, coverage: c });
+      });
+      await check(`${label} displays exact chip, derivation, basis and P&L or honest dashes`, async () => {
+        const ids = ["nft:collection-one", "native:1", "token:1:0x0000000000000000000000000000000000000001"];
+        requireCondition(await page.locator(".pnl-asset-table tbody tr").count() === 3, "operator fixture row count differs");
+        for (const [index, id] of ids.entries()) {
+          const row = page.locator(`.pnl-asset-table tr[data-holding-id="${id}"]`);
+          const recorded = positive && index === 0;
+          const status = recorded ? "operator-recorded" : "not-recorded";
+          requireCondition(await row.getAttribute("data-basis-status") === status && await row.getAttribute("data-pnl-eligibility") === (recorded ? "eligible" : "not-recorded"), `${id} provenance/eligibility attribute differs`);
+          const chip = row.locator(".basis-chip");
+          requireCondition(await chip.isVisible() && compactText(await chip.innerText()) === status, `${id} chip not visible`);
+          for (const [cell, value] of [["basis", recorded ? 80 : null], ["pnl", recorded ? 20 : null]]) {
+            requireCondition(await row.locator(`[data-pnl-cell="${cell}"]`).evaluate((element) => element.firstChild?.textContent) === expectedUsd(value), `${id} ${cell} is not the exact amount/null`);
+          }
+          const pnlText = await row.locator('[data-pnl-cell="pnl"]').innerText();
+          requireCondition(recorded ? pnlText.includes("+25.00%") : !/\d+(?:\.\d+)?%/.test(pnlText), `${id} percentage differs`);
+          requireCondition((await row.innerText()).includes(recorded ? "Included in recorded P&L" : "Basis not recorded · excluded from P&L"), `${id} eligibility copy changed`);
+          if (recorded) requireCondition((await chip.getAttribute("title") ?? "").includes("operator-recorded: desk execution: $80 paid 2026-09-01"), "operator derivation is not rendered in the tooltip");
+        }
+      });
+      await check(`${label} enters recorded summary without changing coverage copy or mascot priority`, async () => {
+        const summary = page.locator("[data-pnl-summary]");
+        requireCondition(await summary.getAttribute("data-pnl-state") === (positive ? "partial" : "none"), "operator summary state differs");
+        requireCondition(compactText(await summary.locator(".pnl-metric-line > strong").innerText()) === expectedUsd(positive ? 20 : null), "recorded summary P&L differs");
+        requireCondition((await summary.innerText()).includes(`Basis ${expectedUsd(positive ? 80 : null)}`), "recorded summary basis differs");
+        requireCondition((await summary.innerText()).includes(positive ? "Partial P&L (1 of 3 holdings have recorded basis)" : "No recorded cost basis yet — P&L unavailable"), "operator basis changed coverage copy");
+        requireCondition(compactText(await page.locator(".pnl-coverage .pnl-metric-line > strong").innerText()) === `${positive ? 1 : 0} / 3`, "operator coverage widget differs");
+        await assertMascot(page, "thinking");
+        const toggle = page.locator("[data-mascot-toggle]");
+        if (await toggle.getAttribute("aria-expanded") !== "true") await toggle.click();
+        requireCondition(compactText(await page.locator("[data-mascot-bubble]").innerText()) === "Still mapping cost basis. Where I have no clean acquisition record I won't guess a number.", "operator basis changed mascot copy/priority");
+      });
+      await checkNoMutationControls(page, label);
+    }
+    await check(`${prefix} controls keep browser console clean`, async () => {
+      requireCondition(browserErrors.length === 0, browserErrors.join(" | "));
+    });
+  } finally { await page.close(); }
+}
+
 async function auditBasisEvidenceFixtures(browser, fixtureUrl, viewport) {
   const page = await browser.newPage({ viewport: { width: viewport.width, height: viewport.height } });
   const browserErrors = [];
@@ -2680,6 +2749,7 @@ try {
         await auditPopulatedFixtures(browser, fixtureServer.url, viewport);
         await auditDustFixtures(browser, fixtureServer.url, viewport);
         await auditBasisEvidenceFixtures(browser, fixtureServer.url, viewport);
+        await auditOperatorBasisFixtures(browser, fixtureServer.url, viewport);
         await auditMascotFixtures(browser, fixtureServer.url, viewport);
         await auditMascotReducedMotion(browser, `${fixtureServer.url}/?scenario=portfolio-mascot-excited`, viewport, "fixture");
         await auditMascotLoading(browser, fixtureServer.url, viewport);

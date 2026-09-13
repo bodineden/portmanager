@@ -1,5 +1,16 @@
 import { neon, type NeonQueryFunction } from "@neondatabase/serverless";
 
+/** Operator-written acquisition basis; the app consumes this table SELECT-only. */
+export const MANUAL_BASIS_DDL = `
+  CREATE TABLE IF NOT EXISTS manual_basis (
+    holding_key text PRIMARY KEY,
+    cost_usd numeric NOT NULL CHECK (cost_usd >= 0),
+    as_of date NOT NULL,
+    note text NOT NULL,
+    recorded_at timestamptz NOT NULL DEFAULT now()
+  );
+`;
+
 /** Acquisition-evidence cache only; independent of archive schema and seeds. */
 export const BASIS_EVIDENCE_DDL = `
   CREATE TABLE IF NOT EXISTS basis_evidence (

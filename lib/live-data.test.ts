@@ -735,6 +735,26 @@ describe("Trading 212 normalisation", () => {
 });
 
 describe("getJoinedPortfolio", () => {
+  it.each([false, true])("wires operator basis and isolates reader rejection=%s", async (reject) => {
+    vi.stubEnv("DATABASE_URL", "");
+    vi.stubEnv("T212_API_KEY", "api-key");
+    vi.stubEnv("T212_API_SECRET", "api-secret");
+    vi.stubGlobal("fetch", walletNetworkFetchMock());
+    const reader = vi.spyOn(basisDb, "readManualBasis");
+    if (reject) reader.mockRejectedValue(new Error("synthetic desk reader unavailable"));
+    else reader.mockResolvedValue({ "native:1:native": { costUsd: 1, asOf: AS_OF.slice(0, 10), note: "desk execution: $1" } });
+    const chainReader = vi.spyOn(basisDb, "readBasisEvidence").mockResolvedValue({});
+    const book = await getJoinedPortfolio({ now: () => Date.parse(AS_OF) });
+    expect(reader).toHaveBeenCalledExactlyOnceWith(AS_OF);
+    expect(chainReader).toHaveBeenCalledExactlyOnceWith(AS_OF);
+    const row = book.wallet.native.find((holding) => holding.chainId === 1)!;
+    expect(row).toMatchObject({ basisStatus: reject ? "not-recorded" : "operator-recorded",
+      pnlEligibility: reject ? "not-recorded" : "eligible", costBasisUsd: reject ? null : 1,
+      pnlUsd: reject ? null : row.valueUsd! - 1 });
+    expect(book.t212.cashAvailable).toBe(487);
+    expect(Object.keys(book.sources).sort()).toEqual(["capital", "ethPrice", "fiatFx", "manualHoldings", "nfts",
+      "t212Positions", "t212Summary", "walletNative", "walletTokens"]);
+  });
   it.each([false, true])("consumes basis cache without adding a source, and isolates reader rejection=%s", async (reject) => {
     vi.stubEnv("DATABASE_URL", "");
     vi.stubEnv("T212_API_KEY", "api-key");
