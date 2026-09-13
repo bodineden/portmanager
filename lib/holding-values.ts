@@ -3,6 +3,7 @@ import type { JoinedPortfolio, LiveSourceState } from "./live-data";
 /** Null values remain valid for historical snapshots and unconverted manual cash. */
 export type HoldingsValueMap = Record<string, number | null>;
 export type SnapshotSources = Record<string, LiveSourceState>;
+export type NativeBasketMembership = Record<string, number[]>;
 export const VALUE_SOURCE_KEYS = ["t212Summary", "t212Positions", "nfts", "fiatFx", "ethPrice", "walletNative", "walletTokens", "solana", "manualHoldings", "capital"] as const;
 export const holdingId = {
   t212: (ticker: string) => `t212:${ticker}`,
@@ -19,6 +20,13 @@ export function joinedHoldingsMap(portfolio: JoinedPortfolio): HoldingsValueMap 
     ...portfolio.wallet.tokens.map((row) => [holdingId.token(row.chainId, row.contract ?? row.symbol), row.valueUsd]),
     ...portfolio.manualHoldings.map((row) => [holdingId.manual(row.label), row.valueUsd]),
   ]);
+}
+
+/** Observed chains include validated zero balances; a failed RPC contributes no member. */
+export function joinedNativeBasketMembership(portfolio: JoinedPortfolio): NativeBasketMembership {
+  return Object.fromEntries(portfolio.wallet.native.filter((row) => row.key === "native:eth")
+    .map((row) => [row.key, row.chains.map((chain) => chain.chainId)
+      .filter((chainId): chainId is number => typeof chainId === "number").sort((a, b) => a - b)]));
 }
 
 /** Includes identities AND priced flags, not just counts: same-count swaps are different baskets.

@@ -5,6 +5,9 @@ import { PnlAssetTable } from "../app/pnl-asset-table";
 import { buildJoinedPortfolio, formatUsd, type JoinedPortfolio, type LiveResult } from "./live-data";
 import { aggregatePnl, type HoldingPnl } from "./pnl";
 import { oneUnpricedNft } from "./__fixtures__/nft-floors";
+import { joinedHoldingsMap, joinedNativeBasketMembership } from "./holding-values";
+import { mapPortfolioSnapshotRow } from "./pnl-history";
+import { previousDayHoldings } from "./pnl-view";
 
 const DATE = "2026-09-05T12:00:00.000Z";
 const live = <T>(data: T): LiveResult<T> => ({ data, state: { status: "live", asOf: DATE, message: "offline fixture" } });
@@ -218,5 +221,86 @@ describe("rendered per-asset P&L honesty (offline fixtures)", () => {
     expect(text(html)).toContain("Holdings unavailable — P&L coverage is incomplete");
     expect(text(html)).toContain("No recorded cost basis is available to display");
     expect(text(html)).not.toMatch(/\$0|฿0|\b(?:undefined|NaN|null)\b/);
+  });
+});
+
+describe("L2 rendered combined ETH Asset Day", () => {
+  const previousDate = "2026-09-04T23:59:59.000Z";
+  function nativeBook(asOf: string, missingChain?: number, price = 1000): JoinedPortfolio {
+    const observed = <T>(data: T): LiveResult<T> => ({ data, state: { status: "live", asOf, message: "offline L2 fixture" } });
+    return buildJoinedPortfolio({
+      solana: observed({ native: [], tokens: [] }),
+      t212Summary: observed({ currency: "USD", cashAvailable: 0, totalValue: 0, investmentsCurrentValue: 0 }),
+      t212Positions: observed([]), nfts: observed([]), walletTokens: observed([]), manualHoldings: observed([]),
+      capitalEvents: observed([{ occurredAt: "2026-09-01T00:00:00.000Z", kind: "contribution", amountThb: 36000 }]),
+      walletNative: {
+        data: [1, 8453, 42161, 4663].map((chainId, index) => ({
+          chainId, chainName: ["Ethereum", "Base", "Arbitrum One", "Robinhood Chain"][index], symbol: "ETH",
+          amount: 2 ** index, amountRaw: (BigInt(2 ** index) * BigInt("1000000000000000000")).toString(),
+        })).filter((row) => row.chainId !== missingChain),
+        state: { status: missingChain === undefined ? "live" : "partial", asOf, message: "offline constituent RPC fixture" },
+      },
+      fiatFx: observed({ usdToThb: 36, gbpToThb: 45, eurToThb: 40, asOf }), ethPrice: observed(price),
+    }, asOf);
+  }
+
+  function recordedObservation(book: JoinedPortfolio) {
+    const snapshot = mapPortfolioSnapshotRow({
+      snapshot_date: book.asOf.slice(0, 10), total_value_usd: book.totals.grandTotalUsd,
+      total_value_thb: book.totals.grandTotalThb,
+      holdings: JSON.stringify(joinedHoldingsMap(book)),
+      coverage: JSON.stringify({ ...book.totals.pnlCoverage, sources: book.sources,
+        nativeBasketMembership: joinedNativeBasketMembership(book) }),
+    });
+    if (!snapshot) throw new Error("L2 snapshot fixture failed to decode");
+    return snapshot;
+  }
+
+  function renderedDay(book: JoinedPortfolio, previous: ReturnType<typeof recordedObservation>) {
+    const html = renderToStaticMarkup(React.createElement(PnlAssetTable, {
+      portfolio: book, previousHoldings: previousDayHoldings([previous], book.asOf),
+    }));
+    const renderedRows = rows(html);
+    expect(renderedRows).toHaveLength(1);
+    const row = renderedRows[0];
+    expect(row).toContain('id="pnl:native:eth" data-holding-id="native:eth" data-pnl-holding-id="native:eth"');
+    expect([...html.matchAll(/data-pnl-holding-id="([^"]+)"/g)].map((match) => match[1])).toEqual(["native:eth"]);
+    const day = row.match(/<td\b[^>]*data-pnl-cell="day"[^>]*>[\s\S]*?<\/td>/)?.[0];
+    if (!day) throw new Error("L2 fixture is missing its rendered Asset Day cell");
+    return { row, day };
+  }
+
+  it("renders no Asset Day for the exact Base-outage $13000 to Arbitrum-outage $11000 counterexample", () => {
+    const before = recordedObservation(nativeBook(previousDate, 8453));
+    const current = nativeBook(DATE, 42161);
+    expect(before.holdings).toEqual({ "native:eth": 13000 });
+    expect(before.sources?.walletNative.status).toBe("partial");
+    expect(before.nativeBasketMembership).toEqual({ "native:eth": [1, 4663, 42161] });
+    expect(joinedHoldingsMap(current)).toEqual({ "native:eth": 11000 });
+    expect(current.sources.walletNative.status).toBe("partial");
+    expect(current.wallet.native[0].chains.map((chain) => chain.chainId)).toEqual([1, 8453, 4663]);
+    const { row, day } = renderedDay(current, before);
+    expect(text(day)).toBe("—");
+    expect(day).not.toContain("data-day-direction");
+    expect(day).not.toMatch(/is-up|is-down|[↑↓→]/);
+    expect(row).not.toContain("-US$2,000.00");
+    expect(row).not.toContain("-15.38%");
+    console.info(`L2 Asset Day UI counterexample: previous=13000, current=11000, rendered=${text(day)}, direction=absent`);
+  });
+
+  it("renders the correct Asset Day when the complete 1/2/4/8 ETH basket only changes price", () => {
+    const before = recordedObservation(nativeBook(previousDate));
+    const current = nativeBook(DATE, undefined, 1100);
+    expect(before.holdings).toEqual({ "native:eth": 15000 });
+    expect(before.sources?.walletNative.status).toBe("live");
+    expect(before.nativeBasketMembership).toEqual({ "native:eth": [1, 4663, 8453, 42161] });
+    expect(joinedHoldingsMap(current)).toEqual({ "native:eth": 16500 });
+    expect(current.sources.walletNative.status).toBe("live");
+    expect(current.wallet.native[0].chains.map((chain) => chain.amount)).toEqual([1, 2, 4, 8]);
+    const { day } = renderedDay(current, before);
+    expect(day).toContain('data-day-direction="up"');
+    expect(day).toContain("positive is-up");
+    expect(text(day)).toBe("↑ +US$1,500.00 +10.00%");
+    console.info(`L2 Asset Day UI positive control: previous=15000, current=16500, rendered=${text(day)}`);
   });
 });

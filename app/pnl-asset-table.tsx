@@ -1,14 +1,15 @@
 import { formatEth, formatThb, formatUsd, type JoinedPortfolio } from "@/lib/live-data";
 import type { HoldingPnl } from "@/lib/pnl";
-import { basisChip, eligibilityLabel, formatHoldingQuantity, formatPnlMoney, formatPnlPercent, formatSnapshotAsOf, holdingDayChange } from "@/lib/pnl-view";
-import { holdingId, type HoldingsValueMap } from "@/lib/holding-values";
+import { basisChip, eligibilityLabel, formatHoldingQuantity, formatPnlMoney, formatPnlPercent, formatSnapshotAsOf, holdingDayChange, type AssetDayObservation } from "@/lib/pnl-view";
+import { holdingId, joinedNativeBasketMembership } from "@/lib/holding-values";
 import { shouldSuppressHolding } from "@/lib/dust-filter";
 import { NativeChainBreakdown, type NativeChainView } from "./native-chain-breakdown";
 
 type AssetRow = HoldingPnl & { id: string; name: string; detail: string; quantity: string; valueUsd: number | null; valueThb: number | null; walletKind?: "native" | "token"; priced?: boolean; manualCash?: boolean; chains?: NativeChainView[]; amount?: number };
 
-export function PnlAssetTable({ portfolio, previousHoldings = null }: { portfolio: JoinedPortfolio; previousHoldings?: HoldingsValueMap | null }) {
+export function PnlAssetTable({ portfolio, previousHoldings = null }: { portfolio: JoinedPortfolio; previousHoldings?: AssetDayObservation | null }) {
   const { t212, nfts, wallet, totals } = portfolio;
+  const currentEvidence = { sources: portfolio.sources, nativeBasketMembership: joinedNativeBasketMembership(portfolio) };
   const rows: AssetRow[] = [
     ...t212.investments.map((row) => ({ ...row, id: `t212:${row.ticker}`, name: row.ticker, detail: `Trading 212 · ${row.name}`, quantity: formatHoldingQuantity(row.quantity) })),
     ...nfts.map((row) => ({ ...row, id: `nft:${row.collection}`, name: row.collectionName, detail: `NFT collection · floor ${formatEth(row.floorEth)}`, quantity: `${row.tokenCount} NFTs` })),
@@ -32,7 +33,7 @@ export function PnlAssetTable({ portfolio, previousHoldings = null }: { portfoli
           const excluded = row.pnlEligibility !== "eligible";
           const status = basisChip(row.basisStatus);
           const eligibility = row.manualCash ? "Manually reported · value only · no P&L" : eligibilityLabel(row.pnlEligibility);
-          const day = holdingDayChange(row.id, row.valueUsd, previousHoldings);
+          const day = holdingDayChange(row.id, row.valueUsd, previousHoldings, currentEvidence);
           const direction = day ? day.usd > 0 ? "up" : day.usd < 0 ? "down" : "flat" : undefined;
           return <tr key={row.id} id={`pnl:${row.id}`} data-holding-id={row.id} data-pnl-holding-id={row.id} data-native-chains={row.chains ? JSON.stringify(row.chains) : undefined} data-holding-amount={row.amount} data-holding-value-usd={row.valueUsd} data-manual-cash={row.manualCash ? "true" : undefined} data-basis-status={row.manualCash ? undefined : row.basisStatus} data-pnl-eligibility={row.manualCash ? undefined : row.pnlEligibility} data-wallet-kind={row.walletKind} data-wallet-priced={row.walletKind ? String(row.priced) : undefined} className={excluded ? "pnl-row-excluded" : ""}>
             <td><strong className="ticker-cell">{row.name}</strong><small className="sub-cell">{row.detail}</small><small className="sub-cell">{row.quantity}</small>{row.chains && <NativeChainBreakdown chains={row.chains} symbol={row.name} />}</td>

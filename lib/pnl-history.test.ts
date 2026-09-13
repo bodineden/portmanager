@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { __resetSnapshotCacheForTests, getJoinedPortfolio, buildJoinedPortfolio, type JoinedPortfolio, type JoinedPortfolioInputs, type LiveResult } from "./live-data";
-import { joinedHoldingsMap, valueSetSignature, VALUE_SOURCE_KEYS } from "./holding-values";
+import { joinedHoldingsMap, joinedNativeBasketMembership, valueSetSignature, VALUE_SOURCE_KEYS } from "./holding-values";
 import { oneUnpricedNft } from "./__fixtures__/nft-floors";
 import * as history from "./pnl-history";
 
@@ -97,6 +97,77 @@ describe("daily snapshot recorder", () => {
     const row = query.mock.calls[2][1]!;
     expect(JSON.parse(String(row[8])).sources.walletNative.status).toBe("partial");
     expect(row[9]).toBe(book.asOf);
+  });
+
+  it.each(["live", "partial"] as const)("persists and round-trips the exact %s ETH basket, including observed zero chains", async (status) => {
+    const native = [
+      { chainId: 1, chainName: "Ethereum", symbol: "ETH", amount: 1, amountRaw: "1000000000000000000" },
+      { chainId: 8453, chainName: "Base", symbol: "ETH", amount: 2, amountRaw: "2000000000000000000" },
+      { chainId: 42161, chainName: "Arbitrum One", symbol: "ETH", amount: 0, amountRaw: "0" },
+      { chainId: 4663, chainName: "Robinhood", symbol: "ETH", amount: 8, amountRaw: "8000000000000000000" },
+    ].filter((balance) => status === "live" || balance.chainId !== 8453);
+    const book = portfolio({
+      walletNative: { data: native, state: { status, asOf: DATE, message: "fixture" } },
+      ethPrice: live(1000),
+      solana: live({ native: [{ chainId: "solana", chainName: "Solana", symbol: "SOL", amount: 1,
+        amountRaw: "1000000000", priceUsd: 100 }], tokens: [] }),
+    });
+    const expected = { "native:eth": status === "live" ? [1, 4663, 8453, 42161] : [1, 4663, 42161] };
+    expect(joinedNativeBasketMembership(book)).toEqual(expected);
+    expect(book.wallet.native.map((holding) => holding.key)).toEqual(["native:eth", "native:solana:native"]);
+    const query = vi.fn(async (_sql: string, _params?: unknown[]) => { void _sql; void _params; return [{ snapshot_date: "2026-09-05" }]; });
+    const record = history.createSnapshotRecorder({ hasDb: () => true, getDb: () => ({ query }), now: () => Date.parse(DATE) });
+    expect(await record(book)).toBe("recorded");
+    const params = query.mock.calls[2][1]!;
+    const coverage = JSON.parse(String(params[8]));
+    const holdings = JSON.parse(String(params[16]));
+    expect(coverage.nativeBasketMembership).toEqual(expected);
+    expect(holdings).toEqual({ "native:eth": status === "live" ? 11000 : 9000, "native:solana:native": 100 });
+    const snapshot = history.mapPortfolioSnapshotRow({ snapshot_date: "2026-09-05", coverage: params[8], holdings: params[16] });
+    expect(snapshot?.nativeBasketMembership).toEqual(expected);
+    expect(snapshot?.sources?.walletNative.status).toBe(status);
+    expect(snapshot?.holdings).toEqual(holdings);
+    expect(coverage.valueSetSignature).toBe(valueSetSignature(holdings, book.sources));
+  });
+
+  it("records an empty native basket membership when no combined ETH row exists", async () => {
+    const book = portfolio({ walletNative: live([]) });
+    expect(joinedNativeBasketMembership(book)).toEqual({});
+    const query = vi.fn(async (_sql: string, _params?: unknown[]) => { void _sql; void _params; return [{ snapshot_date: "2026-09-05" }]; });
+    const record = history.createSnapshotRecorder({ hasDb: () => true, getDb: () => ({ query }), now: () => Date.parse(DATE) });
+    expect(await record(book)).toBe("recorded");
+    const params = query.mock.calls[2][1]!;
+    expect(JSON.parse(String(params[8])).nativeBasketMembership).toEqual({});
+    expect(history.mapPortfolioSnapshotRow({ snapshot_date: "2026-09-05", coverage: params[8], holdings: params[16] })?.nativeBasketMembership).toEqual({});
+  });
+
+  it("maps missing or malformed basket evidence to null without dropping valid historical rows", () => {
+    const book = portfolio();
+    for (const nativeBasketMembership of [undefined, null, [], "broken JSON", true,
+      { "native:eth": [] }, { "native:eth": "1" }, { "native:eth": ["1"] }, { "native:eth": [1, 1] },
+      { "native:eth": [0] }, { "native:eth": [-1] }, { "native:eth": [1.5] },
+      { "native:eth": [Number.MAX_SAFE_INTEGER + 1] }, { "native:eth": [Infinity] }, { "native:eth": [null] },
+      { "native:eth": Array(1) },
+    ]) {
+      const snapshot = history.mapPortfolioSnapshotRow({ snapshot_date: "2026-09-05", holdings: joinedHoldingsMap(book),
+        coverage: { ...book.totals.pnlCoverage, sources: book.sources, nativeBasketMembership } });
+      expect(snapshot).not.toBeNull();
+      expect(snapshot?.nativeBasketMembership).toBeNull();
+      expect(snapshot?.holdings).toEqual(joinedHoldingsMap(book));
+    }
+  });
+
+  it("preserves nine-source historical rows with absent source and basket comparison evidence", () => {
+    const book = portfolio();
+    const sources = Object.fromEntries(Object.entries(book.sources).filter(([key]) => key !== "solana"));
+    const snapshot = history.mapPortfolioSnapshotRow({ snapshot_date: "2026-09-05", holdings: joinedHoldingsMap(book),
+      coverage: JSON.stringify({ ...book.totals.pnlCoverage, sources }) });
+    expect(Object.keys(sources)).toHaveLength(9);
+    expect(snapshot).not.toBeNull();
+    expect(snapshot?.holdings).toEqual(joinedHoldingsMap(book));
+    expect(snapshot?.sources).toBeNull();
+    expect(snapshot?.nativeBasketMembership).toBeNull();
+    expect(valueSetSignature(snapshot?.holdings, snapshot?.sources)).toBeNull();
   });
 
   it("allows same-day and next-day recovery after an error even if the logger throws", async () => {

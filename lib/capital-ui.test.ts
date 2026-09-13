@@ -79,7 +79,7 @@ describe("capital and cash-pot UI fixtures", () => {
   });
   it("renders Day with plus/up and minus/down, absent identity remains a dash", () => {
     const portfolio = capitalBook();
-    const previousHoldings = { "manual:T212 cash pot": portfolio.totals.manualUsd! - 10, "t212:CMCSA_US_EQ": portfolio.t212.investments[0].valueUsd! + 1 };
+    const previousHoldings = { holdings: { "manual:T212 cash pot": portfolio.totals.manualUsd! - 10, "t212:CMCSA_US_EQ": portfolio.t212.investments[0].valueUsd! + 1 } };
     const html = render(React.createElement(PnlAssetTable, { portfolio, previousHoldings }));
     expect(text(html)).toContain("Day");
     expect(html).toMatch(/data-pnl-cell="day"[^>]*data-day-direction="up"/);

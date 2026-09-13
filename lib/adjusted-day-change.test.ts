@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { dailyChange, dailyChangeDetails, previousDayHoldings, valueAllocation } from "./pnl-view";
-import { joinedHoldingsMap, valueSetSignature } from "./holding-values";
+import { dailyChange, dailyChangeDetails, holdingDayChange, previousDayHoldings, valueAllocation } from "./pnl-view";
+import { joinedHoldingsMap, joinedNativeBasketMembership, valueSetSignature } from "./holding-values";
 import { createSnapshotRecorder, mapPortfolioSnapshotRow, type PortfolioSnapshot } from "./pnl-history";
 import { buildJoinedPortfolio, type JoinedPortfolio, type LiveResult } from "./live-data";
 import { capitalBook } from "./__fixtures__/capital-book";
@@ -211,6 +211,88 @@ describe("adjusted adjacent-day book value change", () => {
       change: { usd: 1500, thb: 54000, pct: 10, date: "2026-09-11", previousDate: "2026-09-10" }, reason: null,
     });
   });
+  it("L2 Asset Day: refuses the reviewer's Base-to-Arbitrum outage false loss after snapshot roundtrip", async () => {
+    const beforeBook = nativeBook("2026-09-10T23:59:59Z", 8453);
+    const afterBook = nativeBook(AS_OF, 42161);
+    const before = await recordedBook(beforeBook);
+    const after = await recordedBook(afterBook);
+    expect(before.row.holdings).toEqual({ "native:eth": 13000 });
+    expect(after.row.holdings).toEqual({ "native:eth": 11000 });
+    expect(before.row.nativeBasketMembership).toEqual({ "native:eth": [1, 4663, 42161] });
+    expect(after.row.nativeBasketMembership).toEqual({ "native:eth": [1, 4663, 8453] });
+    const previous = previousDayHoldings([after.row, before.row], AS_OF);
+    expect(previous?.sources?.walletNative.status).toBe("partial");
+    expect(previous?.nativeBasketMembership).toEqual(before.row.nativeBasketMembership);
+    const current = { sources: afterBook.sources, nativeBasketMembership: joinedNativeBasketMembership(afterBook) };
+    const change = holdingDayChange("native:eth", afterBook.wallet.native[0].valueUsd, previous, current);
+    const falseUsd = 11000 - 13000;
+    const falsePct = falseUsd / 13000 * 100;
+    expect(falsePct).toBe(-15.384615384615385);
+    expect(change).toBeNull();
+    expect(holdingDayChange("native:eth", 11000, previous, after.row)).toBeNull();
+    console.log("L2 ASSET DAY COUNTEREXAMPLE " + JSON.stringify({ balancesEth: [1, 2, 4, 8], priceUsd: 1000,
+      previousMissingChain: "Base", currentMissingChain: "Arbitrum", previousValueUsd: 13000,
+      currentValueUsd: 11000, rejectedFalseChange: { usd: falseUsd, pct: falsePct }, assetDayChange: change }));
+  });
+  it("L2 Asset Day: reports the correct price-only change for two complete unchanged baskets", async () => {
+    const before = await recordedBook(nativeBook("2026-09-10T23:59:59Z"));
+    const afterBook = nativeBook(AS_OF, undefined, 1100);
+    const after = await recordedBook(afterBook);
+    expect(before.row.holdings).toEqual({ "native:eth": 15000 });
+    expect(after.row.holdings).toEqual({ "native:eth": 16500 });
+    expect(before.row.nativeBasketMembership).toEqual({ "native:eth": [1, 4663, 8453, 42161] });
+    expect(after.row.nativeBasketMembership).toEqual(before.row.nativeBasketMembership);
+    const previous = previousDayHoldings([after.row, before.row], AS_OF);
+    const current = { sources: afterBook.sources, nativeBasketMembership: joinedNativeBasketMembership(afterBook) };
+    const change = holdingDayChange("native:eth", afterBook.wallet.native[0].valueUsd, previous, current);
+    expect(change).toEqual({ usd: 1500, pct: 10 });
+    expect(holdingDayChange("native:eth", 16500, previous, after.row)).toEqual(change);
+    console.log("L2 ASSET DAY POSITIVE CONTROL " + JSON.stringify({ balancesEth: [1, 2, 4, 8],
+      previousPriceUsd: 1000, currentPriceUsd: 1100, previousValueUsd: 15000, currentValueUsd: 16500, assetDayChange: change }));
+  });
+  it.each([[8453, undefined], [undefined, 42161], [8453, 8453]])(
+    "L2 Asset Day: refuses either incomplete observation, including identical partial membership (%s, %s)",
+    async (earlierMissing, laterMissing) => {
+      const before = await recordedBook(nativeBook("2026-09-10T23:59:59Z", earlierMissing));
+      const after = await recordedBook(nativeBook(AS_OF, laterMissing));
+      expect(holdingDayChange("native:eth", after.row.holdings!["native:eth"],
+        previousDayHoldings([before.row], AS_OF), after.row)).toBeNull();
+    },
+  );
+  it.each(["previous", "current"] as const)("L2 Asset Day: fails closed for missing or invalid %s evidence", async (side) => {
+    const before = (await recordedBook(nativeBook("2026-09-10T23:59:59Z"))).row;
+    const after = (await recordedBook(nativeBook(AS_OF, undefined, 1100))).row;
+    for (const issue of ["missing-membership", "empty-membership", "duplicate-membership", "changed-membership", "missing-sources", "nine-sources", "unavailable-native"] as const) {
+      const previous = structuredClone(before);
+      const current = structuredClone(after);
+      const invalid = side === "previous" ? previous : current;
+      if (issue === "missing-membership") delete invalid.nativeBasketMembership;
+      if (issue === "empty-membership") invalid.nativeBasketMembership = { "native:eth": [] };
+      if (issue === "duplicate-membership") invalid.nativeBasketMembership = { "native:eth": [1, 4663, 8453, 8453] };
+      if (issue === "changed-membership") invalid.nativeBasketMembership = { "native:eth": [1, 4663, 8453, 10] };
+      if (issue === "missing-sources") invalid.sources = null;
+      if (issue === "nine-sources") delete invalid.sources!.solana;
+      if (issue === "unavailable-native") invalid.sources!.walletNative.status = "unavailable";
+      expect(holdingDayChange("native:eth", 16500, previousDayHoldings([previous], AS_OF), current), issue).toBeNull();
+    }
+  });
+  it("L2 Asset Day: compares reordered complete membership without mutating it or gating unrelated assets", async () => {
+    const before = (await recordedBook(nativeBook("2026-09-10T23:59:59Z"))).row;
+    const after = (await recordedBook(nativeBook(AS_OF, undefined, 1100))).row;
+    after.nativeBasketMembership!["native:eth"].reverse();
+    const original = structuredClone(after.nativeBasketMembership);
+    expect(holdingDayChange("native:eth", 16500, previousDayHoldings([before], AS_OF), after)).toEqual({ usd: 1500, pct: 10 });
+    expect(after.nativeBasketMembership).toEqual(original);
+    before.holdings!["t212:UNCHANGED-CONTRACT"] = 100;
+    before.holdings!["native:solana:native"] = 10;
+    before.sources!.walletNative.status = "partial";
+    after.sources!.walletNative.status = "partial";
+    delete before.nativeBasketMembership;
+    delete after.nativeBasketMembership;
+    const previous = previousDayHoldings([before], AS_OF);
+    expect(holdingDayChange("t212:UNCHANGED-CONTRACT", 110, previous, after)).toEqual({ usd: 10, pct: 10 });
+    expect(holdingDayChange("native:solana:native", 11, previous, after)).toEqual({ usd: 1, pct: 10 });
+  });
   it("L2: refuses legacy partial combined evidence and resumes with two complete observations", () => {
     const before = snapshot("2026-09-10", 468000, 0, 36);
     before.holdings = { "native:eth": 13000 };
@@ -310,6 +392,7 @@ describe("compact snapshot holdings and book columns", () => {
     expect(insert.params[1]).toBe(portfolio.totals.grandTotalUsd);
     expect(insert.params[3]).toBe(portfolio.totals.costBasisUsd);
     const row = snapshot("2026-09-10", 100000, 120000);
-    expect(previousDayHoldings([row], AS_OF)).toEqual(row.holdings);
+    expect(previousDayHoldings([row], AS_OF)).toEqual({ holdings: row.holdings, sources: row.sources,
+      nativeBasketMembership: row.nativeBasketMembership });
   });
 });
