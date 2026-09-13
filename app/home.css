@@ -33,8 +33,6 @@
 .pnl-metric > small { display: block; margin: 6px 0; color: var(--muted); font-size: 11px; }
 .pnl-metric p:not(.eyebrow) { margin: 12px 0 0; color: var(--muted); font-size: 11px; }
 .pnl-metric .pnl-state-copy { color: var(--text-strong) !important; }
-.pnl-coverage-buckets { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0; }
-.pnl-coverage-buckets span { padding: 4px 7px; background: var(--panel-raised); border-radius: 4px; color: var(--muted); font-size: 10px; }
 .pnl-analysis-grid { display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(0, 1fr); gap: 22px; }
 .pnl-performance { display: flex; flex-direction: column; }
 .pnl-periods, .pnl-month-controls { display: inline-flex; align-items: center; gap: 4px; }
@@ -106,11 +104,6 @@
 .basis-chip.is-airdrop-free { color: var(--green); background: #EAF5F0; }
 .basis-chip.is-onchain-derived { color: var(--purple); background: #F3EFFB; }
 .pnl-row-excluded[data-pnl-eligibility="unreconciled"] { background: #FFFAF1; }
-.pnl-account-context { display: grid; grid-template-columns: 1.2fr 1fr 1fr; gap: 24px; padding: 24px; }
-.pnl-account-context > div { display: grid; align-content: start; gap: 7px; }
-.pnl-account-context small, .pnl-account-context span { color: var(--muted); font-size: 11px; }
-.pnl-account-context strong { color: var(--text-strong); font-size: 23px; font-weight: 500; }
-.pnl-account-context p:not(.eyebrow) { grid-column: 1/-1; margin: 0; color: var(--muted); font-size: 11px; }
 .home-source-stack, .home-labeled-source, .home-wallet-type-stack { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 7px; }
 .home-source-stack { justify-content: flex-end; }
 .home-labeled-source > span:first-child { color: var(--muted); font-size: 9px; }
@@ -159,7 +152,6 @@
   .pnl-calendar-day small { font-size: 7px; }
   .pnl-calendar-detail { padding: 22px; }
   .pnl-calendar-detail dl { grid-template-columns: 1fr; }
-  .pnl-account-context { grid-template-columns: 1fr; gap: 20px; }
   .pnl-source-grid { grid-template-columns: 1fr; }
   .home-footnote { align-items: flex-start; flex-direction: column; }
   .home-wallet-controls { max-width: 100%; }

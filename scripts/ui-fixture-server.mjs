@@ -9,6 +9,19 @@ const projectRoot = fileURLToPath(new URL("../", import.meta.url));
 const fixturePath = fileURLToPath(new URL("./__fixtures__/pnl-browser.json", import.meta.url));
 export const browserFixture = JSON.parse(await readFile(fixturePath, "utf8"));
 
+// Separate chart controls leave the historical P&L/calendar fixtures untouched.
+export const recordedSnapshotFixtures = {
+  "portfolio-live": structuredClone(browserFixture.snapshots).sort((a, b) => b.date.localeCompare(a.date)),
+  "portfolio-empty": [],
+  "portfolio-first-day": [],
+  "portfolio-currency-gaps": structuredClone(browserFixture.snapshots).map((point) => ({ ...point,
+    // Null USD on a mid-range day: an extreme-value marker can render below the
+    // plot interaction area on a narrow viewport and would be unreachable by pointer.
+    totalValueUsd: point.date === "2026-09-01" ? null : point.totalValueUsd,
+    totalValueThb: point.date === "2026-09-03" ? null : point.totalValueThb,
+  })).sort((a, b) => b.date.localeCompare(a.date)),
+};
+
 export async function startUiFixtureServer() {
   const temporaryRoot = await mkdtemp(path.join(tmpdir(), "portmanager-ui-fixture-"));
   const outputRoot = path.join(temporaryRoot, "dist");
@@ -82,7 +95,7 @@ export async function startUiFixtureServer() {
                 portfolio.totals.pnlByClass.t212 = { costBasisUsd, costBasisThb, pnlUsd, pnlThb, pnlPct, pnlCoverage: structuredClone(pnlCoverage) };
               }
               for (const [key, status] of Object.entries(mascot?.sourceStatuses ?? {})) portfolio.sources[key].status = status;
-              if (scenario === "portfolio-unavailable") {
+              if (scenario === "portfolio-unavailable" || scenario === "portfolio-empty") {
                 portfolio.totals.grandTotalUsd = null;
                 portfolio.totals.grandTotalThb = null;
                 portfolio.totals.costBasisUsd = null;
@@ -97,9 +110,8 @@ export async function startUiFixtureServer() {
             }
           `;
           if (id === virtualArchive) return `
-            import fixture from ${JSON.stringify(fixturePath)};
             export function isNeonConfigured() { return true; }
-            export async function listPortfolioValueSeries() { return structuredClone(fixture.legacyPoints); }
+            export async function listPortfolioValueSeries() { throw new Error("Retired series must not be read by app pages"); }
           `;
           if (id === virtualAuth) return 'export async function requireSession() { return null; }';
           if (id === virtualLedger) return 'export async function ensureLedgerSchema() { throw new Error("Fixture ledger IO forbidden"); } export const readCapitalEvents = ensureLedgerSchema; export const readManualHoldings = ensureLedgerSchema;';
@@ -130,7 +142,9 @@ export async function startUiFixtureServer() {
               }
               const mascot = fixture.mascotScenarios.find((entry) => entry.scenario === scenario);
               const available = mascot?.snapshotHistoryAvailable !== false;
-              return { snapshots: available ? structuredClone(fixture.snapshots) : [], available };
+              const controls = ${JSON.stringify(recordedSnapshotFixtures)};
+              const snapshots = controls[scenario] ?? [...fixture.snapshots].sort((a, b) => b.date.localeCompare(a.date));
+              return { snapshots: available ? structuredClone(snapshots) : [], available };
             }
             export async function listPortfolioSnapshots() { return (await readPortfolioSnapshotHistory()).snapshots; }
           `;

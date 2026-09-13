@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { chromium } from "playwright";
-import { browserFixture, startUiFixtureServer } from "./ui-fixture-server.mjs";
+import { browserFixture, recordedSnapshotFixtures, startUiFixtureServer } from "./ui-fixture-server.mjs";
 import { auditCapitalFixtures } from "./capital-ui-checks.mjs";
 
 const baseUrl = process.env.UI_BASE_URL ?? "http://127.0.0.1:8125";
@@ -377,7 +377,66 @@ async function checkOwnershipLanguage(page, routeName) {
   });
 }
 
+/** Surviving rendered evidence, never an empty locator standing in for a card. */
+async function assertRecordedPnlEvidence(page, portfolio) {
+  const assets = page.locator(".pnl-assets");
+  requireCondition(await assets.count() === 1, "per-asset evidence panel is missing or duplicated");
+  const rows = assets.locator("tbody tr[data-pnl-eligibility]");
+  const eligibility = await rows.evaluateAll((elements) => elements.map((row) => row.dataset.pnlEligibility));
+  const counts = { totalHoldings: eligibility.length, eligible: eligibility.filter((value) => value === "eligible").length,
+    notRecorded: eligibility.filter((value) => value === "not-recorded").length,
+    unreconciled: eligibility.filter((value) => value === "unreconciled").length };
+  requireCondition(counts.eligible + counts.notRecorded + counts.unreconciled === counts.totalHoldings,
+    "rendered eligibility buckets do not sum to market holdings");
+  if (portfolio) for (const [key, count] of Object.entries(counts)) {
+    requireCondition(count === portfolio.totals.pnlCoverage[key], `rendered ${key} differs from independent coverage`);
+  }
+  const footer = assets.locator("tfoot .table-total-row");
+  const empty = assets.locator(".home-empty");
+  if (await footer.count() === 0) {
+    requireCondition(counts.totalHoldings === 0 && await assets.locator("tbody tr").count() === 0 && await empty.count() === 1,
+      "missing footer without a genuine empty per-asset panel");
+    const text = compactText(await empty.innerText());
+    requireCondition(/No holdings to display|Holdings unavailable/.test(text) && /No recorded cost basis/.test(text),
+      "empty evidence has no honest holdings/basis explanation");
+    requireCondition(!/[$฿]|\d+(?:\.\d+)?%/.test(text), "empty evidence invents financial values");
+    if (portfolio) requireCondition(text.includes(portfolio.totals.pnlCoverage.sourcesComplete
+      ? "No holdings to display" : "Holdings unavailable"), "empty evidence hides source completeness");
+    return { ...counts, state: "none" };
+  }
+  requireCondition(await footer.count() === 1, "eligible totals footer is duplicated");
+  const cells = footer.locator("td");
+  requireCondition(await cells.count() === 6, "eligible totals footer lost its columns");
+  requireCondition(compactText(await cells.nth(0).innerText()) === `Eligible P&L totals ${counts.eligible} of ${counts.totalHoldings} holdings`,
+    "eligible totals numerator/denominator differs from rendered market rows");
+  const coverage = compactText(await cells.nth(5).innerText());
+  requireCondition(["complete coverage", "partial coverage"].includes(coverage), "footer lacks explicit coverage status");
+  if (coverage === "complete coverage") requireCondition(counts.eligible === counts.totalHoldings, "complete coverage includes excluded holdings");
+  if (portfolio) requireCondition(coverage === `${portfolio.totals.pnlCoverage.status} coverage`, "footer coverage differs from independent source completeness");
+  for (const [index, usdKey, thbKey] of [[2, "costBasisUsd", "costBasisThb"], [3, "pnlUsd", "pnlThb"]]) {
+    const cell = cells.nth(index);
+    const text = compactText(await cell.innerText());
+    if (counts.eligible === 0) requireCondition(text.replace(/[—·\s]/g, "") === "", "zero eligible holdings invent basis/P&L/percentage rather than dashes");
+    if (portfolio) {
+      requireCondition(await cell.evaluate((element) => element.firstChild?.textContent) === expectedUsd(counts.eligible ? portfolio.totals[usdKey] : null),
+        `${usdKey} footer differs from independent recorded subset`);
+      const pct = !counts.eligible || portfolio.totals.pnlPct === null ? "—"
+        : `${portfolio.totals.pnlPct > 0 ? "+" : portfolio.totals.pnlPct < 0 ? "−" : ""}${Math.abs(portfolio.totals.pnlPct).toFixed(2)}%`;
+      requireCondition(compactText(await cell.locator("small").innerText()) === `${expectedThb(counts.eligible ? portfolio.totals[thbKey] : null)}${index === 3 ? ` · ${pct}` : ""}`,
+        `${thbKey}/percentage footer differs from independent recorded subset`);
+    }
+  }
+  if (counts.unreconciled) requireCondition((await assets.locator(".pnl-panel-note").innerText()).includes("Unreconciled holdings are excluded from P&L totals."),
+    "unreconciled exclusion explanation disappeared");
+  return { ...counts, state: counts.eligible === 0 ? "none" : coverage.split(" ")[0] };
+}
+
 async function checkPnlContract(page) {
+  for (const selector of ["[data-pnl-summary]", ".pnl-coverage", ".pnl-account-context"]) {
+    await check(`home removed block ${selector} is absent`, async () => {
+      requireCondition(await page.locator(selector).count() === 0, `${selector} still renders`);
+    });
+  }
   await check("home follows the P&L-center section order", async () => {
     const selectors = [
       ".pnl-value-hero", ".pnl-metric-strip", ".pnl-performance", ".pnl-allocation",
@@ -395,27 +454,8 @@ async function checkPnlContract(page) {
     requireCondition(ordered, "P&L-center sections differ from the brief's order");
   });
 
-  await check("home P&L summary distinguishes none, partial and complete honestly", async () => {
-    const summary = page.locator("[data-pnl-summary]");
-    requireCondition(await summary.count() === 1, "P&L summary is missing or duplicated");
-    const state = await summary.getAttribute("data-pnl-state");
-    requireCondition(["none", "partial", "complete"].includes(state), `invalid P&L summary state ${state}`);
-    const text = compactText((await summary.textContent()) ?? "");
-    requireCondition(/P&L \(recorded\)/i.test(text), "P&L is not identified as recorded");
-    if (state === "none") {
-      const unreconciledCount = await page.locator('.pnl-assets tr[data-pnl-eligibility="unreconciled"]').count();
-      requireCondition(unreconciledCount > 0
-        ? /Recorded P&L unavailable.*unreconciled holdings are excluded/i.test(text)
-        : /No recorded cost basis/i.test(text), "unavailable P&L explanation does not match the known basis evidence");
-      requireCondition(/P&L unavailable|P&L not computable/i.test(text), "P&L unavailability is not explicit");
-      requireCondition(text.includes("—"), "unknown P&L is not displayed as —");
-      requireCondition(!/(?:\$|฿|USD\s*|THB\s*)[+-]?0(?:\.0+)?(?![\d.])|[+-]?0(?:\.0+)?%/.test(text), "unknown P&L is displayed as zero");
-    } else if (state === "partial") {
-      requireCondition(/Partial P&L/i.test(text), "partial eligible-subset P&L is not identified");
-      requireCondition(/\d[\d,]* of \d[\d,]* holdings have recorded basis/i.test(text), "partial P&L omits its holding coverage");
-    } else {
-      requireCondition(/complete|all holdings/i.test(text), "complete P&L coverage is not identified");
-    }
+  await check("home recorded P&L evidence distinguishes none, partial and complete honestly", async () => {
+    const { state } = await assertRecordedPnlEvidence(page);
     const daily = page.locator("[data-daily-change]");
     requireCondition(await daily.count() === 1, "daily-change state is missing or duplicated");
     const dailyState = await daily.getAttribute("data-daily-change");
@@ -473,11 +513,11 @@ async function checkPnlContract(page) {
         requireCondition(!/[+-]?\d+(?:\.\d+)?%/.test(row.pnl), "zero-basis acquisition invents a P&L percentage");
       }
     }
-    const summaryState = await page.locator("[data-pnl-summary]").getAttribute("data-pnl-state");
+    const { state } = await assertRecordedPnlEvidence(page);
     if (rows.every((row) => row.eligibility !== "eligible")) {
-      requireCondition(summaryState === "none", "zero eligible holdings do not produce unavailable P&L");
+      requireCondition(state === "none", "zero eligible holdings do not produce unavailable P&L");
     }
-    if (summaryState === "complete") {
+    if (state === "complete") {
       requireCondition(rows.every((row) => row.eligibility === "eligible"), "complete P&L includes excluded holdings");
     }
     return `${rows.length} joined rows · ${rows.filter((row) => row.status === "not-recorded").length} basis not recorded`;
@@ -503,7 +543,7 @@ async function checkPnlContract(page) {
       requireCondition(await performance.locator(".axis").count() === 0, "empty performance renders chart axes with no observations");
       return "history starts today · empty period controls disabled";
     }
-    const summaryBefore = compactText((await page.locator("[data-pnl-summary]").textContent()) ?? "");
+    const summaryBefore = compactText(await page.locator(".pnl-assets tfoot, .pnl-assets .home-empty").innerText());
     for (const label of ["1M", "3M", "All"]) {
       const button = periods.getByRole("button", { name: label, exact: true });
       requireCondition(await button.isEnabled(), `populated-history period ${label} is disabled`);
@@ -519,7 +559,7 @@ async function checkPnlContract(page) {
       } else {
         requireCondition(label !== "All", "All hides existing snapshot history");
       }
-      requireCondition(compactText((await page.locator("[data-pnl-summary]").textContent()) ?? "") === summaryBefore, "period display filter changed current P&L totals");
+      requireCondition(compactText(await page.locator(".pnl-assets tfoot, .pnl-assets .home-empty").innerText()) === summaryBefore, "period display filter changed current P&L totals");
     }
     return `${historyCount} snapshots · period controls preserve current totals`;
   });
@@ -579,8 +619,8 @@ async function checkPnlContract(page) {
     }
     const allUnavailable = await sources.evaluateAll((elements) => elements.every((element) => element.querySelector(".live-source-badge")?.textContent?.trim() === "unavailable"));
     if (allUnavailable) {
-      requireCondition(await page.locator("[data-pnl-summary]").getAttribute("data-pnl-state") === "none", "unavailable sources imply computable P&L");
-      requireCondition(/No recorded cost basis/i.test((await page.locator("[data-pnl-summary]").textContent()) ?? ""), "unavailable source fixture lacks the honest P&L empty state");
+      requireCondition((await assertRecordedPnlEvidence(page)).state === "none", "unavailable sources imply computable P&L");
+      requireCondition(/No recorded cost basis/i.test(await page.locator(".pnl-assets .home-empty").innerText()), "unavailable sources lack the honest P&L empty state");
     }
     return allUnavailable ? "all ten sources unavailable · P&L remains honest" : "seven original plus two ledger and Solana source statuses retained";
   });
@@ -620,7 +660,10 @@ async function checkHomeContract(page) {
     const strip = page.locator(".pnl-metric-strip");
     requireCondition(await strip.count() === 1, "P&L metric strip is missing or duplicated");
     const stripText = compactText((await strip.textContent()) ?? "");
-    requireCondition(/P&L \(recorded\)/i.test(stripText), "recorded P&L metric is missing");
+    requireCondition(/Book P&L/i.test(stripText), "book P&L metric is missing");
+    requireCondition(await strip.locator(":scope > article").count() === 2, "metric strip must contain exactly two cards");
+    requireCondition(await strip.locator(":scope > article").nth(0).getAttribute("data-book-pnl") !== null
+      && await strip.locator(":scope > article").nth(1).getAttribute("data-daily-change") !== null, "Book P&L and Daily change order changed");
     requireCondition(/Daily change/i.test(stripText), "daily-change metric is missing");
     await readHomeWalletSummaryCount(page);
   });
@@ -1382,92 +1425,116 @@ function expectedThb(value) {
   return value === null ? "—" : `฿${value.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
-async function assertPortfolioChart(page, independentPortfolio) {
-  const knownLive = independentPortfolio !== undefined
-    && Object.values(independentPortfolio.sources).some((source) => source.status === "live")
-    && Number.isFinite(independentPortfolio.totals.grandTotalUsd)
-    && Number.isFinite(independentPortfolio.totals.grandTotalThb);
+async function waitPortfolioLayout(page) {
+  // Plottable 3.13 measures computed dimensions plus padding/borders (domUtils).
+  // Wait for its ResizeObserver/frame redraw, not just React's ready attribute.
+  await page.waitForFunction(() => {
+    const host = document.querySelector(".portfolio-chart-host");
+    const chart = host?.querySelector(":scope > .component.table");
+    if (!host || !chart) return false;
+    const style = getComputedStyle(host);
+    const size = (keys) => keys.reduce((sum, key) => sum + parseFloat(style[key] || "0"), 0);
+    const box = chart.getBoundingClientRect();
+    return Math.abs(box.width - size(["width", "paddingLeft", "paddingRight", "borderLeftWidth", "borderRightWidth"])) < 1
+      && Math.abs(box.height - size(["height", "paddingTop", "paddingBottom", "borderTopWidth", "borderBottomWidth"])) < 1;
+  });
+}
+
+async function assertPortfolioChart(page, independentPortfolio, recordedSnapshots = browserFixture.snapshots) {
+  const liveThb = independentPortfolio?.totals.grandTotalThb;
+  const knownLive = Number.isFinite(liveThb);
   const host = page.locator(".portfolio-chart-host");
   const hostCount = await host.count();
   requireCondition(hostCount <= 1, `expected at most one chart host, found ${hostCount}`);
-  // Independent known data must survive even an incorrectly hidden host/unavailable legend.
-  requireCondition(!knownLive || hostCount === 1, "known live fixture value has no chart host");
+  let expected;
+  if (independentPortfolio) {
+    const liveDate = independentPortfolio.asOf.slice(0, 10);
+    const range = await page.locator('.range-selector button[aria-pressed="true"]').innerText();
+    const cutoff = new Date(`${liveDate}T00:00:00Z`);
+    if (range !== "ALL") cutoff.setUTCMonth(cutoff.getUTCMonth() - Number.parseInt(range, 10));
+    expected = recordedSnapshots.filter((point) => point.totalValueThb !== null && (!knownLive || point.date !== liveDate))
+      .map((point) => ({ date: point.date, valueThb: point.totalValueThb, valueUsd: point.totalValueUsd }));
+    if (knownLive) expected.push({ date: liveDate, valueThb: liveThb, valueUsd: independentPortfolio.totals.grandTotalUsd });
+    expected = expected.filter((point) => range === "ALL" || new Date(`${point.date}T00:00:00Z`) >= cutoff)
+      .sort((a, b) => a.date.localeCompare(b.date));
+    requireCondition(hostCount === (expected.length ? 1 : 0), knownLive
+      ? "known live fixture value has no chart host" : "recorded fixture days do not match chart availability");
+    const kpi = page.locator(".portfolio-kpi-card.live-edge");
+    requireCondition(compactText(await kpi.locator(".metric-value").innerText()) === expectedUsd(independentPortfolio.totals.grandTotalUsd), "live KPI USD differs from independent fixture value");
+    requireCondition(compactText(await kpi.locator("small").first().innerText()) === `${expectedThb(liveThb)} · THB equivalent`, "live KPI THB differs from independent fixture value");
+    const ledger = page.locator(".live-ledger-row .value-cell");
+    requireCondition(await ledger.evaluate((element) => element.firstChild?.textContent) === expectedUsd(independentPortfolio.totals.grandTotalUsd), "live register USD differs from independent fixture value");
+    requireCondition(compactText(await ledger.locator("small").innerText()) === expectedThb(liveThb), "live register THB differs from independent fixture value");
+  }
   if (hostCount === 0) {
     const empty = page.locator(".portfolio-chart-empty");
-    requireCondition(await empty.count() === 1, "portfolio chart lacks an explicit empty/unavailable state");
-    requireCondition(/no valuation snapshot|unavailable|no recorded/i.test((await empty.textContent()) ?? ""), "portfolio chart empty state is not explained");
-    return "no chart host · explicit unavailable valuation state";
+    requireCondition(await empty.count() === 1, "portfolio chart lacks an explicit empty state");
+    requireCondition(compactText(await empty.innerText()) === "No recorded daily snapshot yet. The chart will populate as daily snapshots are recorded.", "portfolio chart empty copy changed");
+    return "no chart host · no recorded daily snapshot yet";
   }
-
   await host.waitFor({ state: "visible", timeout: 15_000 });
-  await page.waitForFunction(
-    () => document.querySelector(".portfolio-chart-host")?.getAttribute("data-chart-ready") === "true",
-    undefined,
-    { timeout: 15_000 },
-  );
+  await page.waitForFunction(() => document.querySelector(".portfolio-chart-host")?.getAttribute("data-chart-ready") === "true", undefined, { timeout: 15_000 });
+  await waitPortfolioLayout(page);
   const axisCount = await host.locator(".axis").count();
   requireCondition(axisCount >= 2, `expected at least two Plottable axes, found ${axisCount}`);
-  const liveMarkers = await host.locator(".scatter-plot path").evaluateAll((paths) => paths
-    .filter((path) => {
-      const style = getComputedStyle(path);
-      const fill = `${path.getAttribute("fill") ?? ""} ${style.fill}`;
-      const box = path.getBoundingClientRect();
-      return /#355cc9|rgb\(\s*53\s*,\s*92\s*,\s*201\s*\)/i.test(fill)
-        && style.visibility !== "hidden" && style.display !== "none" && Number(style.opacity) > 0
-        && box.width > 0 && box.height > 0;
-    })
-    .map((path) => path.__data__));
-  const liveUnavailable = await page.locator(".chart-legend .is-unavailable").count() > 0;
-  const expectsLiveMarker = independentPortfolio === undefined ? !liveUnavailable : knownLive;
-  requireCondition(expectsLiveMarker ? liveMarkers.length > 0 : liveMarkers.length === 0,
-    expectsLiveMarker ? "known live value is missing its visible Plottable marker" : "unavailable live value has an invented Plottable marker");
-
-  if (knownLive) {
-    requireCondition(!liveUnavailable, "known live fixture value is incorrectly marked unavailable");
-    const { grandTotalUsd, grandTotalThb } = independentPortfolio.totals;
-    requireCondition(liveMarkers.length === 1 && liveMarkers[0].series === "live"
-      && liveMarkers[0].date === independentPortfolio.asOf.slice(0, 10)
-      && liveMarkers[0].asOf === independentPortfolio.asOf
-      && liveMarkers[0].valueUsd === grandTotalUsd && liveMarkers[0].valueThb === grandTotalThb,
-    "live marker datum differs from independent fixture date/USD/THB");
-    const kpi = page.locator(".portfolio-kpi-card.live-edge");
-    requireCondition(compactText(await kpi.locator(".metric-value").innerText()) === expectedUsd(grandTotalUsd), "live KPI USD differs from independent fixture value");
-    requireCondition(compactText(await kpi.locator("small").innerText()) === `${expectedThb(grandTotalThb)} · THB equivalent`, "live KPI THB differs from independent fixture value");
-    const ledger = page.locator(".live-ledger-row .value-cell");
-    requireCondition(await ledger.evaluate((element) => element.firstChild?.textContent) === expectedUsd(grandTotalUsd), "live register USD differs from independent fixture value");
-    requireCondition(compactText(await ledger.locator("small").innerText()) === expectedThb(grandTotalThb), "live register THB differs from independent fixture value");
-    return `independent source=live · USD ${grandTotalUsd.toFixed(2)} · THB ${grandTotalThb.toFixed(2)} · exact live marker/KPI/register`;
+  const points = await host.locator('.scatter-plot path[fill="#355CC9"]').evaluateAll((paths) => paths.filter((path) => {
+    const style = getComputedStyle(path);
+    const box = path.getBoundingClientRect();
+    return style.visibility !== "hidden" && style.display !== "none" && Number(style.opacity) > 0 && box.width > 0 && box.height > 0;
+  }).map((path) => path.__data__));
+  requireCondition(points.length > 0, knownLive ? "known live value is missing its visible Plottable marker" : "recorded series has no visible markers");
+  requireCondition(new Set(points.map((point) => point.date)).size === points.length, "chart plots a date twice");
+  requireCondition(points.every((point, index) => Number.isFinite(point.valueThb) && (index === 0 || points[index - 1].date < point.date)), "chart is not a chronological recorded THB series");
+  if (expected) {
+    requireCondition(JSON.stringify(points.map(({ date, valueThb, valueUsd }) => ({ date, valueThb, valueUsd }))) === JSON.stringify(expected), "plotted dates/THB/recorded USD differ from independent daily snapshots");
+    if (knownLive) requireCondition(points.at(-1).asOf === independentPortfolio.asOf, "last marker lost the live joined observation timestamp");
   }
-  return `${axisCount} axes · ${liveMarkers.length} live marker${liveMarkers.length === 1 ? "" : "s"}`;
+  const lines = host.locator('.line-plot path[stroke="#355CC9"]');
+  requireCondition(await lines.count() === 1 && (await lines.getAttribute("d"))?.length > 0, "recorded snapshots lost their single THB line");
+  requireCondition(await host.locator('[stroke-dasharray], .guide-line-layer, .scatter-plot path[fill="#8290A5"]').count() === 0, "retired line or boundary survives");
+  const label = await host.getAttribute("aria-label");
+  requireCondition(/Live recorded daily portfolio snapshots in THB/.test(label ?? "") && !/legacy/i.test(label ?? ""), "chart host does not describe the recorded series honestly");
+  if (independentPortfolio && !knownLive) requireCondition(label.includes("The live joined total is unavailable."), "chart hides unavailable live total");
+  requireCondition(compactText(await page.locator(".chart-legend").innerText()) === "Live joined snapshot", "single series legend changed");
+  return `${axisCount} axes · ${points.length} exact recorded/live daily points · THB line · unique ordered dates`;
 }
 
 async function checkPortfolioContract(page, independentPortfolio) {
-  await check("portfolio separates live value from legacy context", async () => {
+  // Inverted, not dropped: this used to require both valuation eras.
+  await check("portfolio carries no legacy era surface and keeps live KPIs and recorded snapshots", async () => {
     const text = await renderedText(page);
-    requireCondition(/\blive\b/i.test(text), "live series label is missing");
-    requireCondition(/\blegacy\b/i.test(text), "legacy context label is missing");
-
-    const transition = page.locator(".portfolio-transition-note");
-    requireCondition(await transition.count() === 1, "valuation transition note is missing or duplicated");
-    const transitionText = compactText((await transition.textContent()) ?? "");
-    requireCondition(/\blive\b/i.test(transitionText) && /\blegacy\b/i.test(transitionText), "transition note does not name both eras");
-    requireCondition(/\b(?:boundary|baseline|unavailable)\b/i.test(transitionText), "transition note does not state the valuation boundary");
-
-    const legendText = compactText((await page.locator(".chart-legend").textContent()) ?? "");
-    requireCondition(/legacy/i.test(legendText), "legacy chart legend is missing");
-    requireCondition(/live/i.test(legendText), "live chart legend is missing");
-    requireCondition(/boundary/i.test(legendText), "valuation-boundary legend is missing");
+    requireCondition(!/legacy|Pre-live Records|TWO ERAS|Valuation boundary|SERIES BOUNDARY|LIVE BASELINE/i.test(text), "retired valuation era copy survives");
+    requireCondition(await page.locator('.portfolio-transition-note, .legacy-edge, .is-legacy, .legend-boundary, .legend-line.legacy').count() === 0, "retired valuation era element survives");
+    requireCondition(await page.locator('.portfolio-kpi-card.live-edge').count() === 1 && await page.locator('.portfolio-chart-panel').count() === 1, "live KPI or recorded chart panel missing");
+    requireCondition(compactText(await page.locator(".chart-legend").innerText()) === "Live joined snapshot" && await page.locator(".chart-legend > span").count() === 1, "legend is not the single recorded series");
+    requireCondition(compactText(await page.locator(".portfolio-chart-header .eyebrow").innerText()) === "RECORDED DAILY SNAPSHOTS / THB", "chart eyebrow changed");
+    requireCondition(compactText(await page.locator(".portfolio-chart-header .panel-title").innerText()) === "Live portfolio value", "chart title changed");
+    requireCondition(compactText(await page.locator(".portfolio-chart-header .panel-subtitle").innerText()) === "Each point is a recorded daily joined snapshot, THB first; recorded USD is shown in the tooltip.", "chart subtitle changed");
+    requireCondition(await page.locator('.range-selector[aria-label="Snapshot range"]').count() === 1, "snapshot range label missing");
   });
-
-  await check("portfolio Plottable chart contract", async () => {
-    return assertPortfolioChart(page, independentPortfolio);
+  await check("portfolio has three responsive KPIs and a live-only Snapshot Register", async () => {
+    requireCondition(await page.locator(".portfolio-kpi-grid > article").count() === 3, "KPI card count is not three");
+    const columns = await page.locator(".portfolio-kpi-grid").evaluate((grid) => getComputedStyle(grid).gridTemplateColumns.split(" ").length);
+    const width = page.viewportSize().width;
+    requireCondition(columns === (width > 1220 ? 3 : width > 700 ? 2 : 1), `unexpected ${columns}-column KPI grid at ${width}px`);
+    requireCondition(await page.locator(".portfolio-table tbody tr").count() === 1 && await page.locator(".live-ledger-row .series-badge.is-live").count() === 1, "register is not exactly one live row");
+    requireCondition(compactText(await page.locator(".page-subtitle").innerText()) === "Live Stocks Port and Crypto Port value, with the recorded daily snapshots.", "portfolio subtitle changed");
+    for (const [selector, copy] of [[".eyebrow", "VALUATION LEDGER"], [".panel-subtitle", "Live values are USD first."], [".panel-count", "1 LIVE"]]) {
+      requireCondition(compactText(await page.locator(`.portfolio-ledger ${selector}`).innerText()) === copy, `register ${selector} changed`);
+    }
   });
+  await check("portfolio Plottable chart contract", async () => assertPortfolioChart(page, independentPortfolio));
 }
 
 async function assertCalendarDetail(calendar, snapshot) {
   const detail = calendar.locator(".pnl-calendar-detail");
   requireCondition(compactText(await detail.locator("h3").innerText()) === snapshot.date, "selected calendar date did not change to the clicked record");
   const eligible = snapshot.coverage.eligible > 0;
+  const c = snapshot.coverage;
+  const coverageCopy = c.eligible === 0 ? c.unreconciled > 0
+    ? "Recorded P&L unavailable — unreconciled holdings are excluded" : "No recorded cost basis yet — P&L unavailable"
+    : `${c.status === "complete" ? "Complete" : "Partial"} P&L (${c.eligible} of ${c.totalHoldings} holdings have recorded basis)`;
+  requireCondition(compactText(await detail.locator(":scope > p:not(.eyebrow)").innerText()) === coverageCopy, "selected calendar coverage explanation differs from recorded evidence");
   for (const [label, usd, thb] of [
     ["P&L (recorded)", eligible ? snapshot.pnlUsd : null, eligible ? snapshot.pnlThb : null],
     ["Portfolio value", snapshot.totalValueUsd, snapshot.totalValueThb],
@@ -1508,6 +1575,47 @@ async function auditPopulatedFixtures(browser, fixtureUrl, viewport) {
       "independent fixture no longer supplies known positive USD/THB and live sources");
       return assertPortfolioChart(page, input);
     });
+    for (const [range, count] of [["1M", 6], ["3M", 7], ["6M", 8], ["ALL", 8]]) {
+      await check(`${prefix} portfolio ${range} range filters the exact recorded THB days`, async () => {
+        requireCondition(recordedSnapshotFixtures["portfolio-live"].filter((point) => point.totalValueThb !== null).length >= 3, "positive fixture lacks three recorded THB days");
+        const button = page.locator('.range-selector[aria-label="Snapshot range"]').getByRole("button", { name: range, exact: true });
+        await button.click();
+        await page.waitForFunction(({ range, count }) => document.querySelector(".portfolio-chart-host")?.dataset.range === range
+          && document.querySelector(".portfolio-chart-host")?.dataset.chartReady === "true"
+          && document.querySelectorAll('.portfolio-chart-host .scatter-plot path[fill="#355CC9"]').length === count, { range, count });
+        requireCondition(await button.getAttribute("aria-pressed") === "true", `${range} is not selected`);
+        return assertPortfolioChart(page, browserFixture.portfolio, recordedSnapshotFixtures["portfolio-live"]);
+      });
+    }
+    await check(`${prefix} portfolio tooltip shows exact live date THB then recorded USD`, async () => {
+      const dots = page.locator('.portfolio-chart-host .scatter-plot path[fill="#355CC9"]');
+      await page.locator(".portfolio-chart-host").evaluate((host) => host.scrollIntoView({ block: "center", behavior: "instant" }));
+      await waitPortfolioLayout(page);
+      await dots.last().hover();
+      const tooltip = page.locator(".portfolio-chart-tooltip.is-visible");
+      await tooltip.waitFor();
+      const input = browserFixture.portfolio;
+      const date = new Intl.DateTimeFormat("en-GB", { day: "2-digit", month: "short", year: "numeric", timeZone: "UTC" }).format(new Date(input.asOf));
+      const value = input.totals.grandTotalThb.toLocaleString("en-US", { maximumFractionDigits: 0 });
+      requireCondition(await tooltip.innerText() === `${date} · ฿${value} · ${expectedUsd(input.totals.grandTotalUsd)}`, "tooltip differs from exact live date/THB/recorded USD");
+    });
+    await check(`${prefix} portfolio ResizeObserver redraw preserves recorded points and tablet grid`, async () => {
+      await page.setViewportSize({ width: 1000, height: viewport.height });
+      await page.waitForFunction(() => getComputedStyle(document.querySelector(".portfolio-kpi-grid")).gridTemplateColumns.split(" ").length === 2);
+      await assertPortfolioChart(page, browserFixture.portfolio);
+      // Plottable sizes to the host padding box, so the honest bound is that box.
+      const resized = await page.locator(".portfolio-chart-host").evaluate(async (host) => {
+        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        const style = getComputedStyle(host);
+        return { svg: host.querySelector("svg")?.getBoundingClientRect().width ?? 0,
+          paddingBox: host.clientWidth + Number.parseFloat(style.paddingLeft) + Number.parseFloat(style.paddingRight),
+          overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth };
+      });
+      requireCondition(resized.svg > 0 && resized.svg <= resized.paddingBox + 1, `resized chart ${resized.svg}px exceeds its ${resized.paddingBox}px padding box`);
+      requireCondition(resized.overflow <= 1, `resized chart adds ${resized.overflow}px horizontal overflow`);
+      await page.setViewportSize({ width: viewport.width, height: viewport.height });
+      return assertPortfolioChart(page, browserFixture.portfolio);
+    });
     await check(`${prefix} finding #2 rejects hidden live marker plus a false unavailable legend`, async () => {
       await page.evaluate(() => {
         for (const path of document.querySelectorAll('.scatter-plot path[fill="#355CC9"]')) path.style.visibility = "hidden";
@@ -1534,15 +1642,69 @@ async function auditPopulatedFixtures(browser, fixtureUrl, viewport) {
     });
 
     if (!await navigate("portfolio-unavailable")) return;
-    await check(`${prefix} independently unavailable live data retains honest legacy-only chart`, async () => {
+    await check(`${prefix} independently unavailable live data retains recorded snapshots without a legacy era surface`, async () => {
       const input = structuredClone(browserFixture.portfolio);
       input.totals.grandTotalUsd = null;
       input.totals.grandTotalThb = null;
       for (const source of Object.values(input.sources)) source.status = "unavailable";
       const result = await assertPortfolioChart(page, input);
-      requireCondition(await page.locator(".chart-legend .is-unavailable").count() === 1, "unknown live data is not marked unavailable");
-      requireCondition(await page.locator('.scatter-plot path[fill="#8290A5"]').count() === browserFixture.legacyPoints.length, "legacy-only chart dropped independent archive records");
+      requireCondition(!/legacy|Pre-live Records|TWO ERAS/i.test(await renderedText(page)), "unavailable live data restored a retired era");
+      requireCondition(await page.locator(".portfolio-transition-note, .series-badge.is-legacy").count() === 0, "unavailable live data restored a retired surface");
       requireCondition(compactText(await page.locator(".portfolio-kpi-card.live-edge .metric-value").innerText()) === "—", "unknown live KPI invents a value");
+      requireCondition((await page.locator(".header-status").innerText()).includes("LIVE VALUE UNAVAILABLE"), "unknown live total lacks an explicit header state");
+      return result;
+    });
+
+    if (!await navigate("portfolio-empty")) return;
+    await check(`${prefix} no recorded days and unavailable live total show the exact empty state`, async () => {
+      const input = structuredClone(browserFixture.portfolio);
+      input.totals.grandTotalUsd = null;
+      input.totals.grandTotalThb = null;
+      requireCondition(recordedSnapshotFixtures["portfolio-empty"].length === 0, "empty control contains recorded days");
+      return assertPortfolioChart(page, input, []);
+    });
+    if (!await navigate("portfolio-first-day")) return;
+    await check(`${prefix} first live observation renders one point without inventing recorded history`, async () => {
+      requireCondition(recordedSnapshotFixtures["portfolio-first-day"].length === 0, "first-day control contains stored history");
+      return assertPortfolioChart(page, browserFixture.portfolio, []);
+    });
+    await check(`${prefix} chart engine failure keeps the page and exact error state available`, async () => {
+      const failedChartPage = await browser.newPage({ viewport: { width: viewport.width, height: viewport.height }, reducedMotion: "reduce" });
+      const errors = [];
+      failedChartPage.on("pageerror", (error) => errors.push(error.message));
+      try {
+        await failedChartPage.addInitScript(() => {
+          const Original = ResizeObserver;
+          window.ResizeObserver = class extends Original {
+            observe(target, options) {
+              if (target.matches(".portfolio-chart-host")) throw new Error("Fixture chart setup failure");
+              return super.observe(target, options);
+            }
+          };
+        });
+        await failedChartPage.goto(`${fixtureUrl}/?scenario=portfolio-live`);
+        await failedChartPage.locator(".portfolio-chart-empty.is-error").waitFor();
+        requireCondition(await failedChartPage.locator(".portfolio-chart-empty.is-error > span:not(.bp6-icon)").innerText() === "The chart engine could not render this snapshot.", "chart error copy changed");
+        requireCondition(await failedChartPage.locator(".portfolio-kpi-card").count() === 3 && await failedChartPage.locator(".live-ledger-row").count() === 1, "chart error blanked the page");
+        requireCondition(await failedChartPage.locator('.portfolio-chart-host[data-chart-ready="true"]').count() === 0 && errors.length === 0, "failed chart claims readiness or leaked an uncaught error");
+      } finally { await failedChartPage.close(); }
+    });
+
+    if (!await navigate("portfolio-currency-gaps")) return;
+    await check(`${prefix} skips null THB days and omits unrecorded USD from tooltip`, async () => {
+      const snapshots = recordedSnapshotFixtures["portfolio-currency-gaps"];
+      const result = await assertPortfolioChart(page, browserFixture.portfolio, snapshots);
+      const dots = page.locator('.portfolio-chart-host .scatter-plot path[fill="#355CC9"]');
+      const dates = await dots.evaluateAll((paths) => paths.map((path) => path.__data__.date));
+      requireCondition(!dates.includes("2026-09-03"), "null THB was plotted");
+      const index = dates.indexOf("2026-09-01");
+      requireCondition(index >= 0, "USD-null/THB-known point was dropped");
+      await page.locator(".portfolio-chart-host").evaluate((host) => host.scrollIntoView({ block: "center", behavior: "instant" }));
+      await waitPortfolioLayout(page);
+      await dots.nth(index).hover();
+      const tooltip = page.locator(".portfolio-chart-tooltip.is-visible");
+      await tooltip.waitFor();
+      requireCondition(await tooltip.innerText() === "01 Sept 2026 · ฿39,600", "USD-null tooltip invents a rate or lost THB/date");
       return result;
     });
 
@@ -1651,7 +1813,7 @@ async function auditPopulatedFixtures(browser, fixtureUrl, viewport) {
       requireCondition(counts.native === 0 && counts.token === 0 && header.native === 0 && header.token === 0, "empty wallet counts are not zero");
       await assertNoSuppressionTrace(page);
     });
-    await check(`${prefix} populated/empty/live/legacy interactions keep browser console clean`, async () => {
+    await check(`${prefix} populated/empty/live/snapshot interactions keep browser console clean`, async () => {
       requireCondition(browserErrors.length === 0, browserErrors.join(" | "));
     });
   } finally {
@@ -1708,13 +1870,14 @@ async function auditOperatorBasisFixtures(browser, fixtureUrl, viewport) {
           if (recorded) requireCondition((await chip.getAttribute("title") ?? "").includes("operator-recorded: desk execution: $80 paid 2026-09-01"), "operator derivation is not rendered in the tooltip");
         }
       });
-      await check(`${label} enters recorded summary without changing coverage copy or mascot priority`, async () => {
-        const summary = page.locator("[data-pnl-summary]");
-        requireCondition(await summary.getAttribute("data-pnl-state") === (positive ? "partial" : "none"), "operator summary state differs");
-        requireCondition(compactText(await summary.locator(".pnl-metric-line > strong").innerText()) === expectedUsd(positive ? 20 : null), "recorded summary P&L differs");
-        requireCondition((await summary.innerText()).includes(`Basis ${expectedUsd(positive ? 80 : null)}`), "recorded summary basis differs");
-        requireCondition((await summary.innerText()).includes(positive ? "Partial P&L (1 of 3 holdings have recorded basis)" : "No recorded cost basis yet — P&L unavailable"), "operator basis changed coverage copy");
-        requireCondition(compactText(await page.locator(".pnl-coverage .pnl-metric-line > strong").innerText()) === `${positive ? 1 : 0} / 3`, "operator coverage widget differs");
+      await check(`${label} enters eligible totals without changing coverage or mascot priority`, async () => {
+        await assertRecordedPnlEvidence(page, book);
+        const before = await page.locator(".pnl-assets tfoot").innerText();
+        for (const range of ["1M", "3M", "All"]) {
+          await page.locator(".pnl-performance").getByRole("button", { name: range, exact: true }).click();
+          await page.locator('.pnl-performance [data-chart-ready="true"]').waitFor();
+          requireCondition(await page.locator(".pnl-assets tfoot").innerText() === before, "populated period filter changed current eligible totals");
+        }
         await assertMascot(page, "thinking");
         const toggle = page.locator("[data-mascot-toggle]");
         if (await toggle.getAttribute("aria-expanded") !== "true") await toggle.click();
@@ -1784,11 +1947,14 @@ async function auditBasisEvidenceFixtures(browser, fixtureUrl, viewport) {
           }
         }
       });
-      await check(`${label} preserves summary coverage copy and thinking mascot priority`, async () => {
-        const summary = page.locator("[data-pnl-summary]");
-        requireCondition(await summary.getAttribute("data-pnl-state") === (positive ? "partial" : "none"), "summary state differs from recorded subset");
-        requireCondition((await summary.innerText()).includes(positive ? "Partial P&L (2 of 3 holdings have recorded basis)" : "No recorded cost basis yet — P&L unavailable"), "coverageLabel summary copy changed");
-        requireCondition(compactText(await page.locator(".pnl-coverage .pnl-metric-line > strong").innerText()) === `${positive ? 2 : 0} / 3`, "coverage widget numerator/denominator differs");
+      await check(`${label} preserves eligible totals coverage and thinking mascot priority`, async () => {
+        await assertRecordedPnlEvidence(page, book);
+        const before = await page.locator(".pnl-assets tfoot").innerText();
+        for (const range of ["1M", "3M", "All"]) {
+          await page.locator(".pnl-performance").getByRole("button", { name: range, exact: true }).click();
+          await page.locator('.pnl-performance [data-chart-ready="true"]').waitFor();
+          requireCondition(await page.locator(".pnl-assets tfoot").innerText() === before, "populated period filter changed current eligible totals");
+        }
         await assertMascot(page, "thinking");
         const toggle = page.locator("[data-mascot-toggle]");
         if (await toggle.getAttribute("aria-expanded") !== "true") await toggle.click();
@@ -2018,7 +2184,7 @@ async function auditDustFixtures(browser, fixtureUrl, viewport) {
             requireCondition(counts.native === displayed.native.length && counts.token === displayed.tokens.length, "wallet attributes differ from displayable joined rows");
             requireCondition(header.native === counts.native && header.token === counts.token && await readHomeWalletSummaryCount(page) === walletCount, "wallet header/hero count differs from DOM");
             requireCondition(await page.locator('.pnl-asset-table tbody tr:not([data-manual-cash="true"])').count() === portfolio.totals.pnlCoverage.totalHoldings, "P&L market row count differs from coverage");
-            requireCondition(compactText(await page.locator(".pnl-coverage .pnl-metric-line > strong").innerText()) === `${portfolio.totals.pnlCoverage.eligible} / ${portfolio.totals.pnlCoverage.totalHoldings}`, "coverage numerator/denominator differs from displayed market holdings");
+            await assertRecordedPnlEvidence(page, portfolio);
             for (const key of ["t212Positions", "nfts", "walletNative", "walletTokens"]) {
               requireCondition(compactText(await page.locator(`[data-source-key="${key}"] .live-source-badge`).innerText()) === portfolio.sources[key].status, `${key} source badge differs from joined status`);
             }
@@ -2117,7 +2283,7 @@ async function auditDustFixtures(browser, fixtureUrl, viewport) {
             for (const claim of ["No holdings in this snapshot", "No positions yet", "No NFT collections found"]) {
               requireCondition(!text.includes(claim), `all-suppressed inventory falsely claims ${claim}`);
             }
-            requireCondition(text.includes("No positions to display."), "all-suppressed securities lack neutral empty copy");
+            if (surface === "registry") requireCondition(text.includes("No positions to display."), "all-suppressed securities lack neutral empty copy");
             if (surface === "home") {
               requireCondition(compactText(await page.locator(".pnl-assets .home-empty strong").innerText()) === "No holdings to display in this snapshot.", "all-suppressed P&L lacks neutral empty copy");
               requireCondition(compactText(await page.locator('[data-book-pnl="available"] .pnl-metric-line > strong').innerText()) === expectedUsd(-0.254),
@@ -2192,12 +2358,12 @@ async function auditDustFixtures(browser, fixtureUrl, viewport) {
       requireCondition(portfolio.totals.pnlCoverage.unreconciled === 1 && portfolio.totals.pnlCoverage.eligible === 0,
         "inconsistent holding was not excluded from recorded P&L");
       requireCondition((await row.innerText()).includes("Unreconciled · excluded from P&L"), "unreconciled eligibility chip changed");
-      requireCondition((await page.locator("[data-pnl-summary]").innerText()).includes("Recorded P&L unavailable — unreconciled holdings are excluded"),
-        "unreconciled-only holdings lost the unavailable P&L explanation");
+      requireCondition((await assertRecordedPnlEvidence(page, portfolio)).state === "none",
+        "unreconciled-only holdings have invented eligible P&L");
       await assertMascot(page, "alert");
       requireCondition(/holdings are unreconciled/i.test(await page.locator("[data-mascot-bubble]").innerText()),
         "provider inconsistency no longer drives the mascot unreconciled bubble");
-      return "USD 100 - 90 != 5: real joined row, exclusion chip, unavailable summary and alert bubble retained";
+      return "USD 100 - 90 != 5: real joined row, exclusion chip, unavailable eligible footer and alert bubble retained";
     });
     await check(`${prefix} all scenarios keep browser console clean`, async () => {
       requireCondition(browserErrors.length === 0, browserErrors.join(" | "));

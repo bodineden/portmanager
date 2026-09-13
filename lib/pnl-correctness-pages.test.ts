@@ -5,7 +5,7 @@ import Home from "../app/page";
 import AssetListPage from "../app/asset-list/page";
 import PortfolioPage from "../app/portfolio/page";
 import { buildJoinedPortfolio, getJoinedPortfolio, type LiveResult } from "./live-data";
-import { createSnapshotRecorder } from "./pnl-history";
+import { createSnapshotRecorder, readPortfolioSnapshotHistory, type PortfolioSnapshot } from "./pnl-history";
 import { shouldSuppressHolding } from "./dust-filter";
 import { observedNftFloors, oneUnpricedNft } from "./__fixtures__/nft-floors";
 import { dustBook } from "../scripts/__fixtures__/dust-book";
@@ -15,12 +15,11 @@ vi.mock("./assets-db", async (original) => ({ ...await original<typeof import(".
 vi.mock("./auth", () => ({ requireSession: async () => null }));
 vi.mock("./pnl-history", async (original) => ({
   ...await original<typeof import("./pnl-history")>(),
-  readPortfolioSnapshotHistory: async () => ({ snapshots: [], available: true }), recordPortfolioSnapshot: vi.fn(),
+  readPortfolioSnapshotHistory: vi.fn(async () => ({ snapshots: [], available: true })), recordPortfolioSnapshot: vi.fn(),
 }));
 // Keep financial pages real; isolate unrelated auth/navigation and browser-only rendering.
 vi.mock("../app/components/app-sidebar", () => ({ AppSidebar: () => null }));
 vi.mock("../app/mascot-companion", () => ({ default: () => null }));
-vi.mock("../app/portfolio/portfolio-chart", () => ({ PortfolioChart: () => null }));
 
 const AS_OF = "2026-09-12T04:49:50.350Z";
 const live = <T>(data: T): LiveResult<T> => ({ data, state: { status: "live", asOf: AS_OF, message: "Offline arithmetic fixture" } });
@@ -68,6 +67,64 @@ function displayBoundaryBook() {
 
 beforeEach(() => vi.stubGlobal("React", React));
 afterEach(() => { vi.unstubAllGlobals(); vi.clearAllMocks(); });
+
+describe("portfolio recorded snapshot interface", () => {
+  it("reuses one history read for the chart and retains recorded days when live value is unavailable", async () => {
+    const portfolio = displayBoundaryBook();
+    portfolio.totals.grandTotalUsd = null;
+    portfolio.totals.grandTotalThb = null;
+    vi.mocked(getJoinedPortfolio).mockResolvedValue(portfolio);
+    const snapshot: PortfolioSnapshot = { date: "2026-09-11", totalValueUsd: 100, totalValueThb: 3600,
+      costBasisUsd: null, costBasisThb: null, pnlUsd: null, pnlThb: null, pnlPct: null, coverage: portfolio.totals.pnlCoverage };
+    vi.mocked(readPortfolioSnapshotHistory).mockResolvedValueOnce({ snapshots: [snapshot], available: true });
+    const html = renderToStaticMarkup(await PortfolioPage());
+    expect(readPortfolioSnapshotHistory).toHaveBeenCalledTimes(1);
+    expect(html).toContain('class="portfolio-chart-host"');
+    expect(html).toContain("1 points. The live joined total is unavailable.");
+    expect(text(html)).toContain("LIVE VALUE UNAVAILABLE");
+    expect(text(html)).toContain("RECORDED DAILY SNAPSHOTS / THB Live portfolio value Each point is a recorded daily joined snapshot, THB first; recorded USD is shown in the tooltip. Live joined snapshot");
+    expect(html).toContain('aria-label="Snapshot range"');
+  });
+  it("renders the pinned empty chart without fabricating a day when history and live total are unavailable", async () => {
+    const portfolio = displayBoundaryBook();
+    portfolio.totals.grandTotalUsd = null;
+    portfolio.totals.grandTotalThb = null;
+    vi.mocked(getJoinedPortfolio).mockResolvedValue(portfolio);
+    vi.mocked(readPortfolioSnapshotHistory).mockResolvedValueOnce({ snapshots: [], available: false });
+    const html = renderToStaticMarkup(await PortfolioPage());
+    expect(readPortfolioSnapshotHistory).toHaveBeenCalledTimes(1);
+    expect(html).not.toContain('class="portfolio-chart-host"');
+    expect(text(html)).toContain("No recorded daily snapshot yet. The chart will populate as daily snapshots are recorded.");
+  });
+  it("keeps three live KPIs and a single register row with no retired era surfaces", async () => {
+    vi.mocked(getJoinedPortfolio).mockResolvedValue(displayBoundaryBook());
+    const html = renderToStaticMarkup(await PortfolioPage());
+    expect(html).not.toMatch(/legacy|Pre-live Records|TWO ERAS|SERIES BOUNDARY|LIVE BASELINE|portfolio-transition-note/i);
+    expect([...html.matchAll(/<article class="portfolio-kpi-card/g)]).toHaveLength(3);
+    expect(html).toContain('portfolio-kpi-card live-edge');
+    expect(text(html)).toContain("Live Stocks Port and Crypto Port value, with the recorded daily snapshots.");
+    expect(text(html)).toContain("VALUATION LEDGER Snapshot Register Live values are USD first. 1 LIVE");
+    const body = html.match(/<tbody>([\s\S]*?)<\/tbody>/)![1];
+    expect([...body.matchAll(/<tr\b/g)]).toHaveLength(1);
+    expect(text(body)).toContain("LIVE JOINED");
+  });
+});
+
+describe("home interface removals", () => {
+  it("removes only the recorded summary, coverage card and account context while retaining evidence", async () => {
+    vi.mocked(getJoinedPortfolio).mockResolvedValue(displayBoundaryBook());
+    const html = renderToStaticMarkup(await Home());
+    expect(html).not.toMatch(/data-pnl-summary|data-pnl-coverage|pnl-account-context/);
+    expect(text(html)).not.toMatch(/WHAT CAN BE MEASURED|P&L coverage|TRADING 212|Account context|COST BASIS \/ UNREALIZED/);
+    const strip = html.match(/<section class="pnl-metric-strip"[\s\S]*?<\/section>/)![0];
+    expect([...strip.matchAll(/<article\b/g)]).toHaveLength(2);
+    expect(strip).toContain('data-book-pnl=');
+    expect(strip).toContain('data-daily-change=');
+    for (const retained of ["pnl-performance", "pnl-calendar", "pnl-assets", "pnl-allocation", "home-wallet-panel", "pnl-source-strip"]) expect(html).toContain(retained);
+    expect(text(html)).toContain("Eligible P&L totals");
+    expect(text(html)).toContain("P&L (recorded):");
+  });
+});
 
 describe("render-only holding suppression", () => {
   it("groups crypto values and eligible recorded P&L across every class render surface", async () => {
@@ -120,7 +177,7 @@ describe("render-only holding suppression", () => {
     for (const html of [home, registry]) {
       expect(text(html)).not.toMatch(/No holdings in this snapshot|No positions yet|No NFT collections found|No complete positions available/);
       expect(text(html)).not.toMatch(/dust|unpriced|hidden|filter|threshold|under \$1|all rows|Every joined holding/i);
-      expect(text(html)).toContain("No positions to display.");
+      if (html === registry) expect(text(html)).toContain("No positions to display.");
       expect(html).not.toMatch(/data-holding-id=|data-wallet-kind=/);
     }
     expect(text(home)).toContain("No holdings to display in this snapshot.");
@@ -163,7 +220,10 @@ describe("render-only holding suppression", () => {
     const registry = renderToStaticMarkup(await AssetListPage());
     expect(text(home)).toContain("Holdings unavailable — P&L coverage is incomplete");
     expect(text(home)).toContain("No recorded cost basis is available to display. Missing source data is never treated as an empty account.");
-    expect(text(home)).toContain("Open positions — Trading 212 positions unavailable");
+    const positionsSource = home.match(/<article[^>]*data-source-key="t212Positions"[\s\S]*?<\/article>/)?.[0];
+    expect(positionsSource).toBeDefined();
+    expect(text(positionsSource!)).toContain("T212 positions unavailable");
+    expect(text(positionsSource!)).toContain("Provider request failed.");
     expect(text(registry)).toContain("Live positions are unavailable Provider request failed.");
     expect(text(registry)).toContain("Live NFT collections are unavailable Provider request failed.");
     for (const html of [home, registry]) {
@@ -205,7 +265,7 @@ describe("render-only holding suppression", () => {
     expect(home).toContain('data-wallet-summary-count="3">3 wallet assets');
     expect(home).toContain('data-wallet-native-count="1" data-wallet-token-count="2"');
     expect(text(home)).toContain("1 NATIVE · 2 TOKENS");
-    expect(text(home)).toContain("Open positions 1 Included in per-asset P&L");
+    expect([...home.matchAll(/data-pnl-holding-id="t212:[^"]+"/g)]).toHaveLength(1);
     expect(text(home)).toContain("6 holdings to display");
     expect(text(home)).not.toMatch(/all rows|Every joined holding/);
     expect(home).toContain('data-manual-cash="true"');
