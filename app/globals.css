@@ -104,6 +104,10 @@ a { color: inherit; text-decoration: none; }
 .loading-panel h1 { color: var(--text-strong); font-size: 24px; }
 .loading-panel p:not(.eyebrow) { color: var(--muted); line-height: 1.6; }
 .loading-radar { display: block; width: 32px; height: 32px; margin: 0 auto 24px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: loading-spin 900ms linear infinite; }
+.native-chain-breakdown { max-width: 310px; margin-top: 5px; color: var(--muted); font-size: 10px; line-height: 1.5; white-space: normal; overflow-wrap: anywhere; }
+.native-chain-breakdown summary { width: fit-content; cursor: pointer; color: var(--accent); }
+.native-chain-breakdown summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.native-chain-breakdown > div { margin-top: 4px; }
 @keyframes loading-spin { to { transform: rotate(360deg); } }
 
 @media (max-width: 1040px) {

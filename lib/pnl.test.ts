@@ -7,6 +7,7 @@ import * as pnl from "./pnl";
 const AS_OF = "2026-09-05T12:00:00.000Z";
 const live = <T>(data: T): LiveResult<T> => ({ data, state: { status: "live", asOf: AS_OF, message: "fixture" } });
 const inputs = (): JoinedPortfolioInputs => ({
+  solana: live({ native: [], tokens: [] }),
   t212Summary: live({ currency: "GBP", cashAvailable: 487, totalValue: 647, investmentsCurrentValue: 160 }),
   t212Positions: live([{
     ticker: "TEST_US_EQ", name: "Synthetic test equity", quantity: 2, averagePrice: 95,
@@ -268,17 +269,25 @@ describe("required current-book fixture QA", () => {
       { collection: "g00fyz", collectionName: "G00fyz", tokenCount: 2, floorEth: 0.0005 },
     ]);
     const book = buildJoinedPortfolio(data, AS_OF);
+    expect(book.wallet.native).toHaveLength(1);
+    const combinedEth = book.wallet.native[0];
+    expect(combinedEth).toMatchObject({ key: "native:eth", symbol: "ETH", basisStatus: "not-recorded", pnlEligibility: "not-recorded" });
+    expect(combinedEth.chains).toHaveLength(4);
+    expect(combinedEth.amount).toBeCloseTo(0.249802, 12);
+    expect(combinedEth.valueUsd).toBeCloseTo(599.5248, 10);
+    expect(shouldSuppressHolding(combinedEth)).toBe(false);
     const rows: string[][] = [["T212 positions: 0", "N/A (no holding)", "no-op", "GBP 487 cash is value only; no P&L"]];
     for (const source of data.walletNative.data!) {
-      const holding = book.wallet.native.find((row) => row.chainId === source.chainId);
+      const chain = combinedEth.chains.find((row) => row.chainId === source.chainId);
+      expect(chain).toMatchObject({ chainId: source.chainId, chainName: source.chainName, amount: source.amount });
       if (source.chainId === 8453) {
-        expect(holding).toMatchObject({ chainId: 8453, amount: 0.000099 });
-        expect(holding!.valueUsd).toBeCloseTo(0.2376, 12);
-        expect(shouldSuppressHolding(holding!)).toBe(true);
-        rows.push([`${source.chainName} ETH ${source.amount}`, "N/A (not displayed)", "no-op", "Included in joined holdings and value totals; excluded from displayed rows and coverage"]);
+        expect(chain).toMatchObject({ chainId: 8453, amount: 0.000099 });
+        expect(chain!.valueUsd).toBeCloseTo(0.2376, 12);
+        expect(shouldSuppressHolding(chain!)).toBe(true);
+        rows.push([`${source.chainName} ETH ${source.amount}`, combinedEth.basisStatus, combinedEth.pnlEligibility, "Chain value is below $1, retained inside the displayed combined ETH holding; dust is evaluated after aggregation"]);
       } else {
-        expect(holding).toBeDefined();
-        rows.push([`${holding!.chainName} ETH ${holding!.amount}`, holding!.basisStatus, holding!.pnlEligibility, holding!.basisNote]);
+        expect(chain).toBeDefined();
+        rows.push([`${chain!.chainName} ETH ${chain!.amount}`, combinedEth.basisStatus, combinedEth.pnlEligibility, `Constituent of native:eth; ${combinedEth.basisNote}`]);
       }
     }
     const usdg = book.wallet.tokens[0];

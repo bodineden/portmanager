@@ -9,6 +9,7 @@ import { dustBook } from "../scripts/__fixtures__/dust-book";
 const TOKEN = `0x${"a".repeat(40)}`;
 const live = <T>(data: T): LiveResult<T> => ({ data, state: { status: "live", asOf: AS_OF, message: "fixture" } });
 const inputs = (): JoinedPortfolioInputs => ({
+  solana: live({ native: [], tokens: [] }),
   t212Summary: live({ currency: "USD", cashAvailable: 0, totalValue: 0, investmentsCurrentValue: 0 }),
   t212Positions: live([]),
   nfts: live([{ collection: "desk-nft", collectionName: "Desk NFT", tokenCount: 1, floorEth: 1 }]),
@@ -56,7 +57,7 @@ describe("operator-recorded basis", () => {
     expect(absent.totals).toMatchObject({ grandTotalUsd: 300, costBasisUsd: null, pnlUsd: null,
       pnlCoverage: { totalHoldings: 3, eligible: 0, notRecorded: 3, dust: 0, unpriced: 0, unreconciled: 0, status: "partial", sourcesComplete: true } });
     expect(Object.keys(positive.sources)).toEqual(Object.keys(absent.sources));
-    expect(Object.keys(positive.sources)).toHaveLength(9);
+    expect(Object.keys(positive.sources)).toHaveLength(10);
   });
   it("joins all holding kinds by exact keys, retaining chain rows while older desk basis wins", () => {
     const data = inputs();
@@ -70,7 +71,8 @@ describe("operator-recorded basis", () => {
     expect(data).toEqual(before);
     expect(data.basisEvidence["nft:4663:desk-nft"]).toEqual(chain);
     expect(data.manualBasis["nft:4663:desk-nft"]).toEqual(operator);
-    const chainOnly = buildJoinedPortfolio({ ...data, manualBasis: undefined }, AS_OF);
+    const chainOnly = buildJoinedPortfolio({
+    solana: live({ native: [], tokens: [] }), ...data, manualBasis: undefined }, AS_OF);
     expect(chainOnly.nfts[0]).toMatchObject({ basisStatus: "onchain-derived", costBasisUsd: 20, pnlUsd: 80 });
     expect(book.totals.grandTotalUsd).toBe(chainOnly.totals.grandTotalUsd);
     expect(book.totals).toMatchObject({ costBasisUsd: 240, pnlUsd: 60, pnlPct: 25,
@@ -79,7 +81,7 @@ describe("operator-recorded basis", () => {
     expect(c.eligible + c.notRecorded + c.dust + c.unpriced + c.unreconciled).toBe(c.totalHoldings);
     expect(coverageLabel(c)).toBe("Complete P&L (3 of 3 holdings have recorded basis)");
     expect(Object.keys(book.sources)).toEqual(Object.keys(chainOnly.sources));
-    expect(Object.keys(book.sources)).toHaveLength(9);
+    expect(Object.keys(book.sources)).toHaveLength(10);
   });
   it.each(["native", "token", "nft"] as const)("preserves zero-basis and loss arithmetic for %s", (kind) => {
     expect(deriveOnchainPnl({ ...holding, kind }, 36, undefined, { ...operator, costUsd: 0 }))

@@ -26,6 +26,7 @@ const AS_OF = "2026-09-12T04:49:50.350Z";
 const live = <T>(data: T): LiveResult<T> => ({ data, state: { status: "live", asOf: AS_OF, message: "Offline arithmetic fixture" } });
 function book(scenario: "mixed" | "all-unpriced" | "wallet-failure" | "incomplete" = "mixed") {
   return buildJoinedPortfolio({
+    solana: live({ native: [], tokens: [] }),
     t212Summary: live({ currency: "USD", cashAvailable: 487, totalValue: 487, investmentsCurrentValue: 0 }),
     t212Positions: live([]), walletNative: live([]), walletTokens: live([]), manualHoldings: live([]),
     capitalEvents: live([{ occurredAt: AS_OF, kind: "contribution", amountThb: 120000 }]),
@@ -39,6 +40,7 @@ const text = (html: string) => html.replace(/<[^>]*>/g, " ").replaceAll("&amp;",
 
 function displayBoundaryBook() {
   return buildJoinedPortfolio({
+    solana: live({ native: [], tokens: [] }),
     t212Summary: live({ currency: "USD", cashAvailable: 100, totalValue: 101.5, investmentsCurrentValue: 1.5 }),
     t212Positions: live([0.5, 1].map((value) => ({
       ticker: value < 1 ? "SMALL-SECURITY" : "ONE-SECURITY", name: "Security fixture", quantity: 1,
@@ -94,6 +96,7 @@ describe("render-only holding suppression", () => {
   });
   it.each(["all-suppressed", "genuinely-empty"] as const)("uses neutral empty-view copy for %s inventory while preserving full portfolio value and book P&L", async (scenario) => {
     const portfolio = scenario === "all-suppressed" ? dustBook("empty") : buildJoinedPortfolio({
+    solana: live({ native: [], tokens: [] }),
       t212Summary: live({ currency: "USD", cashAvailable: 0, totalValue: 0, investmentsCurrentValue: 0 }),
       t212Positions: live([]), nfts: live([]), walletNative: live([]), walletTokens: live([]), manualHoldings: live([]),
       fiatFx: live({ usdToThb: 36, gbpToThb: 45, eurToThb: 40, asOf: AS_OF }), ethPrice: live(1000),
@@ -151,6 +154,7 @@ describe("render-only holding suppression", () => {
   it("preserves unavailable inventory messages instead of using the neutral empty-view copy", async () => {
     const unavailable = <T,>(): LiveResult<T> => ({ data: null, state: { status: "unavailable", asOf: null, message: "Provider request failed." } });
     vi.mocked(getJoinedPortfolio).mockResolvedValue(buildJoinedPortfolio({
+    solana: live({ native: [], tokens: [] }),
       t212Summary: unavailable(), t212Positions: unavailable(), nfts: unavailable(),
       walletNative: unavailable(), walletTokens: unavailable(), fiatFx: unavailable(), ethPrice: unavailable(),
       manualHoldings: live([]), capitalEvents: live([]),
@@ -173,14 +177,16 @@ describe("render-only holding suppression", () => {
     const displayed = allHoldings.filter((row) => !shouldSuppressHolding(row));
     const suppressed = allHoldings.filter(shouldSuppressHolding);
     const small = suppressed.filter((row) => row.valueUsd !== null);
-    expect(allHoldings).toHaveLength(10);
+    expect(allHoldings).toHaveLength(9);
     expect(displayed).toHaveLength(5);
-    expect(small.map((row) => row.valueUsd)).toEqual([0.5, 0.5, 0.5, 0.5]);
+    expect(small.map((row) => row.valueUsd)).toEqual([0.5, 0.5, 0.5]);
+    expect(portfolio.wallet.native[0]).toMatchObject({ key: "native:eth", valueUsd: 1.5 });
+    expect(portfolio.wallet.native[0].chains.map((row) => row.valueUsd)).toEqual([0.5, 1]);
     expect(small.every((row) => row.valueUsd! < 1)).toBe(true);
     const displayedValue = displayed.reduce((sum, row) => sum + row.valueUsd!, 0);
     const suppressedValue = small.reduce((sum, row) => sum + row.valueUsd!, 0);
-    expect(displayedValue).toBe(9);
-    expect(suppressedValue).toBe(2);
+    expect(displayedValue).toBe(9.5);
+    expect(suppressedValue).toBe(1.5);
     expect(portfolio.totals.grandTotalUsd).toBe(111.25);
     expect(portfolio.totals.grandTotalUsd! - 100 - 0.25 - displayedValue).toBe(suppressedValue);
     expect(portfolio.totals).toMatchObject({ nftsUsd: 1.5, walletNativeUsd: 1.5, walletTokensUsd: 6.5, walletUsd: 8, grandTotalThb: 4005 });
@@ -191,7 +197,8 @@ describe("render-only holding suppression", () => {
     const registry = renderToStaticMarkup(await AssetListPage());
     for (const html of [home, registry]) {
       for (const name of ["SMALL-SECURITY", "Small collection", "SMALL-NATIVE", "SMALL-TOKEN", "UNKNOWN-TOKEN"]) expect(html).not.toContain(name);
-      for (const name of ["ONE-SECURITY", "One-dollar collection", "ONE-NATIVE", "ONE-TOKEN", "FIVE-TOKEN"]) expect(html).toContain(name);
+      for (const name of ["ONE-SECURITY", "One-dollar collection", "ETH", "ONE-TOKEN", "FIVE-TOKEN"]) expect(html).toContain(name);
+      expect(html).toContain('id="native:eth" data-holding-id="native:eth"');
       expect(text(html)).not.toMatch(/dust|unpriced|hidden|under \$1/i);
     }
     expect(home).toMatch(/data-value-currency="USD">US\$111\.25<\/strong>/);
@@ -226,7 +233,7 @@ describe("render-only holding suppression", () => {
     expect(JSON.parse(recorded![16] as string)).toEqual({
       "t212:SMALL-SECURITY": 0.5, "t212:ONE-SECURITY": 1,
       "nft:small-nft": 0.5, "nft:one-nft": 1,
-      "native:1": 0.5, "native:8453": 1,
+      "native:eth": 1.5,
       "token:1:0xaaa": 0.5, "token:1:0xbbb": 1, "token:1:0xccc": 5, "token:1:0xddd": null,
       "manual:Operator cash": 0.25,
     });

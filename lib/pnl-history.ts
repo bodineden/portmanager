@@ -1,6 +1,6 @@
 import { neon } from "@neondatabase/serverless";
 import { isNeonConfigured, PORTFOLIO_SNAPSHOT_DDL, PORTFOLIO_SNAPSHOT_EXTENSION_DDL } from "./assets-db";
-import { joinedHoldingsMap, valueSetSignature, VALUE_SOURCE_KEYS, type HoldingsValueMap, type SnapshotSources } from "./holding-values";
+import { joinedHoldingsMap, joinedNativeBasketMembership, valueSetSignature, VALUE_SOURCE_KEYS, type HoldingsValueMap, type NativeBasketMembership, type SnapshotSources } from "./holding-values";
 import type { JoinedPortfolio } from "./live-data";
 import type { PnlCoverage } from "./pnl";
 
@@ -74,6 +74,7 @@ export function createSnapshotRecorder(options: SnapshotRecorderOptions = {}) {
           RETURNING snapshot_date
         `, [date, totals.grandTotalUsd, totals.grandTotalThb, totals.costBasisUsd, totals.costBasisThb,
           totals.pnlUsd, totals.pnlThb, totals.pnlPct, JSON.stringify({ ...totals.pnlCoverage,
+            nativeBasketMembership: joinedNativeBasketMembership(portfolio),
             sources: portfolio.sources, valueSetSignature: valueSetSignature(holdings, portfolio.sources), byClass: Object.fromEntries(Object.entries(totals.pnlByClass).map(([name, value]) => [name, value.pnlCoverage])),
           }), portfolio.asOf, portfolio.capital.contributedThb, portfolio.capital.contributedUsd,
           totals.manualUsd, totals.manualThb, totals.bookPnl?.pnlThb ?? null, totals.bookPnl?.pnlUsd ?? null,
@@ -118,6 +119,7 @@ export type PortfolioSnapshot = {
   bookPnlUsd?: number | null;
   holdings?: HoldingsValueMap | null;
   sources?: SnapshotSources | null;
+  nativeBasketMembership?: NativeBasketMembership | null;
 };
 
 function snapshotNumber(value: unknown, nonNegative = false): number | null {
@@ -179,6 +181,14 @@ function snapshotSources(value: unknown): SnapshotSources | null {
   return Object.fromEntries(entries.map(([key, source]) => [key, { status: source!.status,
     asOf: typeof source!.asOf === "string" ? source!.asOf : null, message: typeof source!.message === "string" ? source!.message : "" }])) as SnapshotSources;
 }
+function snapshotNativeBasketMembership(value: unknown): NativeBasketMembership | null {
+  const membership = jsonObject(jsonObject(value)?.nativeBasketMembership);
+  if (!membership) return null;
+  if (Object.values(membership).some((chains) => !Array.isArray(chains) || chains.length === 0
+    || [...chains].some((chain) => typeof chain !== "number" || !Number.isSafeInteger(chain) || chain <= 0)
+    || new Set(chains).size !== chains.length)) return null;
+  return Object.fromEntries(Object.entries(membership).map(([id, chains]) => [id, [...chains as number[]]]));
+}
 
 /** Pure driver-row boundary. Invalid coverage/date cannot become a chart point. */
 export function mapPortfolioSnapshotRow(value: unknown): PortfolioSnapshot | null {
@@ -204,6 +214,7 @@ export function mapPortfolioSnapshotRow(value: unknown): PortfolioSnapshot | nul
     bookPnlUsd: snapshotNumber(row.book_pnl_usd),
     holdings: snapshotHoldings(row.holdings),
     sources: snapshotSources(row.coverage),
+    nativeBasketMembership: snapshotNativeBasketMembership(row.coverage),
     coverage,
   };
 }

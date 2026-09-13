@@ -2,6 +2,7 @@ import { neon } from "@neondatabase/serverless";
 import { isNeonConfigured } from "./assets-db";
 import { isManualBasis, type AcquisitionEvidence, type ManualBasis } from "./pnl";
 import type { SnapshotDb, SnapshotReaderOptions } from "./pnl-history";
+import { isSolanaAddress } from "./solana-address";
 
 function defaultDb(): SnapshotDb {
   const sql = neon(process.env.DATABASE_URL!);
@@ -68,7 +69,9 @@ export async function readManualBasis(asOf: string, options: SnapshotReaderOptio
     for (const row of rows) {
       try {
         if (!object(row) || !text(row.holding_key)
-          || !/^(?:nft:4663:[^\s:]+|native:[1-9]\d*:native|token:[1-9]\d*:0x[0-9a-f]{40})$/.test(row.holding_key)) continue;
+          || !(row.holding_key.startsWith("token:solana:")
+            ? isSolanaAddress(row.holding_key.slice("token:solana:".length))
+            : /^(?:nft:4663:[^\s:]+|native:(?:[1-9]\d*|solana):native|token:[1-9]\d*:0x[0-9a-f]{40})$/.test(row.holding_key))) continue;
         const costUsd = typeof row.cost_usd === "string" && /^\d+(?:\.\d+)?$/.test(row.cost_usd)
           ? Number(row.cost_usd) : row.cost_usd;
         const basis = { costUsd, asOf: row.as_of, note: row.note };

@@ -1,7 +1,7 @@
 import type { FiatRates, JoinedPortfolio } from "./live-data";
 import type { BasisStatus, PnlClass, PnlCoverage, PnlEligibility } from "./pnl";
 import type { PortfolioSnapshot } from "./pnl-history";
-import { valueSetSignature, type HoldingsValueMap } from "./holding-values";
+import { valueSetSignature, VALUE_SOURCE_KEYS } from "./holding-values";
 
 function finite(value: number | null | undefined): value is number {
   return typeof value === "number" && Number.isFinite(value);
@@ -224,15 +224,37 @@ export function dailyChange(snapshots: readonly PortfolioSnapshot[], asOf?: stri
   return dailyChangeDetails(snapshots, asOf).change;
 }
 
-/** Asset Day compares only a recorded adjacent UTC date, never an older available row. */
-export function previousDayHoldings(snapshots: readonly PortfolioSnapshot[], asOf: string): HoldingsValueMap | null {
+export type AssetDayEvidence = Pick<PortfolioSnapshot, "sources" | "nativeBasketMembership">;
+export type AssetDayObservation = AssetDayEvidence & Pick<PortfolioSnapshot, "holdings">;
+
+/** Asset Day compares only a recorded adjacent UTC date, retaining its source evidence. */
+export function previousDayHoldings(snapshots: readonly PortfolioSnapshot[], asOf: string): AssetDayObservation | null {
   const date = utcDate(asOf);
   if (!date) return null;
   const previousDate = new Date(Date.parse(`${date}T00:00:00Z`) - 86_400_000).toISOString().slice(0, 10);
-  return snapshots.find((row) => row.date === previousDate)?.holdings ?? null;
+  const previous = snapshots.find((row) => row.date === previousDate);
+  return previous?.holdings ? { holdings: previous.holdings, sources: previous.sources,
+    nativeBasketMembership: previous.nativeBasketMembership } : null;
 }
-export function holdingDayChange(id: string, valueUsd: number | null, previous: HoldingsValueMap | null): { usd: number; pct: number | null } | null {
-  const before = previous && Object.hasOwn(previous, id) ? previous[id] : null;
+export function holdingDayChange(id: string, valueUsd: number | null, previous: AssetDayObservation | null,
+  current: AssetDayEvidence): { usd: number; pct: number | null } | null {
+  if (id === "native:eth" || Object.hasOwn(current.nativeBasketMembership ?? {}, id)
+    || Object.hasOwn(previous?.nativeBasketMembership ?? {}, id)) {
+    const membership = (observation: AssetDayEvidence | null): string | null => {
+      const sources = observation?.sources;
+      const chains = observation?.nativeBasketMembership?.[id];
+      // Nine-source history and absent membership cannot prove a complete basket.
+      if (!sources || !VALUE_SOURCE_KEYS.every((key) => ["live", "partial", "unavailable"].includes(sources[key]?.status))
+        || sources.walletNative.status !== "live" || !Array.isArray(chains) || chains.length === 0
+        || ![...chains].every((chain) => Number.isSafeInteger(chain) && chain > 0)
+        || new Set(chains).size !== chains.length) return null;
+      return JSON.stringify([...chains].sort((a, b) => a - b));
+    };
+    const currentMembership = membership(current);
+    if (!currentMembership || currentMembership !== membership(previous)) return null;
+  }
+  const holdings = previous?.holdings;
+  const before = holdings && Object.hasOwn(holdings, id) ? holdings[id] : null;
   if (!finite(valueUsd) || valueUsd < 0 || !finite(before) || before < 0) return null;
   const usd = valueUsd - before;
   const pct = before > 0 ? usd / before * 100 : null;

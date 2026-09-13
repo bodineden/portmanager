@@ -17,6 +17,7 @@ import {
 import "./asset-list.css";
 import { snapshotFiatUsd, valueAllocation } from "@/lib/pnl-view";
 import { shouldSuppressHolding } from "@/lib/dust-filter";
+import { holdingId } from "@/lib/holding-values";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -69,19 +70,21 @@ export default async function AssetListPage() {
     (left, right) => Number(right.priced) - Number(left.priced),
   );
   const walletNativeRows = portfolio.wallet.native.map((holding) => ({
-    id: `${holding.chainId}:native`,
+    id: holding.key,
     symbol: holding.symbol,
     chainName: holding.chainName,
     chainId: holding.chainId,
-    amount: formatNumber(holding.amount, 18),
-    priceUsd: formatUsd(portfolio.fx.ethToUsd),
+    chains: holding.chains,
+    amountValue: holding.amount,
+    amount: formatNumber(holding.amount, holding.chainId === "solana" ? 9 : 18),
+    priceUsd: formatUsd(holding.priceUsd),
     valueUsd: holding.valueUsd,
     valueUsdText: formatUsd(holding.valueUsd),
     valueThb: formatThb(holding.valueThb),
-    priced: portfolio.fx.ethToUsd !== null,
+    priced: holding.valueUsd !== null,
   }));
   const walletTokenRows = walletTokens.map((holding) => ({
-    id: `${holding.chainId}:${holding.contract?.toLowerCase() ?? holding.symbol}`,
+    id: holdingId.token(holding.chainId, holding.contract ?? holding.symbol),
     symbol: holding.symbol,
     name: holding.name,
     contract: holding.contract,
@@ -103,20 +106,22 @@ export default async function AssetListPage() {
   const walletTokenCount = walletTokenRows.filter((row) => !shouldSuppressHolding(row)).length;
   const walletEntryCount = walletNativeCount + walletTokenCount;
   const walletSourcesComplete = portfolio.sources.walletNative.status === "live"
-    && portfolio.sources.walletTokens.status === "live";
+    && portfolio.sources.walletTokens.status === "live"
+    && portfolio.sources.solana.status === "live";
   const liveEntryCount = positionCount + nftCollectionCount + walletEntryCount;
   const registryState = joinedStatus(Object.values(portfolio.sources));
   const accountCurrency = portfolio.t212.currency;
-  const sourceFeeds: Array<{ label: string; state: LiveSourceState }> = [
-    { label: "T212 ACCOUNT", state: portfolio.sources.t212Summary },
-    { label: "T212 POSITIONS", state: portfolio.sources.t212Positions },
-    { label: "NFT HOLDINGS", state: portfolio.sources.nfts },
-    { label: "WALLET NATIVE", state: portfolio.sources.walletNative },
-    { label: "WALLET TOKENS", state: portfolio.sources.walletTokens },
-    { label: "FIAT FX", state: portfolio.sources.fiatFx },
-    { label: "ETH PRICE", state: portfolio.sources.ethPrice },
-    { label: "MANUAL HOLDINGS", state: portfolio.sources.manualHoldings },
-    { label: "CONTRIBUTED CAPITAL", state: portfolio.sources.capital },
+  const sourceFeeds: Array<{ key: keyof typeof portfolio.sources; label: string; state: LiveSourceState }> = [
+    { key: "t212Summary", label: "T212 ACCOUNT", state: portfolio.sources.t212Summary },
+    { key: "t212Positions", label: "T212 POSITIONS", state: portfolio.sources.t212Positions },
+    { key: "nfts", label: "NFT HOLDINGS", state: portfolio.sources.nfts },
+    { key: "walletNative", label: "WALLET NATIVE", state: portfolio.sources.walletNative },
+    { key: "walletTokens", label: "WALLET TOKENS", state: portfolio.sources.walletTokens },
+    { key: "solana", label: "SOLANA WALLET", state: portfolio.sources.solana },
+    { key: "fiatFx", label: "FIAT FX", state: portfolio.sources.fiatFx },
+    { key: "ethPrice", label: "ETH PRICE", state: portfolio.sources.ethPrice },
+    { key: "manualHoldings", label: "MANUAL HOLDINGS", state: portfolio.sources.manualHoldings },
+    { key: "capital", label: "CONTRIBUTED CAPITAL", state: portfolio.sources.capital },
   ];
 
   return (
@@ -189,6 +194,10 @@ export default async function AssetListPage() {
                 status: portfolio.sources.walletTokens.status,
                 label: sourceLabel(portfolio.sources.walletTokens.status),
               }}
+              solanaSource={{
+                status: portfolio.sources.solana.status,
+                label: sourceLabel(portfolio.sources.solana.status),
+              }}
               walletSourcesComplete={walletSourcesComplete}
               totalWalletUsd={formatUsd(portfolio.totals.walletUsd)}
               totalWalletThb={formatThb(portfolio.totals.walletThb)}
@@ -199,6 +208,8 @@ export default async function AssetListPage() {
               <p>{portfolio.sources.walletNative.message}</p>
               <span>TOKENS</span>
               <p>{portfolio.sources.walletTokens.message}</p>
+              <span>SOLANA</span>
+              <p>{portfolio.sources.solana.message}</p>
               <time dateTime={portfolio.asOf}>Snapshot {formatTimestamp(portfolio.asOf)}</time>
             </div>
           </section>
@@ -397,8 +408,8 @@ export default async function AssetListPage() {
           </section>
 
           <section className="asset-source-grid" aria-label="Live data sources">
-            {sourceFeeds.map(({ label, state }) => (
-              <article className="panel asset-source-card" key={label}>
+            {sourceFeeds.map(({ key, label, state }) => (
+              <article className="panel asset-source-card" key={key} data-source-key={key}>
                 <div>
                   <span>{label}</span>
                   <SourceBadge state={state} />

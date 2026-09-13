@@ -1,4 +1,5 @@
 import { shouldSuppressHolding } from "@/lib/dust-filter";
+import { NativeChainBreakdown, type NativeChainView } from "../native-chain-breakdown";
 
 type WalletSourceView = {
   status: "live" | "partial" | "unavailable";
@@ -9,7 +10,9 @@ type WalletNativeRowView = {
   id: string;
   symbol: string;
   chainName: string;
-  chainId: number;
+  chainId: number | "eth" | "solana";
+  chains: NativeChainView[];
+  amountValue: number;
   amount: string;
   priceUsd: string;
   valueUsd: number | null;
@@ -24,7 +27,7 @@ type WalletTokenRowView = {
   name: string;
   contract?: string;
   chainName: string;
-  chainId: number;
+  chainId: number | "solana";
   amount: string;
   priceUsd: string;
   valueUsd: number | null;
@@ -38,6 +41,7 @@ export function WalletAssetRegistry({
   tokenRows: allTokenRows,
   nativeSource,
   tokenSource,
+  solanaSource,
   walletSourcesComplete,
   totalWalletUsd,
   totalWalletThb,
@@ -46,6 +50,7 @@ export function WalletAssetRegistry({
   tokenRows: WalletTokenRowView[];
   nativeSource: WalletSourceView;
   tokenSource: WalletSourceView;
+  solanaSource: WalletSourceView;
   walletSourcesComplete: boolean;
   totalWalletUsd: string;
   totalWalletThb: string;
@@ -58,18 +63,22 @@ export function WalletAssetRegistry({
     <>
       <div className="panel-header asset-live-panel-header">
         <div>
-          <p className="eyebrow">EVM WALLET / NATIVE + ERC-20</p>
+          <p className="eyebrow">EVM + SOLANA / NATIVE + TOKENS</p>
           <h2 className="panel-title">Live Wallet Asset Registry</h2>
           <p className="panel-subtitle">Native coin and token balances.</p>
         </div>
         <div className="asset-panel-status">
-          <span className="asset-wallet-source-label">
+          <span className="asset-wallet-source-label" data-wallet-source="walletNative">
             <small>NATIVE</small>
             <span className={`asset-source-badge is-${nativeSource.status}`}>{nativeSource.label}</span>
           </span>
-          <span className="asset-wallet-source-label">
+          <span className="asset-wallet-source-label" data-wallet-source="walletTokens">
             <small>TOKENS</small>
             <span className={`asset-source-badge is-${tokenSource.status}`}>{tokenSource.label}</span>
+          </span>
+          <span className="asset-wallet-source-label" data-wallet-source="solana">
+            <small>SOLANA</small>
+            <span className={`asset-source-badge is-${solanaSource.status}`}>{solanaSource.label}</span>
           </span>
           <span className="asset-wallet-count">
             <span className="panel-count">{totalCount} ASSETS</span>
@@ -88,7 +97,7 @@ export function WalletAssetRegistry({
       ) : (
         <div className="asset-table-scroll">
           <table className="asset-live-table asset-wallet-table">
-            <caption className="sr-only">Live native coin and ERC-20 wallet registry</caption>
+            <caption className="sr-only">Live native coin, ERC-20 and SPL wallet registry</caption>
             <thead>
               <tr>
                 <th scope="col">Asset</th>
@@ -102,11 +111,11 @@ export function WalletAssetRegistry({
             </thead>
             <tbody>
               {nativeRows.map((holding) => (
-                <tr key={holding.id} data-wallet-kind="native" data-wallet-priced={holding.priced ? "true" : "false"}>
+                <tr key={holding.id} id={holding.id} data-holding-id={holding.id} data-native-chains={JSON.stringify(holding.chains)} data-holding-amount={holding.amountValue} data-holding-value-usd={holding.valueUsd} data-wallet-kind="native" data-wallet-priced={holding.priced ? "true" : "false"}>
                   <td><span className="ticker-badge">{holding.symbol}</span></td>
                   <td>
                     <strong className="asset-collection-name">{holding.chainName}</strong>
-                    <small className="asset-row-name mono">CHAIN {holding.chainId}</small>
+                    <NativeChainBreakdown chains={holding.chains} symbol={holding.symbol} />
                   </td>
                   <td><span className="data-tag">NATIVE</span></td>
                   <td className="asset-cell-right numeric">{holding.amount}</td>
@@ -118,6 +127,8 @@ export function WalletAssetRegistry({
               {tokenRows.map((holding) => (
                 <tr
                   key={holding.id}
+                  id={holding.id}
+                  data-holding-id={holding.id}
                   data-wallet-kind="token"
                   data-wallet-priced={holding.priced ? "true" : "false"}
                 >
@@ -131,7 +142,7 @@ export function WalletAssetRegistry({
                   </td>
                   <td>
                     <span className="asset-wallet-type">
-                      <span className="data-tag">ERC-20</span>
+                      <span className="data-tag">{holding.chainId === "solana" ? "SPL" : "ERC-20"}</span>
                     </span>
                   </td>
                   <td className="asset-cell-right numeric">{holding.amount}</td>

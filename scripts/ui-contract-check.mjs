@@ -171,6 +171,7 @@ async function readWalletInventoryExpectation(page) {
     return known.some((value) => value > 0) ? known.reduce((sum, value) => sum + value, 0) : null;
   };
   return {
+    sources,
     rows: sources.flatMap((source) => source.rows.map((row) => source.status !== "unavailable" && row.amount > 0
       ? row : { valueUsd: null, valueThb: null })),
     totalUsd: fullTotal("valueUsd"), totalThb: fullTotal("valueThb"),
@@ -211,6 +212,84 @@ async function assertWalletTotals(panel, usdColumn, thbColumn, expected) {
       requireCondition(await panel.locator(".is-unavailable").count() > 0, `${label} wallet total is unknown despite complete priced rows`);
     }
   }
+}
+
+async function assertCombinedNativeRows(page, surface) {
+  const panel = page.locator(surface === "home" ? ".home-wallet-panel" : ".asset-wallet-panel");
+  const { sources } = await readWalletInventoryExpectation(page);
+  const native = sources[0].rows;
+  requireCondition(native.filter((row) => row.key === "native:eth").length <= 1, "joined inventory still splits native ETH");
+  requireCondition(native.every((row) => ["native:eth", "native:solana:native"].includes(row.key)), "native inventory contains an old per-chain identity");
+  for (const holding of native) {
+    const row = panel.locator(`tr[data-holding-id="${holding.key}"]`);
+    const displayed = Number.isFinite(holding.valueUsd) && holding.valueUsd >= 1;
+    requireCondition(await row.count() === (displayed ? 1 : 0), `${holding.key} rendered count differs from combined raw threshold`);
+    requireCondition(Array.isArray(holding.chains) && holding.chains.length > 0, `${holding.key} lost its chain breakdown`);
+    const amount = holding.chains.reduce((sum, chain) => sum + chain.amount, 0);
+    const value = holding.chains.every((chain) => Number.isFinite(chain.valueUsd))
+      ? holding.chains.reduce((sum, chain) => sum + chain.valueUsd, 0) : null;
+    requireCondition(Math.abs(amount - holding.amount) < 1e-12, `${holding.key} amount differs from constituent sum`);
+    requireCondition(value === null ? holding.valueUsd === null : Math.abs(value - holding.valueUsd) < 1e-9, `${holding.key} value differs from constituent sum`);
+    if (holding.key === "native:eth") requireCondition(new Set(holding.chains.map((chain) => chain.chainId)).size === holding.chains.length
+      && holding.chains.every((chain) => [1, 8453, 42161, 4663].includes(chain.chainId)), "ETH breakdown lost or duplicated configured chains");
+    if (displayed) {
+      requireCondition(await row.getAttribute("id") === holding.key, `${holding.key} has no stable wallet DOM id`);
+      requireCondition(Number(await row.getAttribute("data-holding-amount")) === holding.amount, `${holding.key} wallet quantity differs`);
+      requireCondition(Number(await row.getAttribute("data-holding-value-usd")) === holding.valueUsd, `${holding.key} wallet value differs`);
+      requireCondition(JSON.stringify(JSON.parse(await row.getAttribute("data-native-chains"))) === JSON.stringify(holding.chains), `${holding.key} wallet chain detail differs`);
+      requireCondition(compactText(await row.locator("td").nth(surface === "home" ? 4 : 5).innerText()) === expectedUsd(holding.valueUsd), `${holding.key} displayed USD is not the combined value`);
+    }
+    if (surface === "home") {
+      const pnl = page.locator(`.pnl-asset-table tr[data-pnl-holding-id="${holding.key}"]`);
+      requireCondition(await pnl.count() === (displayed ? 1 : 0), `${holding.key} P&L row count differs from wallet inventory`);
+      if (displayed) {
+        requireCondition(await pnl.getAttribute("id") === `pnl:${holding.key}`, `${holding.key} has no stable P&L DOM id`);
+        requireCondition(await pnl.locator('[data-pnl-cell="value"]').evaluate((cell) => cell.firstChild?.textContent) === expectedUsd(holding.valueUsd), `${holding.key} P&L value differs from wallet`);
+      }
+    }
+  }
+  const eth = native.find((row) => row.key === "native:eth");
+  return eth ? `${eth.chains.length} EVM constituents → one native:eth; amount ${eth.amount}; USD ${eth.valueUsd}` : "EVM inventory unavailable/empty: no ETH row fabricated";
+}
+
+async function assertSolanaSourceRows(page, surface) {
+  const panel = page.locator(surface === "home" ? ".home-wallet-panel" : ".asset-wallet-panel");
+  const source = page.locator('[data-source-key="solana"]');
+  requireCondition(await source.count() === 1, "Solana source is missing or duplicated in the source strip");
+  const status = compactText(await source.locator(".live-source-badge, .asset-source-badge").innerText()).toLowerCase();
+  requireCondition(["live", "partial", "unavailable"].includes(status), "Solana source hides its availability status");
+  const walletSource = panel.locator('[data-wallet-source="solana"]');
+  requireCondition(await walletSource.count() === 1, "Solana wallet source badge is missing");
+  requireCondition(compactText(await walletSource.locator(".live-source-badge, .asset-source-badge").innerText()).toLowerCase() === status, "Solana source strip and wallet badge disagree");
+  const { sources } = await readWalletInventoryExpectation(page);
+  const sol = sources[0].rows.find((row) => row.key === "native:solana:native");
+  const spl = sources[1].rows.filter((row) => row.key?.startsWith("token:solana:"));
+  const solRows = panel.locator('tr[data-holding-id="native:solana:native"]');
+  if (status === "unavailable") {
+    requireCondition(await solRows.count() === 0, "unavailable Solana source fabricated a wallet row");
+    requireCondition(!sol && spl.length === 0, "unavailable Solana source fabricated source inventory");
+    requireCondition(compactText(await source.locator("p").innerText()).length > 0, "Solana outage has no readable explanation");
+  } else {
+    requireCondition(sol, "available Solana source omitted the desk's native SOL holding");
+    requireCondition(await solRows.count() === (Number.isFinite(sol.valueUsd) && sol.valueUsd >= 1 ? 1 : 0), "SOL display differs from current USD threshold");
+    if (await solRows.count()) {
+      requireCondition(Number(await solRows.getAttribute("data-holding-amount")) === sol.amount, "rendered SOL quantity differs from this page's source inventory");
+      requireCondition(Number(await solRows.getAttribute("data-holding-value-usd")) === sol.valueUsd, "rendered SOL value differs from this page's source inventory");
+      requireCondition(compactText(await solRows.locator("td").nth(surface === "home" ? 4 : 5).innerText()) === expectedUsd(sol.valueUsd), "rendered SOL USD differs from this page's source inventory");
+    }
+  }
+  const displayedSpl = spl.filter((holding) => Number.isFinite(holding.valueUsd) && holding.valueUsd >= 1);
+  requireCondition(await panel.locator('tr[data-holding-id^="token:solana:"]').count() === displayedSpl.length, "rendered SPL count differs from this page's source inventory and USD threshold");
+  for (const holding of spl) {
+    const row = panel.locator(`tr[data-holding-id="${holding.key}"]`);
+    const displayed = displayedSpl.includes(holding);
+    requireCondition(await row.count() === (displayed ? 1 : 0), `${holding.key} rendered count differs from this page's source inventory`);
+    if (displayed) {
+      requireCondition(compactText(await row.locator("td").nth(surface === "home" ? 4 : 5).innerText()) === expectedUsd(holding.valueUsd), `${holding.key} rendered USD differs from this page's source inventory`);
+      requireCondition(compactText(await row.locator("td").nth(surface === "home" ? 2 : 3).innerText()) === holding.amount.toLocaleString("en-US", { maximumFractionDigits: 18 }), `${holding.key} rendered quantity differs from this page's source inventory`);
+    }
+  }
+  return `solana=${status}; ${sol ? `native:solana:native amount ${sol.amount}, USD ${sol.valueUsd}` : "no Solana holding fabricated"}; SPL ${displayedSpl.length}/${spl.length} rendered/source holdings`;
 }
 
 async function assertWalletTotalNegativeControls(page, surface) {
@@ -489,12 +568,12 @@ async function checkPnlContract(page) {
     return `${historyCount} recorded days with per-day coverage`;
   });
 
-  await check("home retains all seven source statuses and unavailable-source honesty", async () => {
+  await check("home retains all ten source statuses and unavailable-source honesty", async () => {
     const sources = page.locator(".pnl-source-strip [data-source-key]");
-    requireCondition(await sources.count() === 9, `expected nine sources, found ${await sources.count()}`);
+    requireCondition(await sources.count() === 10, `expected ten sources, found ${await sources.count()}`);
     const keys = await sources.evaluateAll((elements) => elements.map((element) => element.getAttribute("data-source-key")));
-    requireCondition(new Set(keys).size === 9, "source keys are duplicated");
-    for (const key of ["t212Summary", "t212Positions", "nfts", "fiatFx", "ethPrice", "walletNative", "walletTokens", "manualHoldings", "capital"]) requireCondition(keys.includes(key), `missing source ${key}`);
+    requireCondition(new Set(keys).size === 10, "source keys are duplicated");
+    for (const key of ["t212Summary", "t212Positions", "nfts", "fiatFx", "ethPrice", "walletNative", "walletTokens", "solana", "manualHoldings", "capital"]) requireCondition(keys.includes(key), `missing source ${key}`);
     for (const source of await sources.all()) {
       requireCondition(/^(?:live|partial|unavailable)$/i.test(compactText((await source.locator(".live-source-badge").textContent()) ?? "")), "source has no readable availability status");
     }
@@ -503,7 +582,7 @@ async function checkPnlContract(page) {
       requireCondition(await page.locator("[data-pnl-summary]").getAttribute("data-pnl-state") === "none", "unavailable sources imply computable P&L");
       requireCondition(/No recorded cost basis/i.test((await page.locator("[data-pnl-summary]").textContent()) ?? ""), "unavailable source fixture lacks the honest P&L empty state");
     }
-    return allUnavailable ? "all nine sources unavailable · P&L remains honest" : "seven original plus two ledger source statuses retained";
+    return allUnavailable ? "all ten sources unavailable · P&L remains honest" : "seven original plus two ledger and Solana source statuses retained";
   });
 }
 
@@ -546,13 +625,13 @@ async function checkHomeContract(page) {
     await readHomeWalletSummaryCount(page);
   });
 
-  await check("home wallet panel exposes both sources and the wallet table contract", async () => {
+  await check("home wallet panel exposes all three sources and the wallet table contract", async () => {
     const panel = page.locator(".home-wallet-panel");
     requireCondition(await panel.count() === 1, "wallet panel is missing or duplicated");
     const text = compactText((await panel.textContent()) ?? "");
-    requireCondition(/EVM WALLET\s*\/\s*NATIVE \+ TOKENS/i.test(text), "wallet eyebrow is missing");
+    requireCondition(/EVM \+ SOLANA\s*\/\s*NATIVE \+ TOKENS/i.test(text), "wallet eyebrow is missing");
     requireCondition(/Wallet Balances/i.test(text), "wallet panel title is missing");
-    requireCondition(await panel.locator(".live-source-badge").count() === 2, "expected native and token source badges");
+    requireCondition(await panel.locator(".live-source-badge").count() === 3, "expected native, token and Solana source badges");
 
     const table = panel.locator(".home-wallet-table");
     if (await table.count() === 0) {
@@ -610,13 +689,17 @@ async function checkHomeContract(page) {
   await check("home wallet rows keep native/token order and exclude unknown current values", async () => {
     return assertWalletRows(page.locator(".home-wallet-panel"), 4);
   });
+  await check("home live wallet and P&L render one combined ETH value equal to its chain inventory", async () => assertCombinedNativeRows(page, "home"));
+  await check("home live Solana source and native wallet holding agree with the source inventory", async () => assertSolanaSourceRows(page, "home"));
 }
 
 async function checkAssetWalletContract(page) {
+  await check("asset registry live wallet renders one combined ETH value equal to its chain inventory", async () => assertCombinedNativeRows(page, "registry"));
+  await check("asset registry live Solana source and wallet holding agree with the source inventory", async () => assertSolanaSourceRows(page, "registry"));
   await check("asset-list renders the read-only wallet registry", async () => {
     const panel = page.locator(".asset-wallet-panel");
     requireCondition(await panel.count() === 1, "wallet registry panel is missing or duplicated");
-    requireCondition(await panel.locator(".asset-source-badge").count() === 2, "expected native and token source badges");
+    requireCondition(await panel.locator(".asset-source-badge").count() === 3, "expected native, token and Solana source badges");
     const text = compactText((await panel.textContent()) ?? "");
     requireCondition(/Live Wallet Asset Registry/i.test(text), "wallet registry title is missing");
 
@@ -1603,11 +1686,11 @@ async function auditOperatorBasisFixtures(browser, fixtureUrl, viewport) {
         requireCondition(c.totalHoldings === 3 && c.eligible === (positive ? 1 : 0) && c.notRecorded === (positive ? 2 : 3)
           && c.dust === 0 && c.unpriced === 0 && c.unreconciled === 0 && c.status === "partial" && c.sourcesComplete, "operator coverage buckets differ");
         requireCondition(c.eligible + c.notRecorded + c.dust + c.unpriced + c.unreconciled === c.totalHoldings, "coverage bucket identity changed");
-        requireCondition(JSON.stringify(Object.keys(book.sources).sort()) === JSON.stringify(["capital", "ethPrice", "fiatFx", "manualHoldings", "nfts", "t212Positions", "t212Summary", "walletNative", "walletTokens"]), "operator basis added/lost a source");
+        requireCondition(JSON.stringify(Object.keys(book.sources).sort()) === JSON.stringify(["capital", "ethPrice", "fiatFx", "manualHoldings", "nfts", "solana", "t212Positions", "t212Summary", "walletNative", "walletTokens"]), "operator basis added/lost a source");
         return JSON.stringify({ rows: expected, coverage: c });
       });
       await check(`${label} displays exact chip, derivation, basis and P&L or honest dashes`, async () => {
-        const ids = ["nft:collection-one", "native:1", "token:1:0x0000000000000000000000000000000000000001"];
+        const ids = ["nft:collection-one", "native:eth", "token:1:0x0000000000000000000000000000000000000001"];
         requireCondition(await page.locator(".pnl-asset-table tbody tr").count() === 3, "operator fixture row count differs");
         for (const [index, id] of ids.entries()) {
           const row = page.locator(`.pnl-asset-table tr[data-holding-id="${id}"]`);
@@ -1672,7 +1755,7 @@ async function auditBasisEvidenceFixtures(browser, fixtureUrl, viewport) {
         requireCondition(c.totalHoldings === 3 && c.eligible === (positive ? 2 : 0) && c.notRecorded === (positive ? 1 : 3)
           && c.dust === 0 && c.unpriced === 0 && c.unreconciled === 0 && c.status === "partial" && c.sourcesComplete === true, "coverage counts or source completeness differ");
         requireCondition(c.eligible + c.notRecorded + c.dust + c.unpriced + c.unreconciled === c.totalHoldings, "coverage bucket identity changed");
-        const keys = ["capital", "ethPrice", "fiatFx", "manualHoldings", "nfts", "t212Positions", "t212Summary", "walletNative", "walletTokens"];
+        const keys = ["capital", "ethPrice", "fiatFx", "manualHoldings", "nfts", "solana", "t212Positions", "t212Summary", "walletNative", "walletTokens"];
         requireCondition(JSON.stringify(Object.keys(book.sources).sort()) === JSON.stringify(keys), "basis cache added/lost a source");
         requireCondition(book.totals.costBasisUsd === (positive ? 1140 : null) && book.totals.pnlUsd === (positive ? 420 : null), "recorded summary includes unknown basis or doubles the batch");
         requireCondition(book.totals.grandTotalUsd === 1561, "basis changed the independent full book valuation");
@@ -1681,7 +1764,7 @@ async function auditBasisEvidenceFixtures(browser, fixtureUrl, viewport) {
         return JSON.stringify({ rows: expected, coverage: c });
       });
       await check(`${label} displays provenance chips, exact values and honest no-evidence exclusions`, async () => {
-        const ids = ["native:1", "nft:collection-one", "token:1:0x0000000000000000000000000000000000000001"];
+        const ids = ["native:eth", "nft:collection-one", "token:1:0x0000000000000000000000000000000000000001"];
         const rows = [book.wallet.native[0], book.nfts[0], book.wallet.tokens[0]];
         requireCondition(await page.locator('.pnl-asset-table tbody tr').count() === 3, "fixture market row count differs");
         for (const [index, id] of ids.entries()) {
@@ -1719,6 +1802,173 @@ async function auditBasisEvidenceFixtures(browser, fixtureUrl, viewport) {
   } finally { await page.close(); }
 }
 
+async function auditCombinedSolanaFixtures(browser, fixtureUrl, viewport) {
+  const page = await browser.newPage({ viewport: { width: viewport.width, height: viewport.height } });
+  const browserErrors = [];
+  page.on("pageerror", (error) => browserErrors.push(`page: ${error.message}`));
+  page.on("console", (message) => captureBrowserConsole(browserErrors, message));
+  try {
+    for (const scenario of ["combined-solana", "combined-solana-dust", "combined-solana-missing", "combined-solana-unavailable", "combined-solana-dust-missing", "combined-solana-dust-invalid"]) {
+      const small = scenario.startsWith("combined-solana-dust");
+      const missing = scenario.endsWith("-missing") || scenario.endsWith("-invalid");
+      const unavailable = scenario === "combined-solana-unavailable";
+      const ethValue = small ? 1.6 : 1000;
+      const ethBasis = missing ? null : small ? 0.4 : 100;
+      const solValue = unavailable ? 0 : 0.048588734 * 100;
+      const total = ethValue + solValue;
+      for (const surface of ["home", "registry"]) {
+        const label = `${viewport.name} ${scenario} ${surface}`;
+        if (!await check(`${label} renders real joined assembly and page components`, async () => {
+          const response = await page.goto(`${fixtureUrl}/?scenario=dust-${scenario}-${surface}`, { waitUntil: "networkidle", timeout: 15_000 });
+          requireCondition(response?.ok(), `fixture HTTP ${response?.status() ?? "unavailable"}`);
+          await page.locator(surface === "home" ? ".pnl-value-hero" : ".asset-registry-hero").waitFor();
+        })) continue;
+        const book = await page.evaluate(() => window.__dustFixturePortfolio);
+        const recorded = await page.evaluate(() => window.__dustFixtureRecordedHoldings);
+        await check(`${label} one ETH row equals four per-chain amounts and USD values`, async () => assertCombinedNativeRows(page, surface));
+        await check(`${label} Solana strip and wallet show the exact native balance or honest outage`, async () => assertSolanaSourceRows(page, surface));
+        await check(`${label} pins stable joined keys, all-or-nothing ETH basis and source cardinality`, async () => {
+          const eth = book.wallet.native.find((row) => row.key === "native:eth");
+          requireCondition(eth && eth.chains.length === 4 && book.wallet.native.length === (unavailable ? 1 : 2), "joined native row/constituent cardinality differs");
+          requireCondition(JSON.stringify(eth.chains.map((chain) => chain.chainId)) === JSON.stringify([1, 8453, 42161, 4663]), "configured EVM breakdown identities differ");
+          requireCondition(Math.abs(eth.amount - (small ? 0.0016 : 1)) < 1e-12 && Math.abs(eth.valueUsd - ethValue) < 1e-9, "combined ETH amount/value differs from independent inputs");
+          requireCondition(eth.costBasisUsd === ethBasis && eth.basisStatus === (missing ? "not-recorded" : "operator-recorded")
+            && eth.pnlEligibility === (missing ? "not-recorded" : "eligible"), "partial chain basis leaked into combined ETH");
+          requireCondition(missing ? eth.pnlUsd === null : Math.abs(eth.pnlUsd - (ethValue - ethBasis)) < 1e-9, "ETH P&L includes partial basis or wrong value");
+          requireCondition(Object.keys(recorded).length === (unavailable ? 1 : 2) && recorded["native:eth"] === eth.valueUsd
+            && [1, 8453, 42161, 4663].every((chain) => !Object.hasOwn(recorded, `native:${chain}`)), "recorded holdings map retained a split ETH identity");
+          const sourceKeys = ["capital", "ethPrice", "fiatFx", "manualHoldings", "nfts", "solana", "t212Positions", "t212Summary", "walletNative", "walletTokens"];
+          requireCondition(JSON.stringify(Object.keys(book.sources).sort()) === JSON.stringify(sourceKeys), "ten-source joined identity differs");
+          requireCondition(book.sources.solana.status === (unavailable ? "unavailable" : "live"), "Solana source is not honest");
+          if (!unavailable) {
+            const sol = book.wallet.native.find((row) => row.key === "native:solana:native");
+            requireCondition(sol.amount === 0.048588734 && sol.costBasisUsd === 4.705788 && sol.basisStatus === "operator-recorded"
+              && sol.pnlEligibility === "eligible" && recorded["native:solana:native"] === solValue && book.wallet.tokens.length === 0,
+              "SOL key/amount/operator basis/value or zero SPL fixture differs");
+          }
+          const coverage = book.totals.pnlCoverage;
+          requireCondition(coverage.totalHoldings === (unavailable ? 1 : 2) && coverage.eligible === (missing || unavailable ? 1 : 2)
+            && coverage.notRecorded === (missing ? 1 : 0) && coverage.sourcesComplete === !unavailable,
+            "combined ETH/SOL coverage numerator, denominator, missing basis or outage differs");
+          requireCondition(coverage.eligible + coverage.notRecorded + coverage.dust + coverage.unpriced + coverage.unreconciled === coverage.totalHoldings,
+            "coverage bucket identity changed");
+          return JSON.stringify({ holdings: recorded, ethBasis, coverage });
+        });
+        await check(`${label} combined threshold preserves four sub-$1 constituents as one holding`, async () => {
+          const eth = book.wallet.native.find((row) => row.key === "native:eth");
+          const independentValues = small ? [0.4, 0.4, 0.4, 0.4] : [100, 200, 300, 400];
+          requireCondition(JSON.stringify(eth.chains.map((chain) => chain.valueUsd)) === JSON.stringify(independentValues), "independent four-chain values differ");
+          const wallet = page.locator(surface === "home" ? ".home-wallet-panel" : ".asset-wallet-panel");
+          requireCondition(await wallet.locator('tr[data-wallet-kind="native"]').count() === (unavailable ? 1 : 2), "native row count retains a chain split or suppresses combined ETH");
+          const detail = wallet.locator('tr[data-holding-id="native:eth"] details');
+          requireCondition(await detail.count() === 1, "combined ETH has no readable chain breakdown");
+          await detail.locator("summary").click();
+          const detailText = await detail.innerText();
+          for (const chain of ["Ethereum", "Base", "Arbitrum One", "Robinhood Chain"]) requireCondition(detailText.includes(chain), `${chain} is absent from visible chain detail`);
+          await detail.locator("summary").click();
+          return small ? "4 × $0.40 = $1.60 retained; all four chain values remain inspectable" : "$100 + $200 + $300 + $400 = $1,000 in one inspectable ETH row";
+        });
+        await check(`${label} SOL enters wallet and Crypto Port totals without duplicating ETH`, async () => {
+          const wallet = page.locator(surface === "home" ? ".home-wallet-panel" : ".asset-wallet-panel");
+          requireCondition(Math.abs(book.totals.walletUsd - total) < 1e-9 && Math.abs(book.totals.walletNativeUsd - total) < 1e-9
+            && Math.abs(book.totals.walletThb - total * 36) < 1e-9, "native SOL missing from wallet native/class totals");
+          await assertWalletTotals(wallet, surface === "home" ? 4 : 5, surface === "home" ? 5 : 6, await readWalletInventoryExpectation(page));
+          if (!unavailable) {
+            requireCondition(Math.abs(book.totals.grandTotalUsd - total) < 1e-9, "SOL missing from joined grand total");
+            const hero = page.locator(surface === "home" ? '[data-value-currency="USD"]' : ".asset-registry-value");
+            requireCondition(compactText(await hero.innerText()) === expectedUsd(total), "visible hero omits SOL");
+            if (surface === "home") {
+              requireCondition(compactText(await page.locator('[data-value-class="crypto"] strong').innerText()) === expectedUsd(total), "Crypto Port class value omits SOL");
+              requireCondition((await page.locator(".pnl-allocation-item > div:first-child > strong").allTextContents()).map(compactText).includes(expectedUsd(total)), "Crypto allocation omits SOL");
+            }
+          }
+          return `wallet/native USD ${total}; THB ${total * 36}; ${unavailable ? "Solana unavailable; known wallet subtotal retained" : `SOL contribution USD ${solValue}`}`;
+        });
+        if (surface === "home") await check(`${label} P&L table includes SOL and fail-closes incomplete ETH basis`, async () => {
+          const eth = page.locator('.pnl-asset-table tr[data-pnl-holding-id="native:eth"]');
+          requireCondition(await eth.getAttribute("data-pnl-eligibility") === (missing ? "not-recorded" : "eligible"), "P&L ETH gate differs from combined basis");
+          requireCondition(await eth.locator('[data-pnl-cell="basis"]').evaluate((cell) => cell.firstChild?.textContent) === expectedUsd(ethBasis), "P&L ETH basis is partial or per-chain");
+          const sol = page.locator('.pnl-asset-table tr[data-pnl-holding-id="native:solana:native"]');
+          requireCondition(await sol.count() === (unavailable ? 0 : 1), "P&L SOL row differs from source inventory");
+          if (!unavailable) {
+            requireCondition(await sol.getAttribute("data-basis-status") === "operator-recorded" && await sol.getAttribute("data-pnl-eligibility") === "eligible", "P&L SOL basis provenance differs");
+            for (const [cell, value] of [["value", solValue], ["basis", 4.705788], ["pnl", solValue - 4.705788]]) {
+              requireCondition(await sol.locator(`[data-pnl-cell="${cell}"]`).evaluate((element) => element.firstChild?.textContent) === expectedUsd(value), `P&L SOL ${cell} differs from independent arithmetic`);
+            }
+          }
+        });
+      }
+    }
+    await check(`${viewport.name} combined ETH/Solana browser fixtures keep console clean`, async () => {
+      requireCondition(browserErrors.length === 0, browserErrors.join(" | "));
+    });
+  } finally {
+    await page.close();
+  }
+}
+
+async function auditRestoredBoundaryFixtures(browser, fixtureUrl, viewport) {
+  const page = await browser.newPage({ viewport: { width: viewport.width, height: viewport.height } });
+  const browserErrors = [];
+  page.on("pageerror", (error) => browserErrors.push(`page: ${error.message}`));
+  page.on("console", (message) => captureBrowserConsole(browserErrors, message));
+  try {
+    for (const scenario of ["four-class-exact-one", "dynamic-solana"]) {
+      for (const surface of ["home", "registry"]) {
+        const label = `${viewport.name} restored ${scenario} ${surface}`;
+        if (!await check(`${label} renders real joined inputs and page components`, async () => {
+          const response = await page.goto(`${fixtureUrl}/?scenario=dust-${scenario}-${surface}`, { waitUntil: "networkidle", timeout: 15_000 });
+          requireCondition(response?.ok(), `fixture HTTP ${response?.status() ?? "unavailable"}`);
+          await page.locator(surface === "home" ? ".pnl-value-hero" : ".asset-registry-hero").waitFor();
+        })) continue;
+        const portfolio = await page.evaluate(() => window.__dustFixturePortfolio);
+        const wallet = page.locator(surface === "home" ? ".home-wallet-panel" : ".asset-wallet-panel");
+        if (scenario === "four-class-exact-one") {
+          await check(`${label} keeps exactly $1 across all four joined market classes including ETH`, async () => {
+            const classes = [portfolio.t212.investments, portfolio.nfts, portfolio.wallet.native, portfolio.wallet.tokens];
+            const displayRows = classes.flatMap((rows) => rows.filter((row) => Number.isFinite(row.valueUsd) && row.valueUsd >= 1));
+            requireCondition(classes.every((rows) => rows.length === 1), "exact-$1 fixture lost a market class");
+            requireCondition(displayRows.length === 4 && displayRows.every((row) => row.valueUsd === 1), "joined security/NFT/native ETH/token exact-$1 boundary was dropped");
+            const eth = portfolio.wallet.native[0];
+            requireCondition(eth.key === "native:eth" && eth.amountRaw === "1000000000000000" && eth.amount === 0.001 && eth.valueUsd === 1,
+              "combined ETH is not exactly $1 with its exact raw quantity");
+            requireCondition(JSON.stringify(eth.chains.map((chain) => chain.valueUsd)) === JSON.stringify([0.25, 0.25, 0.25, 0.25]), "exact-$1 aggregate lost a quarter-dollar constituent");
+            requireCondition(eth.costBasisUsd === 0.4 && eth.pnlUsd === 0.6 && eth.pnlEligibility === "eligible", "exact-$1 ETH was excluded from basis/P&L");
+            requireCondition(portfolio.totals.grandTotalUsd === 4 && portfolio.totals.pnlCoverage.totalHoldings === 4 && portfolio.totals.pnlCoverage.eligible === 4,
+              "exact-$1 classes lost full totals or eligible coverage");
+            return "[$1 security, $1 NFT, $1 combined ETH (4 × $.25), $1 token]; $4 total; 4/4 eligible";
+          });
+          await check(`${label} renders every exact-$1 class and one combined ETH row`, async () => {
+            const values = await page.locator(surface === "home"
+              ? '.pnl-asset-table tbody tr [data-pnl-cell="value"]'
+              : '.asset-live-table tbody .asset-usd-value').evaluateAll((cells) => cells.map((cell) => cell.firstChild?.textContent));
+            requireCondition(values.length === 4 && values.every((value) => compactText(value ?? "") === expectedUsd(1)), "DOM dropped or changed a joined exact-$1 market row");
+            requireCondition(await wallet.locator('tr[data-holding-id="native:eth"]').count() === 1, "exact-$1 combined ETH is absent or duplicated");
+            return assertCombinedNativeRows(page, surface);
+          });
+        } else {
+          await check(`${label} source fixture changes the SOL balance and includes case-distinct SPL holdings`, async () => {
+            requireCondition(portfolio.wallet.native[0].amount === 0.25 && portfolio.wallet.native[0].valueUsd === 25,
+              "dynamic fixture failed to change the pinned SOL balance");
+            requireCondition(portfolio.wallet.tokens.length === 2 && portfolio.wallet.tokens[0].contract !== portfolio.wallet.tokens[1].contract,
+              "dynamic fixture lost its case-distinct SPL inventory");
+            requireCondition(portfolio.wallet.tokens.filter((row) => Number.isFinite(row.valueUsd) && row.valueUsd >= 1).length === 1,
+              "dynamic fixture failed to exercise displayed and sub-dollar SPL holdings");
+            requireCondition(portfolio.totals.walletUsd === 27.5, "dynamic source subtotal lost SOL or SPL holdings");
+            return "fixture-only balance 0.25 SOL; two case-distinct SPL holdings ($2 and $.50); wallet $27.50";
+          });
+          await check(`${label} live-page helper follows reported quantities, values and SPL display eligibility`, async () => assertSolanaSourceRows(page, surface));
+        }
+      }
+    }
+    await check(`${viewport.name} restored boundary/Solana fixtures keep console clean`, async () => {
+      requireCondition(browserErrors.length === 0, browserErrors.join(" | "));
+    });
+  } finally {
+    await page.close();
+  }
+}
+
 async function auditDustFixtures(browser, fixtureUrl, viewport) {
   const page = await browser.newPage({ viewport: { width: viewport.width, height: viewport.height } });
   const browserErrors = [];
@@ -1750,7 +2000,7 @@ async function auditDustFixtures(browser, fixtureUrl, viewport) {
           for (const name of ["SECURITY-SMALL", "SECURITY-UNKNOWN", "COLLECTION-SMALL", "COLLECTION-UNKNOWN", "COLLECTION-ZERO", "COLLECTION-POSITIVE", "NATIVE-SMALL", "TOKEN-SMALL", "TOKEN-UNKNOWN"]) {
             requireCondition(!text.includes(name), `${name} survived render-only suppression`);
           }
-          const expectedFullRows = { mixed: 11, empty: 7, wholesale: 5, failed: 3, inventory: 11, "eth-outage": 10, "fiat-outage": 4 }[scenario];
+          const expectedFullRows = { mixed: 10, empty: 7, wholesale: 4, failed: 3, inventory: 10, "eth-outage": 9, "fiat-outage": 4 }[scenario];
           requireCondition(marketRows.length === expectedFullRows, "joined holding arrays lost full inventory rows");
           requireCondition(displayRows.length < marketRows.length, "displayed rows are not a strict subset of the joined inventory");
           requireCondition(Object.keys(recordedHoldings).length === marketRows.length + portfolio.manualHoldings.length, "recorded holdings map lost suppressed inventory identities");
@@ -1825,19 +2075,25 @@ async function auditDustFixtures(browser, fixtureUrl, viewport) {
               "P&L holdings count includes suppressed market rows or omits manual cash");
           }
           if (scenario === "mixed" || scenario === "inventory") {
-            requireCondition(displayRows.every((row) => row.valueUsd === 1), "exact $1 market boundary is not retained across four classes");
+            const perClassBoundary = [displayed.investments[0], displayed.nfts[0], portfolio.wallet.native[0].chains.find((chain) => chain.chainId === 1), displayed.tokens[0]];
+            requireCondition(perClassBoundary.length === 4 && perClassBoundary.every((row) => row?.valueUsd === 1), "exact $1 security/NFT/native/token boundary is not retained in the underlying inventory");
+            requireCondition(JSON.stringify(displayRows.map((row) => row.valueUsd)) === JSON.stringify([1, 1, 1.999, 1]), "additional combined $1 + $.999 ETH changed the displayed full inventory");
             requireCondition(Math.abs(portfolio.totals.walletUsd - 3.998) < 1e-9 && Math.abs(portfolio.totals.walletThb - 143.928) < 1e-9
               && Math.abs(portfolio.totals.nftsUsd - 1.999) < 1e-9, "full wallet/NFT subtotals omit known suppressed values");
             const suppressedKnown = marketRows.filter((row) => Number.isFinite(row.valueUsd) && row.valueUsd < 1);
-            requireCondition(suppressedKnown.length === 4 && suppressedKnown.every((row) => Math.abs(row.valueUsd - 0.999) < 1e-9), "independent four $0.999 suppressed holdings changed");
+            requireCondition(suppressedKnown.length === 3 && suppressedKnown.every((row) => Math.abs(row.valueUsd - 0.999) < 1e-9), "independent three $0.999 suppressed holdings changed after ETH combination");
             const displayedTotal = displayRows.reduce((sum, row) => sum + row.valueUsd, 0) + 0.25;
             const suppressedTotal = suppressedKnown.reduce((sum, row) => sum + row.valueUsd, 0);
-            requireCondition(Math.abs(displayedTotal - 4.25) < 1e-9 && Math.abs(suppressedTotal - 3.996) < 1e-9
+            requireCondition(Math.abs(displayedTotal - 5.249) < 1e-9 && Math.abs(suppressedTotal - 2.997) < 1e-9
               && Math.abs(portfolio.totals.grandTotalUsd - displayedTotal - suppressedTotal) < 1e-9
-              && suppressedTotal > 0 && suppressedTotal < suppressedKnown.length, "book/displayed difference is not exactly bounded by the four sub-$1 holdings");
-            for (const id of ["t212:SECURITY-SMALL", "nft:collection-small", "native:8453", "token:1:0x0000000000000000000000000000000000000002"]) {
+              && suppressedTotal > 0 && suppressedTotal < suppressedKnown.length, "book/displayed difference is not exactly bounded by the three sub-$1 holdings");
+            for (const id of ["t212:SECURITY-SMALL", "nft:collection-small", "token:1:0x0000000000000000000000000000000000000002"]) {
               requireCondition(Math.abs(recordedHoldings[id] - 0.999) < 1e-9, `${id} is absent or changed in the recorded holdings map`);
             }
+            requireCondition(Math.abs(recordedHoldings["native:eth"] - 1.999) < 1e-9
+              && !Object.hasOwn(recordedHoldings, "native:8453")
+              && portfolio.wallet.native[0].chains.some((chain) => chain.chainId === 8453 && Math.abs(chain.valueUsd - 0.999) < 1e-9),
+              "former Base recording value was lost instead of retained in combined ETH and its breakdown");
             for (const id of ["t212:SECURITY-UNKNOWN", "nft:collection-unknown", "token:1:0x0000000000000000000000000000000000000003"]) {
               requireCondition(Object.hasOwn(recordedHoldings, id) && recordedHoldings[id] === null, `${id} is absent or valued instead of null in the recorded holdings map`);
             }
@@ -1852,7 +2108,7 @@ async function auditDustFixtures(browser, fixtureUrl, viewport) {
               const allocationValues = await page.locator(".pnl-allocation-item > div:first-child > strong").allTextContents();
               requireCondition(JSON.stringify(allocationValues.map(compactText)) === JSON.stringify([1.999 + 0.25, 1.999 * 3].map(expectedUsd)), "allocation values differ from full joined class sums");
             }
-            return "$8.246 / ฿296.856 hero/book = $4.25 displayed + four $0.999 holdings ($3.996 < $4); all 13 recording identities retained";
+            return "$8.246 / ฿296.856 hero/book = $5.249 displayed + three $0.999 holdings ($2.997 < $3); all 12 joined recording identities retained, including combined ETH";
           } else if (scenario === "empty") {
             requireCondition(Object.values(portfolio.sources).every((source) => source.status === "live"), "all-small mixed pricing book invents incomplete sources");
             requireCondition(portfolio.totals.pnlCoverage.status === "complete" && portfolio.totals.pnlCoverage.eligible === 0, "known zero displayed holdings invented partial coverage");
@@ -2747,6 +3003,8 @@ try {
       for (const viewport of viewports) {
         await auditCapitalFixtures(browser, fixtureServer.url, viewport, check);
         await auditPopulatedFixtures(browser, fixtureServer.url, viewport);
+        await auditCombinedSolanaFixtures(browser, fixtureServer.url, viewport);
+        await auditRestoredBoundaryFixtures(browser, fixtureServer.url, viewport);
         await auditDustFixtures(browser, fixtureServer.url, viewport);
         await auditBasisEvidenceFixtures(browser, fixtureServer.url, viewport);
         await auditOperatorBasisFixtures(browser, fixtureServer.url, viewport);

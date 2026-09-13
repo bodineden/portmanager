@@ -3,22 +3,30 @@ import type { JoinedPortfolio, LiveSourceState } from "./live-data";
 /** Null values remain valid for historical snapshots and unconverted manual cash. */
 export type HoldingsValueMap = Record<string, number | null>;
 export type SnapshotSources = Record<string, LiveSourceState>;
-export const VALUE_SOURCE_KEYS = ["t212Summary", "t212Positions", "nfts", "fiatFx", "ethPrice", "walletNative", "walletTokens", "manualHoldings", "capital"] as const;
+export type NativeBasketMembership = Record<string, number[]>;
+export const VALUE_SOURCE_KEYS = ["t212Summary", "t212Positions", "nfts", "fiatFx", "ethPrice", "walletNative", "walletTokens", "solana", "manualHoldings", "capital"] as const;
 export const holdingId = {
   t212: (ticker: string) => `t212:${ticker}`,
   nft: (collection: string) => `nft:${collection}`,
-  native: (chainId: number) => `native:${chainId}`,
-  token: (chainId: number, contract: string) => `token:${chainId}:${contract.toLowerCase()}`,
+  native: (chainId: number | "eth" | "solana") => chainId === "solana" ? "native:solana:native" : `native:${chainId}`,
+  token: (chainId: number | "solana", contract: string) => `token:${chainId}:${chainId === "solana" ? contract : contract.toLowerCase()}`,
   manual: (label: string) => `manual:${label}`,
 };
 export function joinedHoldingsMap(portfolio: JoinedPortfolio): HoldingsValueMap {
   return Object.fromEntries([
     ...portfolio.t212.investments.map((row) => [holdingId.t212(row.ticker), row.valueUsd]),
     ...portfolio.nfts.map((row) => [holdingId.nft(row.collection), row.valueUsd]),
-    ...portfolio.wallet.native.map((row) => [holdingId.native(row.chainId), row.valueUsd]),
+    ...portfolio.wallet.native.map((row) => [row.key, row.valueUsd]),
     ...portfolio.wallet.tokens.map((row) => [holdingId.token(row.chainId, row.contract ?? row.symbol), row.valueUsd]),
     ...portfolio.manualHoldings.map((row) => [holdingId.manual(row.label), row.valueUsd]),
   ]);
+}
+
+/** Observed chains include validated zero balances; a failed RPC contributes no member. */
+export function joinedNativeBasketMembership(portfolio: JoinedPortfolio): NativeBasketMembership {
+  return Object.fromEntries(portfolio.wallet.native.filter((row) => row.key === "native:eth")
+    .map((row) => [row.key, row.chains.map((chain) => chain.chainId)
+      .filter((chainId): chainId is number => typeof chainId === "number").sort((a, b) => a - b)]));
 }
 
 /** Includes identities AND priced flags, not just counts: same-count swaps are different baskets.
@@ -26,6 +34,10 @@ export function joinedHoldingsMap(portfolio: JoinedPortfolio): HoldingsValueMap 
  */
 export function valueSetSignature(holdings: HoldingsValueMap | null | undefined, sources: SnapshotSources | null | undefined): string | null {
   if (!holdings || !sources || !VALUE_SOURCE_KEYS.every((key) => ["live", "partial", "unavailable"].includes(sources[key]?.status))) return null;
+  // The combined ID does not identify which RPCs responded. Two partial native
+  // inventories can hide different missing chains, including in old snapshots.
+  // Refuse both comparisons unless the complete native inventory was observed.
+  if (Object.hasOwn(holdings, "native:eth") && sources.walletNative.status !== "live") return null;
   return JSON.stringify({ holdings: Object.entries(holdings).sort(([a], [b]) => a.localeCompare(b)).map(([id, value]) => [id, typeof value === "number" && Number.isFinite(value) && value >= 0]),
     sources: Object.entries(sources).sort(([a], [b]) => a.localeCompare(b)).map(([key, source]) => [key, source.status]) });
 }

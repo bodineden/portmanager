@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { dailyChange, dailyChangeDetails, previousDayHoldings, valueAllocation } from "./pnl-view";
-import { joinedHoldingsMap, valueSetSignature } from "./holding-values";
+import { dailyChange, dailyChangeDetails, holdingDayChange, previousDayHoldings, valueAllocation } from "./pnl-view";
+import { joinedHoldingsMap, joinedNativeBasketMembership, valueSetSignature } from "./holding-values";
 import { createSnapshotRecorder, mapPortfolioSnapshotRow, type PortfolioSnapshot } from "./pnl-history";
 import { buildJoinedPortfolio, type JoinedPortfolio, type LiveResult } from "./live-data";
 import { capitalBook } from "./__fixtures__/capital-book";
@@ -10,7 +10,7 @@ import { dustBook } from "../scripts/__fixtures__/dust-book";
 const AS_OF = "2026-09-11T00:00:00Z";
 const FX = 33.003871;
 const live = <T>(data: T): LiveResult<T> => ({ data, state: { status: "live", asOf: AS_OF, message: "fixture" } });
-const sources = Object.fromEntries(["t212Summary", "t212Positions", "nfts", "fiatFx", "ethPrice", "walletNative", "walletTokens", "manualHoldings", "capital"].map((key) => [key, { status: key === "walletTokens" ? "partial" : "live", asOf: AS_OF, message: "fixture" }]));
+const sources = Object.fromEntries(["t212Summary", "t212Positions", "nfts", "fiatFx", "ethPrice", "walletNative", "walletTokens", "solana", "manualHoldings", "capital"].map((key) => [key, { status: key === "walletTokens" ? "partial" : "live", asOf: AS_OF, message: "fixture" }]));
 function snapshot(date: string, valueThb: number, capitalThb: number | null, rate = FX): PortfolioSnapshot {
   return mapPortfolioSnapshotRow({ snapshot_date: date, total_value_usd: valueThb / rate, total_value_thb: valueThb,
     contributed_capital_thb: capitalThb, contributed_capital_usd: capitalThb === null ? null : capitalThb / rate,
@@ -22,6 +22,7 @@ function snapshot(date: string, valueThb: number, capitalThb: number | null, rat
 function thresholdBook(priceUsd: number | null, asOf: string, includeEdge = true) {
   const previousDay = "2026-09-10T00:00:00Z";
   return buildJoinedPortfolio({
+    solana: live({ native: [], tokens: [] }),
     t212Summary: live({ currency: "USD", cashAvailable: 0, totalValue: 0, investmentsCurrentValue: 0 }),
     t212Positions: live([]), nfts: live([]), walletNative: live([]),
     walletTokens: live([
@@ -153,9 +154,159 @@ describe("adjusted adjacent-day book value change", () => {
     }
     expect(dailyChange([snapshot("2026-09-11", 0, 120000), snapshot("2026-09-10", 0, 120000)], AS_OF)?.pct).toBeNull();
   });
+  it("refuses the one-day native key transition and resumes after the new basket is stable", () => {
+    const before = snapshot("2026-09-10", 100000, 120000);
+    before.holdings = { "native:1": 1, "native:8453": 2, "native:42161": 3, "native:4663": 4 };
+    const after = snapshot("2026-09-11", 100000, 120000);
+    after.holdings = { "native:eth": 10 };
+    expect(valueSetSignature(before.holdings, before.sources)).not.toBe(valueSetSignature(after.holdings, after.sources));
+    expect(dailyChangeDetails([after, before], AS_OF)).toEqual({ change: null, reason: "holdings changed between days" });
+    const next = { ...after, date: "2026-09-12" };
+    expect(dailyChangeDetails([next, after], "2026-09-12T00:00:00Z")).toMatchObject({ change: { usd: 0, thb: 0 }, reason: null });
+  });
+  it("marks a legacy snapshot without the Solana source unavailable instead of inventing source coverage", () => {
+    const legacySources = { ...sources };
+    delete legacySources.solana;
+    const before = mapPortfolioSnapshotRow({ snapshot_date: "2026-09-10", total_value_usd: 100000 / FX, total_value_thb: 100000,
+      contributed_capital_thb: 120000, contributed_capital_usd: 120000 / FX,
+      holdings: { "native:1": 10 }, coverage: { ...snapshot("2026-09-10", 100000, 120000).coverage, sources: legacySources },
+    })!;
+    const after = snapshot("2026-09-11", 100000, 120000);
+    after.holdings = { "native:eth": 10, "native:solana:native": 4.8 };
+    expect(before.sources).toBeNull();
+    expect(dailyChangeDetails([after, before], AS_OF)).toEqual({ change: null, reason: "source unavailable" });
+  });
+  const nativeBook = (asOf: string, missingChain?: number, price = 1000) => buildJoinedPortfolio({
+    solana: live({ native: [], tokens: [] }),
+    t212Summary: live({ currency: "USD", cashAvailable: 0, totalValue: 0, investmentsCurrentValue: 0 }),
+    t212Positions: live([]), nfts: live([]), walletTokens: live([]),
+    walletNative: { data: [1, 8453, 42161, 4663].map((chainId, index) => ({
+      chainId, chainName: String(chainId), symbol: "ETH", amount: 2 ** index,
+      amountRaw: (BigInt(2 ** index) * BigInt("1000000000000000000")).toString(),
+    })).filter((row) => row.chainId !== missingChain),
+    state: { status: missingChain === undefined ? "live" : "partial", asOf, message: "fixture RPC inventory" } },
+    fiatFx: live({ usdToThb: 36, gbpToThb: 45, eurToThb: 40, asOf }), ethPrice: live(price),
+    capitalEvents: live([{ occurredAt: "2026-09-01T00:00:00Z", kind: "contribution", amountThb: 36000 }]), manualHoldings: live([]),
+  }, asOf);
+  it("L2: refuses the exact Base-outage $13000 to Arbitrum-outage $11000 false loss", async () => {
+    const beforeBook = nativeBook("2026-09-10T23:59:59Z", 8453);
+    const afterBook = nativeBook(AS_OF, 42161);
+    expect(joinedHoldingsMap(beforeBook)).toEqual({ "native:eth": 13000 });
+    expect(joinedHoldingsMap(afterBook)).toEqual({ "native:eth": 11000 });
+    expect(beforeBook.sources.walletNative.status).toBe("partial");
+    expect(afterBook.sources.walletNative.status).toBe("partial");
+    const before = await recordedBook(beforeBook);
+    const after = await recordedBook(afterBook);
+    expect(before.recordedSignature).toBeNull();
+    expect(after.recordedSignature).toBeNull();
+    expect(after.row.totalValueUsd! - before.row.totalValueUsd!).toBe(-2000);
+    expect(dailyChangeDetails([after.row, before.row], AS_OF)).toEqual({ change: null, reason: "value-set evidence unavailable" });
+  });
+  it("L2: compares an unchanged complete combined basket across adjacent days and price changes", async () => {
+    const before = await recordedBook(nativeBook("2026-09-10T23:59:59Z"));
+    const after = await recordedBook(nativeBook(AS_OF, undefined, 1100));
+    expect(before.recordedSignature).not.toBeNull();
+    expect(after.recordedSignature).toBe(before.recordedSignature);
+    expect(dailyChangeDetails([after.row, before.row], AS_OF)).toEqual({
+      change: { usd: 1500, thb: 54000, pct: 10, date: "2026-09-11", previousDate: "2026-09-10" }, reason: null,
+    });
+  });
+  it("L2 Asset Day: refuses the reviewer's Base-to-Arbitrum outage false loss after snapshot roundtrip", async () => {
+    const beforeBook = nativeBook("2026-09-10T23:59:59Z", 8453);
+    const afterBook = nativeBook(AS_OF, 42161);
+    const before = await recordedBook(beforeBook);
+    const after = await recordedBook(afterBook);
+    expect(before.row.holdings).toEqual({ "native:eth": 13000 });
+    expect(after.row.holdings).toEqual({ "native:eth": 11000 });
+    expect(before.row.nativeBasketMembership).toEqual({ "native:eth": [1, 4663, 42161] });
+    expect(after.row.nativeBasketMembership).toEqual({ "native:eth": [1, 4663, 8453] });
+    const previous = previousDayHoldings([after.row, before.row], AS_OF);
+    expect(previous?.sources?.walletNative.status).toBe("partial");
+    expect(previous?.nativeBasketMembership).toEqual(before.row.nativeBasketMembership);
+    const current = { sources: afterBook.sources, nativeBasketMembership: joinedNativeBasketMembership(afterBook) };
+    const change = holdingDayChange("native:eth", afterBook.wallet.native[0].valueUsd, previous, current);
+    const falseUsd = 11000 - 13000;
+    const falsePct = falseUsd / 13000 * 100;
+    expect(falsePct).toBe(-15.384615384615385);
+    expect(change).toBeNull();
+    expect(holdingDayChange("native:eth", 11000, previous, after.row)).toBeNull();
+    console.log("L2 ASSET DAY COUNTEREXAMPLE " + JSON.stringify({ balancesEth: [1, 2, 4, 8], priceUsd: 1000,
+      previousMissingChain: "Base", currentMissingChain: "Arbitrum", previousValueUsd: 13000,
+      currentValueUsd: 11000, rejectedFalseChange: { usd: falseUsd, pct: falsePct }, assetDayChange: change }));
+  });
+  it("L2 Asset Day: reports the correct price-only change for two complete unchanged baskets", async () => {
+    const before = await recordedBook(nativeBook("2026-09-10T23:59:59Z"));
+    const afterBook = nativeBook(AS_OF, undefined, 1100);
+    const after = await recordedBook(afterBook);
+    expect(before.row.holdings).toEqual({ "native:eth": 15000 });
+    expect(after.row.holdings).toEqual({ "native:eth": 16500 });
+    expect(before.row.nativeBasketMembership).toEqual({ "native:eth": [1, 4663, 8453, 42161] });
+    expect(after.row.nativeBasketMembership).toEqual(before.row.nativeBasketMembership);
+    const previous = previousDayHoldings([after.row, before.row], AS_OF);
+    const current = { sources: afterBook.sources, nativeBasketMembership: joinedNativeBasketMembership(afterBook) };
+    const change = holdingDayChange("native:eth", afterBook.wallet.native[0].valueUsd, previous, current);
+    expect(change).toEqual({ usd: 1500, pct: 10 });
+    expect(holdingDayChange("native:eth", 16500, previous, after.row)).toEqual(change);
+    console.log("L2 ASSET DAY POSITIVE CONTROL " + JSON.stringify({ balancesEth: [1, 2, 4, 8],
+      previousPriceUsd: 1000, currentPriceUsd: 1100, previousValueUsd: 15000, currentValueUsd: 16500, assetDayChange: change }));
+  });
+  it.each([[8453, undefined], [undefined, 42161], [8453, 8453]])(
+    "L2 Asset Day: refuses either incomplete observation, including identical partial membership (%s, %s)",
+    async (earlierMissing, laterMissing) => {
+      const before = await recordedBook(nativeBook("2026-09-10T23:59:59Z", earlierMissing));
+      const after = await recordedBook(nativeBook(AS_OF, laterMissing));
+      expect(holdingDayChange("native:eth", after.row.holdings!["native:eth"],
+        previousDayHoldings([before.row], AS_OF), after.row)).toBeNull();
+    },
+  );
+  it.each(["previous", "current"] as const)("L2 Asset Day: fails closed for missing or invalid %s evidence", async (side) => {
+    const before = (await recordedBook(nativeBook("2026-09-10T23:59:59Z"))).row;
+    const after = (await recordedBook(nativeBook(AS_OF, undefined, 1100))).row;
+    for (const issue of ["missing-membership", "empty-membership", "duplicate-membership", "changed-membership", "missing-sources", "nine-sources", "unavailable-native"] as const) {
+      const previous = structuredClone(before);
+      const current = structuredClone(after);
+      const invalid = side === "previous" ? previous : current;
+      if (issue === "missing-membership") delete invalid.nativeBasketMembership;
+      if (issue === "empty-membership") invalid.nativeBasketMembership = { "native:eth": [] };
+      if (issue === "duplicate-membership") invalid.nativeBasketMembership = { "native:eth": [1, 4663, 8453, 8453] };
+      if (issue === "changed-membership") invalid.nativeBasketMembership = { "native:eth": [1, 4663, 8453, 10] };
+      if (issue === "missing-sources") invalid.sources = null;
+      if (issue === "nine-sources") delete invalid.sources!.solana;
+      if (issue === "unavailable-native") invalid.sources!.walletNative.status = "unavailable";
+      expect(holdingDayChange("native:eth", 16500, previousDayHoldings([previous], AS_OF), current), issue).toBeNull();
+    }
+  });
+  it("L2 Asset Day: compares reordered complete membership without mutating it or gating unrelated assets", async () => {
+    const before = (await recordedBook(nativeBook("2026-09-10T23:59:59Z"))).row;
+    const after = (await recordedBook(nativeBook(AS_OF, undefined, 1100))).row;
+    after.nativeBasketMembership!["native:eth"].reverse();
+    const original = structuredClone(after.nativeBasketMembership);
+    expect(holdingDayChange("native:eth", 16500, previousDayHoldings([before], AS_OF), after)).toEqual({ usd: 1500, pct: 10 });
+    expect(after.nativeBasketMembership).toEqual(original);
+    before.holdings!["t212:UNCHANGED-CONTRACT"] = 100;
+    before.holdings!["native:solana:native"] = 10;
+    before.sources!.walletNative.status = "partial";
+    after.sources!.walletNative.status = "partial";
+    delete before.nativeBasketMembership;
+    delete after.nativeBasketMembership;
+    const previous = previousDayHoldings([before], AS_OF);
+    expect(holdingDayChange("t212:UNCHANGED-CONTRACT", 110, previous, after)).toEqual({ usd: 10, pct: 10 });
+    expect(holdingDayChange("native:solana:native", 11, previous, after)).toEqual({ usd: 1, pct: 10 });
+  });
+  it("L2: refuses legacy partial combined evidence and resumes with two complete observations", () => {
+    const before = snapshot("2026-09-10", 468000, 0, 36);
+    before.holdings = { "native:eth": 13000 };
+    before.sources = { ...before.sources!, walletNative: { status: "partial", asOf: null, message: "legacy partial RPC" } };
+    const after = snapshot("2026-09-11", 540000, 0, 36);
+    after.holdings = { "native:eth": 15000 };
+    expect(dailyChangeDetails([after, before], AS_OF)).toEqual({ change: null, reason: "value-set evidence unavailable" });
+    expect(dailyChangeDetails([{ ...after, date: "2026-09-12" }, after], "2026-09-12T00:00:00Z"))
+      .toMatchObject({ change: { usd: 0, thb: 0 }, reason: null });
+  });
 });
 describe("compact snapshot holdings and book columns", () => {
   const book = () => buildJoinedPortfolio({
+    solana: live({ native: [], tokens: [] }),
     t212Summary: live({ currency: "GBP", totalValue: 9.62, cashAvailable: 0.28, investmentsCurrentValue: 9.34 }),
     t212Positions: live([{ ticker: "CMCSA_US_EQ", name: "Comcast", quantity: 0.5, averagePrice: 26.32,
       currentPrice: 25.25, ppl: -0.37, currency: "USD", pplCurrency: "GBP", valueNative: 12.625, costAccount: null, valueAccount: 9.34 }]),
@@ -217,7 +368,7 @@ describe("compact snapshot holdings and book columns", () => {
     expect(row.holdings).toEqual({
       "t212:SECURITY-ONE": 1, "t212:SECURITY-SMALL": 0.999, "t212:SECURITY-UNKNOWN": null,
       "nft:collection-one": 1, "nft:collection-small": expect.closeTo(0.999, 10), "nft:collection-unknown": null,
-      "native:1": 1, "native:8453": expect.closeTo(0.999, 10),
+      "native:eth": expect.closeTo(1.999, 10),
       "token:1:0x0000000000000000000000000000000000000001": 1,
       "token:1:0x0000000000000000000000000000000000000002": 0.999,
       "token:1:0x0000000000000000000000000000000000000003": null,
@@ -241,6 +392,7 @@ describe("compact snapshot holdings and book columns", () => {
     expect(insert.params[1]).toBe(portfolio.totals.grandTotalUsd);
     expect(insert.params[3]).toBe(portfolio.totals.costBasisUsd);
     const row = snapshot("2026-09-10", 100000, 120000);
-    expect(previousDayHoldings([row], AS_OF)).toEqual(row.holdings);
+    expect(previousDayHoldings([row], AS_OF)).toEqual({ holdings: row.holdings, sources: row.sources,
+      nativeBasketMembership: row.nativeBasketMembership });
   });
 });

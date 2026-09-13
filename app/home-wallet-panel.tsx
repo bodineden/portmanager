@@ -1,4 +1,5 @@
 import { shouldSuppressHolding } from "@/lib/dust-filter";
+import { NativeChainBreakdown, type NativeChainView } from "./native-chain-breakdown";
 
 type WalletSourceView = {
   status: "live" | "partial" | "unavailable";
@@ -9,7 +10,9 @@ type WalletNativeRowView = {
   id: string;
   symbol: string;
   chainName: string;
-  chainId: number;
+  chainId: number | "eth" | "solana";
+  chains: NativeChainView[];
+  amountValue: number;
   amount: string;
   priceUsd: string;
   valueUsd: number | null;
@@ -23,7 +26,7 @@ type WalletTokenRowView = {
   name: string;
   contract?: string;
   chainName: string;
-  chainId: number;
+  chainId: number | "solana";
   amount: string;
   priceUsd: string;
   valueUsd: number | null;
@@ -45,6 +48,7 @@ export function WalletBalancesPanel({
   tokenRows: allTokenRows,
   nativeSource,
   tokenSource,
+  solanaSource,
   walletSourcesComplete,
   totalWalletUsd,
   totalWalletThb,
@@ -53,6 +57,7 @@ export function WalletBalancesPanel({
   tokenRows: WalletTokenRowView[];
   nativeSource: WalletSourceView;
   tokenSource: WalletSourceView;
+  solanaSource: WalletSourceView;
   walletSourcesComplete: boolean;
   totalWalletUsd: string;
   totalWalletThb: string;
@@ -70,17 +75,21 @@ export function WalletBalancesPanel({
     >
       <div className="panel-header home-wallet-panel-header">
         <div>
-          <p className="eyebrow">EVM WALLET / NATIVE + TOKENS</p>
+          <p className="eyebrow">EVM + SOLANA / NATIVE + TOKENS</p>
           <h2 className="panel-title">Wallet Balances</h2>
         </div>
         <div className="home-source-stack home-wallet-controls">
-          <span className="home-labeled-source">
+          <span className="home-labeled-source" data-wallet-source="walletNative">
             <span>NATIVE</span>
             <SourceBadge state={nativeSource} />
           </span>
-          <span className="home-labeled-source">
+          <span className="home-labeled-source" data-wallet-source="walletTokens">
             <span>TOKENS</span>
             <SourceBadge state={tokenSource} />
+          </span>
+          <span className="home-labeled-source" data-wallet-source="solana">
+            <span>SOLANA</span>
+            <SourceBadge state={solanaSource} />
           </span>
           <span className="home-wallet-count">
             <span className="panel-count">{nativeRows.length} NATIVE · {tokenRows.length} TOKENS</span>
@@ -96,7 +105,7 @@ export function WalletBalancesPanel({
       ) : (
         <div className="table-scroll">
           <table className="data-table live-table home-wallet-table">
-            <caption className="sr-only">Live native coin and ERC-20 wallet balances</caption>
+            <caption className="sr-only">Live native coin, ERC-20 and SPL wallet balances</caption>
             <thead>
               <tr>
                 <th>Asset / Chain</th>
@@ -109,10 +118,11 @@ export function WalletBalancesPanel({
             </thead>
             <tbody>
               {nativeRows.map((holding) => (
-                <tr key={holding.id} data-wallet-kind="native" data-wallet-priced={holding.valueUsd !== null ? "true" : "false"}>
+                <tr key={holding.id} id={holding.id} data-holding-id={holding.id} data-native-chains={JSON.stringify(holding.chains)} data-holding-amount={holding.amountValue} data-holding-value-usd={holding.valueUsd} data-wallet-kind="native" data-wallet-priced={holding.valueUsd !== null ? "true" : "false"}>
                   <td>
                     <span className="ticker-cell">{holding.symbol}</span>
-                    <small className="sub-cell">{holding.chainName} · CHAIN {holding.chainId}</small>
+                    <small className="sub-cell">{holding.chainName}</small>
+                    <NativeChainBreakdown chains={holding.chains} symbol={holding.symbol} />
                   </td>
                   <td><span className="data-tag">NATIVE</span></td>
                   <td className="numeric">{holding.amount}</td>
@@ -124,6 +134,8 @@ export function WalletBalancesPanel({
               {tokenRows.map((holding) => (
                 <tr
                   key={holding.id}
+                  id={holding.id}
+                  data-holding-id={holding.id}
                   data-wallet-kind="token"
                   data-wallet-priced={holding.priced ? "true" : "false"}
                 >
@@ -133,7 +145,7 @@ export function WalletBalancesPanel({
                   </td>
                   <td>
                     <span className="home-wallet-type-stack">
-                      <span className="data-tag">ERC-20</span>
+                      <span className="data-tag">{holding.chainId === "solana" ? "SPL" : "ERC-20"}</span>
                     </span>
                   </td>
                   <td className="numeric">{holding.amount}</td>
@@ -165,6 +177,11 @@ export function WalletBalancesPanel({
       {tokenSource.status !== "live" ? (
         <div className={`home-availability-note ${tokenSource.status === "partial" ? "warning" : "negative"}`}>
           Token balances: {tokenSource.message}
+        </div>
+      ) : null}
+      {solanaSource.status !== "live" ? (
+        <div className={`home-availability-note ${solanaSource.status === "partial" ? "warning" : "negative"}`}>
+          Solana wallet: {solanaSource.message}
         </div>
       ) : null}
     </section>
