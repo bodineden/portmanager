@@ -54,7 +54,19 @@ export function dustBook(scenario: string) {
       [`token:1:${TOKEN}`]: evidence(1, TOKEN, "1000000000000000000", 18),
     },
   };
-  if (scenario === "basis" || scenario === "basis-missing") {
+  if (scenario === "operator" || scenario === "operator-missing") {
+    // Synthetic desk statement ONLY: no collector/evidence rows in either control.
+    inputs.t212Summary = live({ currency: "USD", totalValue: 0, cashAvailable: 0, investmentsCurrentValue: 0 });
+    inputs.t212Positions = live([]);
+    inputs.nfts = live([{ collection: "collection-one", collectionName: "COLLECTION-ONE", tokenCount: 2, floorEth: 0.05 }]);
+    inputs.walletNative = live([{ chainId: 1, chainName: "Ethereum", symbol: "NATIVE-ONE", amount: 0.1, amountRaw: "100000000000000000" }]);
+    inputs.walletTokens = live([{ ...inputs.walletTokens!.data![0], priceUsd: 100 }]);
+    inputs.manualHoldings = live([]);
+    inputs.basisEvidence = {};
+    inputs.manualBasis = scenario === "operator-missing" ? {} : {
+      "nft:4663:collection-one": { costUsd: 80, asOf: "2026-09-01", note: "desk execution: $80 paid 2026-09-01" },
+    };
+  } else if (scenario === "basis" || scenario === "basis-missing") {
     // Synthetic-but-valid chain evidence through the real engine, never patched P&L.
     inputs.t212Summary = live({ currency: "USD", totalValue: 0, cashAvailable: 0, investmentsCurrentValue: 0 });
     inputs.t212Positions = live([]);

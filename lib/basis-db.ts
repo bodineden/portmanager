@@ -1,6 +1,6 @@
 import { neon } from "@neondatabase/serverless";
 import { isNeonConfigured } from "./assets-db";
-import type { AcquisitionEvidence } from "./pnl";
+import { isManualBasis, type AcquisitionEvidence, type ManualBasis } from "./pnl";
 import type { SnapshotDb, SnapshotReaderOptions } from "./pnl-history";
 
 function defaultDb(): SnapshotDb {
@@ -53,6 +53,33 @@ function evidenceShape(value: unknown): value is AcquisitionEvidence {
     && raw(lot.nativeOutflowRaw) && price(lot.nativePrice) && Array.isArray(lot.tokenOutflows)
     && lot.tokenOutflows.every((payment: unknown) => object(payment) && text(payment.assetId)
       && raw(payment.amountRaw) && decimals(payment.decimals) && price(payment.historicalPrice)));
+}
+
+/** Latest desk statements, not chain evidence. as_of is acquisition metadata, not
+ * an expiry/collection filter. Never initialize schema or write either table. */
+export async function readManualBasis(asOf: string, options: SnapshotReaderOptions = {}): Promise<Record<string, ManualBasis>> {
+  void asOf;
+  try {
+    if (!(options.hasDb ?? isNeonConfigured)()) return {};
+    // Cast DATE in SQL so driver Date/string settings cannot change the key format.
+    const rows = await bounded(options, (db, signal) => db.query("SELECT holding_key, cost_usd, as_of::text AS as_of, note FROM manual_basis", [], signal));
+    if (!Array.isArray(rows)) return {};
+    const entries: [string, ManualBasis][] = [];
+    for (const row of rows) {
+      try {
+        if (!object(row) || !text(row.holding_key)
+          || !/^(?:nft:4663:[^\s:]+|native:[1-9]\d*:native|token:[1-9]\d*:0x[0-9a-f]{40})$/.test(row.holding_key)) continue;
+        const costUsd = typeof row.cost_usd === "string" && /^\d+(?:\.\d+)?$/.test(row.cost_usd)
+          ? Number(row.cost_usd) : row.cost_usd;
+        const basis = { costUsd, asOf: row.as_of, note: row.note };
+        if (isManualBasis(basis)) entries.push([row.holding_key, basis]);
+      } catch { /* Malformed desk rows cannot discard valid siblings. */ }
+    }
+    return Object.fromEntries(entries);
+  } catch {
+    try { (options.log ?? console.warn)("[manual_basis] Read unavailable; page remains available."); } catch { /* fail soft */ }
+    return {};
+  }
 }
 
 /** SELECT-only latest cache. Collection time is not acquisition time; the pure

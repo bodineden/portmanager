@@ -6,12 +6,12 @@
  * provider outage never prevents the rest of the portfolio from rendering.
  */
 
-import { aggregatePnl, deriveOnchainPnl, deriveT212Pnl, type AcquisitionEvidence, type HoldingPnl, type PortfolioPnlTotals } from "./pnl";
+import { aggregatePnl, deriveOnchainPnl, deriveT212Pnl, type AcquisitionEvidence, type ManualBasis, type HoldingPnl, type PortfolioPnlTotals } from "./pnl";
 
 import { isNeonConfigured } from "./assets-db";
 import { calculateBookPnl, latestManualHoldings, sumContributedCapital, type BookCapital, type BookPnl, type CapitalEvent, type ManualHoldingReport } from "./capital";
 import { ensureLedgerSchema, readCapitalEvents, readManualHoldings } from "./capital-db";
-import { readBasisEvidence } from "./basis-db";
+import { readBasisEvidence, readManualBasis } from "./basis-db";
 import { recordPortfolioSnapshot } from "./pnl-history";
 import { shouldSuppressHolding } from "./dust-filter";
 
@@ -168,6 +168,8 @@ export type JoinedPortfolioInputs = {
    * Keys: nft:4663:<collection>, native:<chainId>:native, token:<chainId>:<lowercase contract>.
    */
   basisEvidence?: Readonly<Record<string, AcquisitionEvidence>>;
+  /** Same keys as evidence; desk statements win without changing the chain cache. */
+  manualBasis?: Readonly<Record<string, ManualBasis>>;
   manualHoldings?: LiveResult<ManualHoldingReport[]>;
   capitalEvents?: LiveResult<CapitalEvent[]>;
   t212Summary: LiveResult<T212AccountSummary>;
@@ -1217,7 +1219,8 @@ export function buildJoinedPortfolio(inputs: JoinedPortfolioInputs, asOf: string
     return { ...holding, valueEth, valueUsd, valueThb, ...deriveOnchainPnl({
       asOf, kind: "nft", chainId: 4663, assetId: holding.collection,
       quantityRaw: String(holding.tokenCount), decimals: 0, valueUsd,
-    }, fiatFx?.usdToThb ?? null, inputs.basisEvidence?.[`nft:4663:${holding.collection}`]) };
+    }, fiatFx?.usdToThb ?? null, inputs.basisEvidence?.[`nft:4663:${holding.collection}`],
+      inputs.manualBasis?.[`nft:4663:${holding.collection}`]) };
   });
 
   const walletNative = (inputs.walletNative?.data ?? []).map((balance): WalletNativeHolding => {
@@ -1227,7 +1230,8 @@ export function buildJoinedPortfolio(inputs: JoinedPortfolioInputs, asOf: string
       asOf, kind: "native", chainId: balance.chainId, assetId: "native",
       // Never reconstruct exact units from a floating-point balance.
       quantityRaw: balance.amountRaw ?? "", decimals: 18, valueUsd,
-    }, fiatFx?.usdToThb ?? null, inputs.basisEvidence?.[`native:${balance.chainId}:native`]) };
+    }, fiatFx?.usdToThb ?? null, inputs.basisEvidence?.[`native:${balance.chainId}:native`],
+      inputs.manualBasis?.[`native:${balance.chainId}:native`]) };
   });
 
   const walletTokens = (inputs.walletTokens?.data ?? []).map((token): WalletTokenHolding => {
@@ -1237,7 +1241,8 @@ export function buildJoinedPortfolio(inputs: JoinedPortfolioInputs, asOf: string
     return { ...token, valueUsd, valueThb, priced, ...deriveOnchainPnl({
       asOf, kind: "token", chainId: token.chainId, assetId: token.contract ?? "",
       quantityRaw: token.amountRaw, decimals: token.decimals, valueUsd,
-    }, fiatFx?.usdToThb ?? null, token.contract ? inputs.basisEvidence?.[`token:${token.chainId}:${token.contract.toLowerCase()}`] : undefined) };
+    }, fiatFx?.usdToThb ?? null, token.contract ? inputs.basisEvidence?.[`token:${token.chainId}:${token.contract.toLowerCase()}`] : undefined,
+      token.contract ? inputs.manualBasis?.[`token:${token.chainId}:${token.contract.toLowerCase()}`] : undefined) };
   });
 
   const t212PositionState = holdingSourceState(inputs.t212Positions.data === null ? null : investments,
@@ -1351,7 +1356,7 @@ let snapshotGeneration = 0;
 async function fetchPortfolioSnapshot(asOf: string): Promise<FetchedPortfolioSnapshot> {
   await ensureLedgerSchema();
   const wallet = process.env.NFT_WALLET || DEFAULT_NFT_WALLET;
-  const [t212, nfts, fiatFx, ethPrice, walletNative, walletTokens, manualHoldings, capitalEvents, basisEvidence] = await Promise.all([
+  const [t212, nfts, fiatFx, ethPrice, walletNative, walletTokens, manualHoldings, capitalEvents, basisEvidence, manualBasis] = await Promise.all([
     fetchT212Sources(),
     fetchNftSource(),
     fetchFiatFxSource(),
@@ -1361,6 +1366,7 @@ async function fetchPortfolioSnapshot(asOf: string): Promise<FetchedPortfolioSna
     readManualHoldings(asOf),
     readCapitalEvents(asOf),
     readBasisEvidence(asOf).catch(() => ({})), // Evidence outages must not break other sources.
+    readManualBasis(asOf).catch(() => ({})), // Desk statements fail independently of the chain cache.
   ]);
 
   return {
@@ -1375,6 +1381,7 @@ async function fetchPortfolioSnapshot(asOf: string): Promise<FetchedPortfolioSna
       manualHoldings,
       capitalEvents,
       basisEvidence,
+      manualBasis,
     },
     asOf,
   };
