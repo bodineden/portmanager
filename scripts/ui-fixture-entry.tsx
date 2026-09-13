@@ -40,7 +40,8 @@ async function mount() {
     valueUsdText: formatViewUsd(row.valueUsd),
     valueThb: formatViewThb(row.valueThb),
   });
-  const nativeRows = nativeInputs.map(rowView);
+  const nativeRows = nativeInputs.map((row) => ({ ...rowView(row), amountValue: Number(row.amount),
+    chains: [{ chainId: row.chainId, chainName: row.chainName, amount: Number(row.amount), valueUsd: row.valueUsd }] }));
   const tokenRows = tokenInputs.map((row) => ({ ...rowView(row), name: row.name, priced: row.priced }));
   const totalUsd = [...nativeInputs, ...tokenInputs].reduce((sum, row) => sum + (row.valueUsd ?? 0), 0);
   const totalThb = [...nativeInputs, ...tokenInputs].reduce((sum, row) => sum + (row.valueThb ?? 0), 0);
@@ -50,7 +51,7 @@ async function mount() {
     <PnlPerformance snapshots={snapshots} asOf={fixture.asOf} />
     <PnlCalendar snapshots={snapshots} asOf={fixture.asOf} />
     <WalletBalancesPanel nativeRows={nativeRows} tokenRows={tokenRows}
-      nativeSource={source} tokenSource={source} walletSourcesComplete={true}
+      nativeSource={source} tokenSource={source} solanaSource={source} walletSourcesComplete={true}
       totalWalletUsd={formatViewUsd(totalUsd)} totalWalletThb={formatViewThb(totalThb)} />
   </main>);
 }

@@ -117,7 +117,7 @@ describe("joined basis evidence browser controls", () => {
       pnlCoverage: { totalHoldings: 3, eligible: 2, notRecorded: 1, unreconciled: 0, dust: 0, unpriced: 0, status: "partial", sourcesComplete: true } });
     expect(coverageLabel(book.totals.pnlCoverage)).toBe("Partial P&L (2 of 3 holdings have recorded basis)");
     expect(deriveMascotState(book).mood).toBe("thinking");
-    expect(Object.keys(book.sources)).toHaveLength(9);
+    expect(Object.keys(book.sources)).toHaveLength(10);
   });
   it("fails closed without evidence, preserving full book values and the coverage identity", () => {
     const withEvidence = dustBook("basis");

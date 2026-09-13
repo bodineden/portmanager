@@ -68,7 +68,7 @@ export async function readManualBasis(asOf: string, options: SnapshotReaderOptio
     for (const row of rows) {
       try {
         if (!object(row) || !text(row.holding_key)
-          || !/^(?:nft:4663:[^\s:]+|native:[1-9]\d*:native|token:[1-9]\d*:0x[0-9a-f]{40})$/.test(row.holding_key)) continue;
+          || !/^(?:nft:4663:[^\s:]+|native:(?:[1-9]\d*|solana):native|token:[1-9]\d*:0x[0-9a-f]{40}|token:solana:[1-9a-z]{32,44})$/.test(row.holding_key)) continue;
         const costUsd = typeof row.cost_usd === "string" && /^\d+(?:\.\d+)?$/.test(row.cost_usd)
           ? Number(row.cost_usd) : row.cost_usd;
         const basis = { costUsd, asOf: row.as_of, note: row.note };

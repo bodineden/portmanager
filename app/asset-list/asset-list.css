@@ -63,6 +63,9 @@
 .asset-wallet-source-label { display: grid; gap: 4px; }
 .asset-wallet-source-label small { color: var(--muted); font-size: 9px; }
 .asset-wallet-type { display: flex; flex-wrap: wrap; gap: 4px; }
+.asset-wallet-table [data-wallet-kind="native"] .asset-collection-name { white-space: normal; overflow-wrap: anywhere; }
+.asset-wallet-panel .asset-panel-footer { grid-template-columns: auto minmax(0, 1fr); }
+.asset-wallet-panel .asset-panel-footer time { grid-column: 1 / -1; }
 @media (max-width: 1240px) {
   .asset-registry-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .asset-panel-footer { grid-template-columns: auto minmax(0, 1fr); }

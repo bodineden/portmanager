@@ -3,15 +3,16 @@ import type { HoldingPnl } from "@/lib/pnl";
 import { basisChip, eligibilityLabel, formatHoldingQuantity, formatPnlMoney, formatPnlPercent, formatSnapshotAsOf, holdingDayChange } from "@/lib/pnl-view";
 import { holdingId, type HoldingsValueMap } from "@/lib/holding-values";
 import { shouldSuppressHolding } from "@/lib/dust-filter";
+import { NativeChainBreakdown, type NativeChainView } from "./native-chain-breakdown";
 
-type AssetRow = HoldingPnl & { id: string; name: string; detail: string; quantity: string; valueUsd: number | null; valueThb: number | null; walletKind?: "native" | "token"; priced?: boolean; manualCash?: boolean };
+type AssetRow = HoldingPnl & { id: string; name: string; detail: string; quantity: string; valueUsd: number | null; valueThb: number | null; walletKind?: "native" | "token"; priced?: boolean; manualCash?: boolean; chains?: NativeChainView[]; amount?: number };
 
 export function PnlAssetTable({ portfolio, previousHoldings = null }: { portfolio: JoinedPortfolio; previousHoldings?: HoldingsValueMap | null }) {
   const { t212, nfts, wallet, totals } = portfolio;
   const rows: AssetRow[] = [
     ...t212.investments.map((row) => ({ ...row, id: `t212:${row.ticker}`, name: row.ticker, detail: `Trading 212 · ${row.name}`, quantity: formatHoldingQuantity(row.quantity) })),
     ...nfts.map((row) => ({ ...row, id: `nft:${row.collection}`, name: row.collectionName, detail: `NFT collection · floor ${formatEth(row.floorEth)}`, quantity: `${row.tokenCount} NFTs` })),
-    ...[...wallet.native].sort((a, b) => Number(b.valueUsd !== null) - Number(a.valueUsd !== null)).map((row) => ({ ...row, id: `native:${row.chainId}`, name: row.symbol, detail: `${row.chainName} · native`, quantity: formatHoldingQuantity(row.amount, 18), walletKind: "native" as const, priced: row.valueUsd !== null })),
+    ...[...wallet.native].sort((a, b) => Number(b.valueUsd !== null) - Number(a.valueUsd !== null)).map((row) => ({ ...row, id: row.key, name: row.symbol, detail: `${row.chainName} · native`, quantity: formatHoldingQuantity(row.amount, row.chainId === "solana" ? 9 : 18), walletKind: "native" as const, priced: row.valueUsd !== null })),
     ...[...wallet.tokens].sort((a, b) => Number(b.priced) - Number(a.priced)).map((row) => ({ ...row, id: holdingId.token(row.chainId, row.contract ?? row.symbol), name: row.symbol, detail: `${row.chainName} · ${row.name}`, quantity: formatHoldingQuantity(row.amount, 18), walletKind: "token" as const })),
     ...portfolio.manualHoldings.map((row) => ({ ...row, id: holdingId.manual(row.label), name: row.label,
       detail: `Manual cash · ${row.currency} · reported ${formatSnapshotAsOf(row.recordedAt)}`, quantity: formatHoldingQuantity(row.amount), manualCash: true,
@@ -33,8 +34,8 @@ export function PnlAssetTable({ portfolio, previousHoldings = null }: { portfoli
           const eligibility = row.manualCash ? "Manually reported · value only · no P&L" : eligibilityLabel(row.pnlEligibility);
           const day = holdingDayChange(row.id, row.valueUsd, previousHoldings);
           const direction = day ? day.usd > 0 ? "up" : day.usd < 0 ? "down" : "flat" : undefined;
-          return <tr key={row.id} data-holding-id={row.id} data-manual-cash={row.manualCash ? "true" : undefined} data-basis-status={row.manualCash ? undefined : row.basisStatus} data-pnl-eligibility={row.manualCash ? undefined : row.pnlEligibility} data-wallet-kind={row.walletKind} data-wallet-priced={row.walletKind ? String(row.priced) : undefined} className={excluded ? "pnl-row-excluded" : ""}>
-            <td><strong className="ticker-cell">{row.name}</strong><small className="sub-cell">{row.detail}</small><small className="sub-cell">{row.quantity}</small></td>
+          return <tr key={row.id} id={`pnl:${row.id}`} data-holding-id={row.id} data-pnl-holding-id={row.id} data-native-chains={row.chains ? JSON.stringify(row.chains) : undefined} data-holding-amount={row.amount} data-holding-value-usd={row.valueUsd} data-manual-cash={row.manualCash ? "true" : undefined} data-basis-status={row.manualCash ? undefined : row.basisStatus} data-pnl-eligibility={row.manualCash ? undefined : row.pnlEligibility} data-wallet-kind={row.walletKind} data-wallet-priced={row.walletKind ? String(row.priced) : undefined} className={excluded ? "pnl-row-excluded" : ""}>
+            <td><strong className="ticker-cell">{row.name}</strong><small className="sub-cell">{row.detail}</small><small className="sub-cell">{row.quantity}</small>{row.chains && <NativeChainBreakdown chains={row.chains} symbol={row.name} />}</td>
             <td className="numeric value-cell" data-pnl-cell="value">{formatUsd(row.valueUsd)}<small className="sub-cell">{formatThb(row.valueThb)}</small></td>
             <td className="numeric" data-pnl-cell="basis">{formatUsd(unknown ? null : row.costBasisUsd)}<small className="sub-cell">{formatThb(unknown ? null : row.costBasisThb)}</small>{unknown && !row.manualCash && <small className="sub-cell">basis not recorded</small>}</td>
             <td className={`numeric ${unknown || row.pnlUsd === null ? "muted" : row.pnlUsd >= 0 ? "positive" : "negative"}`} data-pnl-cell="pnl">{formatUsd(unknown ? null : row.pnlUsd)}<small className="sub-cell">{formatThb(unknown ? null : row.pnlThb)} · {formatPnlPercent(unknown || row.basisStatus === "airdrop-free" ? null : row.pnlPct)}</small>{excluded && <small className="sub-cell">Excluded from P&amp;L totals</small>}</td>

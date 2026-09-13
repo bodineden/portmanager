@@ -10,7 +10,7 @@ import { dustBook } from "../scripts/__fixtures__/dust-book";
 const AS_OF = "2026-09-11T00:00:00Z";
 const FX = 33.003871;
 const live = <T>(data: T): LiveResult<T> => ({ data, state: { status: "live", asOf: AS_OF, message: "fixture" } });
-const sources = Object.fromEntries(["t212Summary", "t212Positions", "nfts", "fiatFx", "ethPrice", "walletNative", "walletTokens", "manualHoldings", "capital"].map((key) => [key, { status: key === "walletTokens" ? "partial" : "live", asOf: AS_OF, message: "fixture" }]));
+const sources = Object.fromEntries(["t212Summary", "t212Positions", "nfts", "fiatFx", "ethPrice", "walletNative", "walletTokens", "solana", "manualHoldings", "capital"].map((key) => [key, { status: key === "walletTokens" ? "partial" : "live", asOf: AS_OF, message: "fixture" }]));
 function snapshot(date: string, valueThb: number, capitalThb: number | null, rate = FX): PortfolioSnapshot {
   return mapPortfolioSnapshotRow({ snapshot_date: date, total_value_usd: valueThb / rate, total_value_thb: valueThb,
     contributed_capital_thb: capitalThb, contributed_capital_usd: capitalThb === null ? null : capitalThb / rate,
@@ -22,6 +22,7 @@ function snapshot(date: string, valueThb: number, capitalThb: number | null, rat
 function thresholdBook(priceUsd: number | null, asOf: string, includeEdge = true) {
   const previousDay = "2026-09-10T00:00:00Z";
   return buildJoinedPortfolio({
+    solana: live({ native: [], tokens: [] }),
     t212Summary: live({ currency: "USD", cashAvailable: 0, totalValue: 0, investmentsCurrentValue: 0 }),
     t212Positions: live([]), nfts: live([]), walletNative: live([]),
     walletTokens: live([
@@ -153,9 +154,32 @@ describe("adjusted adjacent-day book value change", () => {
     }
     expect(dailyChange([snapshot("2026-09-11", 0, 120000), snapshot("2026-09-10", 0, 120000)], AS_OF)?.pct).toBeNull();
   });
+  it("refuses the one-day native key transition and resumes after the new basket is stable", () => {
+    const before = snapshot("2026-09-10", 100000, 120000);
+    before.holdings = { "native:1": 1, "native:8453": 2, "native:42161": 3, "native:4663": 4 };
+    const after = snapshot("2026-09-11", 100000, 120000);
+    after.holdings = { "native:eth": 10 };
+    expect(valueSetSignature(before.holdings, before.sources)).not.toBe(valueSetSignature(after.holdings, after.sources));
+    expect(dailyChangeDetails([after, before], AS_OF)).toEqual({ change: null, reason: "holdings changed between days" });
+    const next = { ...after, date: "2026-09-12" };
+    expect(dailyChangeDetails([next, after], "2026-09-12T00:00:00Z")).toMatchObject({ change: { usd: 0, thb: 0 }, reason: null });
+  });
+  it("marks a legacy snapshot without the Solana source unavailable instead of inventing source coverage", () => {
+    const legacySources = { ...sources };
+    delete legacySources.solana;
+    const before = mapPortfolioSnapshotRow({ snapshot_date: "2026-09-10", total_value_usd: 100000 / FX, total_value_thb: 100000,
+      contributed_capital_thb: 120000, contributed_capital_usd: 120000 / FX,
+      holdings: { "native:1": 10 }, coverage: { ...snapshot("2026-09-10", 100000, 120000).coverage, sources: legacySources },
+    })!;
+    const after = snapshot("2026-09-11", 100000, 120000);
+    after.holdings = { "native:eth": 10, "native:solana:native": 4.8 };
+    expect(before.sources).toBeNull();
+    expect(dailyChangeDetails([after, before], AS_OF)).toEqual({ change: null, reason: "source unavailable" });
+  });
 });
 describe("compact snapshot holdings and book columns", () => {
   const book = () => buildJoinedPortfolio({
+    solana: live({ native: [], tokens: [] }),
     t212Summary: live({ currency: "GBP", totalValue: 9.62, cashAvailable: 0.28, investmentsCurrentValue: 9.34 }),
     t212Positions: live([{ ticker: "CMCSA_US_EQ", name: "Comcast", quantity: 0.5, averagePrice: 26.32,
       currentPrice: 25.25, ppl: -0.37, currency: "USD", pplCurrency: "GBP", valueNative: 12.625, costAccount: null, valueAccount: 9.34 }]),
@@ -217,7 +241,7 @@ describe("compact snapshot holdings and book columns", () => {
     expect(row.holdings).toEqual({
       "t212:SECURITY-ONE": 1, "t212:SECURITY-SMALL": 0.999, "t212:SECURITY-UNKNOWN": null,
       "nft:collection-one": 1, "nft:collection-small": expect.closeTo(0.999, 10), "nft:collection-unknown": null,
-      "native:1": 1, "native:8453": expect.closeTo(0.999, 10),
+      "native:eth": expect.closeTo(1.999, 10),
       "token:1:0x0000000000000000000000000000000000000001": 1,
       "token:1:0x0000000000000000000000000000000000000002": 0.999,
       "token:1:0x0000000000000000000000000000000000000003": null,

@@ -8,6 +8,7 @@ const DATE = "2026-09-05T12:00:00.000Z";
 const live = <T>(data: T): LiveResult<T> => ({ data, state: { status: "live", asOf: DATE, message: "fixture" } });
 function portfolio(overrides: Partial<JoinedPortfolioInputs> = {}): JoinedPortfolio {
   return buildJoinedPortfolio({
+    solana: live({ native: [], tokens: [] }),
     manualHoldings: live([]),
     capitalEvents: { data: [], state: { status: "partial", asOf: DATE, message: "Contributed capital not recorded." } },
     t212Summary: live({ currency: "GBP", cashAvailable: 487, totalValue: 487, investmentsCurrentValue: 0 }),

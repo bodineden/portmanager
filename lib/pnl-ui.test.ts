@@ -11,6 +11,7 @@ const live = <T>(data: T): LiveResult<T> => ({ data, state: { status: "live", as
 const unavailable = <T>(): LiveResult<T> => ({ data: null, state: { status: "unavailable", asOf: null, message: "offline fixture unavailable" } });
 function fixture(ethPrice: LiveResult<number> = live(2_400)): JoinedPortfolio {
   const book = buildJoinedPortfolio({
+    solana: live({ native: [], tokens: [] }),
     t212Summary: live({ currency: "USD", cashAvailable: 487, totalValue: 717, investmentsCurrentValue: 230 }),
     t212Positions: live([
       { ticker: "RECORDED", name: "Recorded security", quantity: 1, averagePrice: 100, currentPrice: 110,
@@ -80,6 +81,7 @@ afterEach(() => { vi.unstubAllGlobals(); });
 describe("rendered per-asset P&L honesty (offline fixtures)", () => {
   it("omits an unpriceable NFT entirely while the other five keep the book valued", () => {
     const book = buildJoinedPortfolio({
+    solana: live({ native: [], tokens: [] }),
       t212Summary: live({ currency: "GBP", cashAvailable: 487, totalValue: 487, investmentsCurrentValue: 0 }),
       t212Positions: live([]), manualHoldings: live([]), walletNative: live([]), walletTokens: live([]),
       nfts: live(oneUnpricedNft),
@@ -106,9 +108,11 @@ describe("rendered per-asset P&L honesty (offline fixtures)", () => {
     expect(rows(html)).toHaveLength(6);
     expect(text(html)).toContain("6 holdings to display");
     expect(text(html)).not.toMatch(/all rows|Every joined holding/);
-    expect(book.wallet.native).toHaveLength(2);
+    expect(book.wallet.native).toHaveLength(1);
+    expect(book.wallet.native[0].chains).toHaveLength(2);
+    expect(book.wallet.native[0].valueUsd).toBeCloseTo((0.25 + 0.000001) * 2400, 10);
     expect(book.wallet.tokens).toHaveLength(4);
-    for (const name of ["RECORDED", "FX-DIFFERENCE", "Unknown NFT", "NATIVE", "FREE", "PURCHASED"]) {
+    for (const name of ["RECORDED", "FX-DIFFERENCE", "Unknown NFT", "ETH", "FREE", "PURCHASED"]) {
       expect(rows(html).filter((row) => row.includes(`>${name}</strong>`))).toHaveLength(1);
     }
     for (const name of ["NATIVE-DUST", "UNPRICED", "TOKEN-DUST"]) expect(html).not.toContain(name);
@@ -185,7 +189,8 @@ describe("rendered per-asset P&L honesty (offline fixtures)", () => {
     expect(walletRows.map((row) => row.match(/data-wallet-priced="([^"]+)"/)![1]))
       .toEqual(["true", "true", "true"]);
     for (const name of ["UNPRICED", "TOKEN-DUST", "NATIVE-DUST"]) expect(html).not.toContain(name);
-    expect(cell(rowNamed(html, "NATIVE"), "value")).toContain(formatUsd(book.wallet.native[0].valueUsd));
+    expect(cell(rowNamed(html, "ETH"), "value")).toContain(formatUsd(book.wallet.native[0].valueUsd));
+    expect(rowNamed(html, "ETH")).toContain('id="pnl:native:eth" data-holding-id="native:eth" data-pnl-holding-id="native:eth"');
     expect(walletRows.every((row) => !cell(row, "value").startsWith("—"))).toBe(true);
     expect(text(html)).not.toMatch(/\b(?:dust|unpriced)\b/i);
     expect(book.totals.pnlUsd).toBe(60);
@@ -195,7 +200,7 @@ describe("rendered per-asset P&L honesty (offline fixtures)", () => {
     const noNativePriceHtml = markup(noNativePrice);
     expect(noNativePriceHtml).not.toContain('data-wallet-kind="native"');
     expect(noNativePriceHtml).not.toContain('data-wallet-priced="false"');
-    expect(noNativePriceHtml).not.toContain('>NATIVE</strong>');
+    expect(noNativePriceHtml).not.toContain('>ETH</strong>');
     expect(rows(noNativePriceHtml).filter((row) => row.includes('data-wallet-kind="token"'))).toHaveLength(2);
     expect(noNativePrice.sources.walletNative.status).toBe("unavailable");
     expect(noNativePrice.totals.walletNativeUsd).toBeNull();
@@ -204,6 +209,7 @@ describe("rendered per-asset P&L honesty (offline fixtures)", () => {
 
   it("renders unavailable inventory explicitly instead of emitting zero P&L or an empty-account claim", () => {
     const book = buildJoinedPortfolio({
+    solana: live({ native: [], tokens: [] }),
       t212Summary: unavailable(), t212Positions: unavailable(), nfts: unavailable(),
       walletNative: unavailable(), walletTokens: unavailable(), fiatFx: unavailable(), ethPrice: unavailable(),
     }, DATE);

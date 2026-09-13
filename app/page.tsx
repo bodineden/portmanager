@@ -12,6 +12,7 @@ import { readPortfolioSnapshotHistory } from "@/lib/pnl-history";
 import { coverageLabel, dailyChangeDetails, previousDayHoldings, valueDirection, formatPnlMoney, formatPnlPercent, formatSnapshotAsOf, formatHoldingQuantity, snapshotFiatUsd, valueAllocation, allocationPnl } from "@/lib/pnl-view";
 import { requireSession } from "@/lib/auth";
 import { shouldSuppressHolding } from "@/lib/dust-filter";
+import { holdingId } from "@/lib/holding-values";
 import "./home.css";
 
 export const dynamic = "force-dynamic";
@@ -40,19 +41,20 @@ export default async function Home() {
   const positionCount = t212.investments.filter((row) => !shouldSuppressHolding(row)).length;
   const walletTokens = [...wallet.tokens].sort((left, right) => Number(right.priced) - Number(left.priced));
   const nativeRows = [...wallet.native].sort((left, right) => Number(right.valueUsd !== null) - Number(left.valueUsd !== null)).map((holding) => ({
-    id: `${holding.chainId}:native`, symbol: holding.symbol, chainName: holding.chainName, chainId: holding.chainId,
-    amount: formatHoldingQuantity(holding.amount, 18), priceUsd: formatUsd(fx.ethToUsd), valueUsd: holding.valueUsd,
+    id: holding.key, symbol: holding.symbol, chainName: holding.chainName, chainId: holding.chainId,
+    chains: holding.chains, amountValue: holding.amount,
+    amount: formatHoldingQuantity(holding.amount, holding.chainId === "solana" ? 9 : 18), priceUsd: formatUsd(holding.priceUsd), valueUsd: holding.valueUsd,
     valueUsdText: formatUsd(holding.valueUsd), valueThb: formatThb(holding.valueThb),
   }));
   const tokenRows = walletTokens.map((holding) => ({
-    id: `${holding.chainId}:${holding.contract?.toLowerCase() ?? holding.symbol}`, symbol: holding.symbol,
+    id: holdingId.token(holding.chainId, holding.contract ?? holding.symbol), symbol: holding.symbol,
     name: holding.name, contract: holding.contract, chainName: holding.chainName, chainId: holding.chainId,
     amount: formatHoldingQuantity(holding.amount, 18), priceUsd: formatUsd(holding.priceUsd), valueUsd: holding.valueUsd,
     valueUsdText: formatUsd(holding.valueUsd), valueThb: formatThb(holding.valueThb), priced: holding.priced,
   }));
   const sourceNames: Record<keyof typeof sources, string> = {
     t212Summary: "T212 account", t212Positions: "T212 positions", nfts: "OpenSea NFTs", fiatFx: "Fiat FX",
-    ethPrice: "ETH price", walletNative: "Wallet native", walletTokens: "Wallet tokens", manualHoldings: "Manual holdings", capital: "Contributed capital",
+    ethPrice: "ETH price", walletNative: "Wallet native", walletTokens: "Wallet tokens", solana: "Solana wallet", manualHoldings: "Manual holdings", capital: "Contributed capital",
   };
 
   return (
@@ -135,8 +137,8 @@ export default async function Home() {
             {sources.t212Summary.status === "unavailable" && <p>Trading 212 account summary unavailable. Cash and account totals remain blank.</p>}
           </section>
           <WalletInventorySnapshot portfolio={portfolio} />
-          <WalletBalancesPanel nativeRows={nativeRows} tokenRows={tokenRows} nativeSource={sources.walletNative} tokenSource={sources.walletTokens}
-            walletSourcesComplete={sources.walletNative.status === "live" && sources.walletTokens.status === "live"}
+          <WalletBalancesPanel nativeRows={nativeRows} tokenRows={tokenRows} nativeSource={sources.walletNative} tokenSource={sources.walletTokens} solanaSource={sources.solana}
+            walletSourcesComplete={sources.walletNative.status === "live" && sources.walletTokens.status === "live" && sources.solana.status === "live"}
             totalWalletUsd={formatUsd(totals.walletUsd)} totalWalletThb={formatThb(totals.walletThb)} />
           <section className="panel pnl-source-strip" aria-label="Portfolio sources">
             <div className="panel-header"><div><p className="eyebrow">EVERY FIGURE HAS A SOURCE</p><h2 className="panel-title">Source status</h2></div><span className="panel-count">{Object.keys(sources).length} sources</span></div>

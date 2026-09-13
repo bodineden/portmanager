@@ -74,6 +74,7 @@ export async function startUiFixtureServer() {
               Object.assign(portfolio.totals, { manualUsd: 0, manualThb: 0, bookPnl: null });
               portfolio.sources.manualHoldings = { status: "live", asOf: portfolio.asOf, message: "Known empty fixture ledger" };
               portfolio.sources.capital = { status: "live", asOf: portfolio.asOf, message: "Fixture source status" };
+              portfolio.sources.solana = { status: "live", asOf: portfolio.asOf, message: "Synthetic known empty Solana wallet" };
               const mascot = fixture.mascotScenarios.find((entry) => entry.scenario === scenario);
               if (mascot?.totals) {
                 Object.assign(portfolio.totals, mascot.totals);

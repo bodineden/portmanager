@@ -18,11 +18,12 @@ function snapshot(date = "2026-09-05", valueUsd: number | null = 1_200): Portfol
   return { date, totalValueUsd: valueUsd, totalValueThb: valueUsd === null ? null : valueUsd * 36,
     costBasisUsd: 500, costBasisThb: 18_000, pnlUsd: 50, pnlThb: 1_800, pnlPct: 10, coverage: { ...coverage },
     contributedCapitalThb: 120000, contributedCapitalUsd: 120000 / 36,
-    holdings: { "t212:fixture": valueUsd }, sources: Object.fromEntries(["t212Summary", "t212Positions", "nfts", "fiatFx", "ethPrice", "walletNative", "walletTokens", "manualHoldings", "capital"].map((key) => [key, { status: "live", asOf: DATE, message: "fixture" }])) };
+    holdings: { "t212:fixture": valueUsd }, sources: Object.fromEntries(["t212Summary", "t212Positions", "nfts", "fiatFx", "ethPrice", "walletNative", "walletTokens", "solana", "manualHoldings", "capital"].map((key) => [key, { status: "live", asOf: DATE, message: "fixture" }])) };
 }
 const fx = { usdToThb: 36, gbpToThb: 45, eurToThb: 40, asOf: DATE };
 const live = <T>(data: T): LiveResult<T> => ({ data, state: { status: "live", asOf: DATE, message: "fixture" } });
 const book = () => buildJoinedPortfolio({
+    solana: live({ native: [], tokens: [] }),
   manualHoldings: live([]),
   t212Summary: live({ currency: "GBP", cashAvailable: 487, totalValue: 487, investmentsCurrentValue: 0 }),
   t212Positions: live([]), nfts: live([{ collection: "fixture", collectionName: "Fixture", tokenCount: 2, floorEth: 0.1 }]),
@@ -116,6 +117,7 @@ describe("snapshot currency and value allocation", () => {
 
   it("keeps suppressed values in every class allocation and the authoritative account remainder", () => {
     const portfolio = buildJoinedPortfolio({
+    solana: live({ native: [], tokens: [] }),
       manualHoldings: live([]),
       t212Summary: live({ currency: "USD", cashAvailable: 100, totalValue: 101.5, investmentsCurrentValue: 1.5 }),
       t212Positions: live([
@@ -149,6 +151,7 @@ describe("snapshot currency and value allocation", () => {
 
   it("preserves broker cash beyond available-to-trade cash inside the account remainder", () => {
     const portfolio = buildJoinedPortfolio({
+    solana: live({ native: [], tokens: [] }),
       manualHoldings: live([]),
       t212Summary: live({ currency: "USD", cashAvailable: 10, totalValue: 160, investmentsCurrentValue: 100 }),
       t212Positions: live([

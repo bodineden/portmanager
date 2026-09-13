@@ -37,6 +37,7 @@ describe("capital and cash-pot UI fixtures", () => {
   });
   it.each([0, 0.25, 1, null])("keeps manual cash value %s while removing every small or unknown market row", (valueUsd) => {
     const portfolio = buildJoinedPortfolio({
+    solana: live({ native: [], tokens: [] }),
       t212Summary: live({ currency: "USD", cashAvailable: 0, totalValue: 0, investmentsCurrentValue: 0 }),
       t212Positions: live([]), nfts: live([]), walletNative: live([]),
       walletTokens: live([

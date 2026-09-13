@@ -37,6 +37,7 @@ export function dustBook(scenario: string) {
       { chainId: 1, chainName: "Ethereum", symbol: "NATIVE-ONE", amount: 0.001, amountRaw: "1000000000000000" },
       { chainId: 8453, chainName: "Base", symbol: "NATIVE-SMALL", amount: 0.000999, amountRaw: "999000000000000" },
     ]),
+    solana: live({ native: [], tokens: [] }),
     walletTokens: live([
       { chainId: 1, chainName: "Ethereum", contract: TOKEN, symbol: "TOKEN-ONE", name: "One token", amount: 1, amountRaw: "1000000000000000000", decimals: 18, priceUsd: 1 },
       { chainId: 1, chainName: "Ethereum", contract: "0x0000000000000000000000000000000000000002", symbol: "TOKEN-SMALL", name: "Small token", amount: 1, amountRaw: "1000000000000000000", decimals: 18, priceUsd: 0.999 },
@@ -54,7 +55,30 @@ export function dustBook(scenario: string) {
       [`token:1:${TOKEN}`]: evidence(1, TOKEN, "1000000000000000000", 18),
     },
   };
-  if (scenario === "operator" || scenario === "operator-missing") {
+  if (scenario.startsWith("combined-solana")) {
+    const small = scenario === "combined-solana-dust";
+    const chains = [[1, "Ethereum"], [8453, "Base"], [42161, "Arbitrum One"], [4663, "Robinhood Chain"]] as const;
+    inputs.t212Summary = live({ currency: "USD", totalValue: 0, cashAvailable: 0, investmentsCurrentValue: 0 });
+    inputs.t212Positions = live([]);
+    inputs.nfts = live([]);
+    inputs.walletTokens = live([]);
+    inputs.manualHoldings = live([]);
+    inputs.walletNative = live(chains.map(([chainId, chainName], index) => ({
+      chainId, chainName, symbol: "ETH", amount: small ? 0.0004 : (index + 1) / 10,
+      amountRaw: small ? "400000000000000" : String(BigInt(index + 1) * BigInt("100000000000000000")),
+    })));
+    inputs.basisEvidence = {};
+    const manualBasis = Object.fromEntries(chains.map(([chainId], index) => [
+      `native:${chainId}:native`, { costUsd: small ? 0.1 : (index + 1) * 10, asOf: "2026-09-01", note: "Synthetic per-chain fixture basis" },
+    ]));
+    if (scenario === "combined-solana-missing") delete manualBasis["native:4663:native"];
+    manualBasis["native:solana:native"] = { costUsd: 4.705788, asOf: "2026-09-13", note: "Synthetic browser basis using the desk's pinned SOL amount" };
+    inputs.manualBasis = manualBasis;
+    inputs.solana = scenario === "combined-solana-unavailable" ? unavailable() : live({
+      native: [{ chainId: "solana", chainName: "Solana", symbol: "SOL", amount: 0.048588734,
+        amountRaw: "48588734", priceUsd: 100 }], tokens: [],
+    });
+  } else if (scenario === "operator" || scenario === "operator-missing") {
     // Synthetic desk statement ONLY: no collector/evidence rows in either control.
     inputs.t212Summary = live({ currency: "USD", totalValue: 0, cashAvailable: 0, investmentsCurrentValue: 0 });
     inputs.t212Positions = live([]);
@@ -127,6 +151,11 @@ export function dustBook(scenario: string) {
     inputs.walletNative!.data = inputs.walletNative!.data!.slice(1);
     inputs.walletTokens!.data = inputs.walletTokens!.data!.slice(1, 2);
     inputs.manualHoldings = live([]);
+  }
+  if (scenario === "mixed" || scenario === "inventory") {
+    // Base now contributes to the displayed combined ETH, so supply its independent
+    // synthetic basis to preserve the existing eligible-boundary positive control.
+    inputs.manualBasis = { "native:8453:native": { costUsd: 0.4995, asOf: "2026-09-01", note: "Synthetic Base boundary fixture basis" } };
   }
   return buildJoinedPortfolio(inputs, AS_OF);
 }

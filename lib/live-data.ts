@@ -14,6 +14,8 @@ import { ensureLedgerSchema, readCapitalEvents, readManualHoldings } from "./cap
 import { readBasisEvidence, readManualBasis } from "./basis-db";
 import { recordPortfolioSnapshot } from "./pnl-history";
 import { shouldSuppressHolding } from "./dust-filter";
+import { combineNativeEth, deriveSolanaPnl } from "./wallet-pnl";
+import { DEFAULT_SOL_WALLET, fetchSolanaSource, type SolanaWalletBalances } from "./solana-wallet";
 
 export type SourceStatus = "live" | "partial" | "unavailable";
 
@@ -71,13 +73,17 @@ export type NormalizedWalletNativeBalance = {
   amount: number;
 };
 
-export type WalletNativeHolding = NormalizedWalletNativeBalance & HoldingPnl & {
+export type WalletNativeHolding = Omit<NormalizedWalletNativeBalance, "chainId"> & HoldingPnl & {
+  key: string;
+  priceUsd: number | null;
+  chainId: number | "eth" | "solana";
+  chains: { chainId: number | "solana"; chainName: string; amount: number; valueUsd: number | null }[];
   valueUsd: number | null;
   valueThb: number | null;
 };
 
 export type NormalizedWalletTokenBalance = {
-  chainId: number;
+  chainId: number | "solana";
   chainName: string;
   symbol: string;
   name: string;
@@ -152,6 +158,7 @@ export type JoinedPortfolio = {
     ethPrice: LiveSourceState;
     walletNative: LiveSourceState;
     walletTokens: LiveSourceState;
+    solana: LiveSourceState;
     manualHoldings: LiveSourceState;
     capital: LiveSourceState;
   };
@@ -181,6 +188,7 @@ export type JoinedPortfolioInputs = {
   walletNative?: LiveResult<NormalizedWalletNativeBalance[]>;
   /** Optional only so existing pure-builder callers retain their pre-wallet result. */
   walletTokens?: LiveResult<NormalizedWalletTokenBalance[]>;
+  solana?: LiveResult<SolanaWalletBalances>;
 };
 
 const DEFAULT_NFT_WALLET = "0xC1bd8020d08B2A1F98da54f1573A54412d99c609";
@@ -719,8 +727,8 @@ const BLOCKSCOUT_CHAINS = WALLET_CHAINS.filter(
   (chain): chain is WalletChain & { blockscoutUrl: string } => typeof chain.blockscoutUrl === "string",
 );
 
-function tokenKey(chainId: number, contract: string): string {
-  return `${chainId}:${contract.toLowerCase()}`;
+function tokenKey(chainId: number | "solana", contract: string): string {
+  return `${chainId}:${chainId === "solana" ? contract : contract.toLowerCase()}`;
 }
 
 async function fetchWalletNativeSource(wallet: string): Promise<LiveResult<NormalizedWalletNativeBalance[]>> {
@@ -976,6 +984,40 @@ async function fetchWalletTokenSource(wallet: string): Promise<LiveResult<Normal
     }
   }
   const inventory = [...deduped.values()];
+  const { tokens, explorerHintKeys, verifiedExplorerHintKeys, pricingTimestamps } = await priceWalletTokenInventory(inventory);
+  const displayedExplorerHints = tokens.filter((token) => !shouldSuppressHolding({
+    valueUsd: token.priceUsd === null ? null : token.amount * token.priceUsd,
+  }) && explorerHintKeys.has(tokenKey(token.chainId, token.contract ?? "")));
+  const unverifiedExplorerHints = displayedExplorerHints.filter((token) =>
+    !verifiedExplorerHintKeys.has(tokenKey(token.chainId, token.contract ?? ""))).length;
+  const inventoryPartial = inventoryResults.some((result) => result.state.status !== "live");
+  // Source availability describes the full inventory and must not change at a display threshold.
+  // Independent price verification affects displayable P&L coverage below, not basket identity.
+  const inventoryAsOf = latestTimestamp(inventoryResults.map((result) => result.state.asOf));
+  const asOf = latestTimestamp([inventoryAsOf, ...pricingTimestamps]);
+  const coverage = `${availableInventories.length} of ${inventoryResults.length} chain inventories responded.`;
+  const inventoryMessages = inventoryResults
+    .filter((result) => result.state.status !== "live")
+    .map((result) => result.state.message)
+    .join(" ");
+  const verificationMessage = unverifiedExplorerHints > 0
+    ? ` ${unverifiedExplorerHints} Blockscout price hint${unverifiedExplorerHints === 1 ? "" : "s"} could not be independently checked.`
+    : displayedExplorerHints.length > 0
+      ? ` ${displayedExplorerHints.length} Blockscout price hint${displayedExplorerHints.length === 1 ? " was" : "s were"} cross-checked with DefiLlama.`
+      : "";
+
+  return {
+    data: tokens,
+    state: sourceState(
+      inventoryPartial ? "partial" : "live",
+      `${coverage}${verificationMessage}${inventoryMessages ? ` ${inventoryMessages}` : ""}`,
+      asOf,
+    ),
+  };
+}
+
+/** Shared DefiLlama/CoinGecko pricing path for EVM tokens, SPL tokens and wrapped SOL. */
+async function priceWalletTokenInventory(inventory: WalletTokenInventoryRow[]) {
   const prices = new Map<string, number>();
   const pricingTimestamps: string[] = [];
   const explorerHintKeys = new Set<string>();
@@ -998,10 +1040,12 @@ async function fetchWalletTokenSource(wallet: string): Promise<LiveResult<Normal
       const coinsValue = (response.data as Record<string, unknown>).coins;
       if (coinsValue && typeof coinsValue === "object" && !Array.isArray(coinsValue)) {
         const coins = new Map(
-          Object.entries(coinsValue as Record<string, unknown>).map(([key, value]) => [key.toLowerCase(), value]),
+          Object.entries(coinsValue as Record<string, unknown>)
+            .map(([key, value]) => [key.startsWith("solana:") ? key : key.toLowerCase(), value]),
         );
         for (const token of llamaCandidates) {
-          const value = coins.get(`${token.llamaChain}:${token.contract}`.toLowerCase());
+          const identifier = `${token.llamaChain}:${token.contract}`;
+          const value = coins.get(token.chainId === "solana" ? identifier : identifier.toLowerCase());
           const price = value && typeof value === "object" && !Array.isArray(value)
             ? positiveNumber((value as Record<string, unknown>).price)
             : null;
@@ -1046,7 +1090,8 @@ async function fetchWalletTokenSource(wallet: string): Promise<LiveResult<Normal
     pricingTimestamps.push(response.asOf);
     if (!response.data || typeof response.data !== "object" || Array.isArray(response.data)) continue;
     const match = Object.entries(response.data as Record<string, unknown>)
-      .find(([contract]) => contract.toLowerCase() === token.contract.toLowerCase());
+      .find(([contract]) => token.chainId === "solana"
+        ? contract === token.contract : contract.toLowerCase() === token.contract.toLowerCase());
     const price = match?.[1] && typeof match[1] === "object" && !Array.isArray(match[1])
       ? positiveNumber((match[1] as Record<string, unknown>).usd)
       : null;
@@ -1066,35 +1111,7 @@ async function fetchWalletTokenSource(wallet: string): Promise<LiveResult<Normal
     priceVerified: explorerHintKeys.has(tokenKey(token.chainId, token.contract))
       ? verifiedExplorerHintKeys.has(tokenKey(token.chainId, token.contract)) : undefined,
   }));
-  const displayedExplorerHints = tokens.filter((token) => !shouldSuppressHolding({
-    valueUsd: token.priceUsd === null ? null : token.amount * token.priceUsd,
-  }) && explorerHintKeys.has(tokenKey(token.chainId, token.contract ?? "")));
-  const unverifiedExplorerHints = displayedExplorerHints.filter((token) =>
-    !verifiedExplorerHintKeys.has(tokenKey(token.chainId, token.contract ?? ""))).length;
-  const inventoryPartial = inventoryResults.some((result) => result.state.status !== "live");
-  // Source availability describes the full inventory and must not change at a display threshold.
-  // Independent price verification affects displayable P&L coverage below, not basket identity.
-  const inventoryAsOf = latestTimestamp(inventoryResults.map((result) => result.state.asOf));
-  const asOf = latestTimestamp([inventoryAsOf, ...pricingTimestamps]);
-  const coverage = `${availableInventories.length} of ${inventoryResults.length} chain inventories responded.`;
-  const inventoryMessages = inventoryResults
-    .filter((result) => result.state.status !== "live")
-    .map((result) => result.state.message)
-    .join(" ");
-  const verificationMessage = unverifiedExplorerHints > 0
-    ? ` ${unverifiedExplorerHints} Blockscout price hint${unverifiedExplorerHints === 1 ? "" : "s"} could not be independently checked.`
-    : displayedExplorerHints.length > 0
-      ? ` ${displayedExplorerHints.length} Blockscout price hint${displayedExplorerHints.length === 1 ? " was" : "s were"} cross-checked with DefiLlama.`
-      : "";
-
-  return {
-    data: tokens,
-    state: sourceState(
-      inventoryPartial ? "partial" : "live",
-      `${coverage}${verificationMessage}${inventoryMessages ? ` ${inventoryMessages}` : ""}`,
-      asOf,
-    ),
-  };
+  return { tokens, explorerHintKeys, verifiedExplorerHintKeys, pricingTimestamps };
 }
 
 function rateToThb(currency: string | null, fx: FiatRates | null): number | null {
@@ -1190,7 +1207,7 @@ export function buildJoinedPortfolio(inputs: JoinedPortfolioInputs, asOf: string
   const contributedUsd = contributedThb !== null && fiatFx?.usdToThb && fiatFx.usdToThb > 0 ? contributedThb / fiatFx.usdToThb : null;
   const capital: BookCapital = { contributedThb, contributedUsd: contributedUsd !== null && Number.isFinite(contributedUsd) ? contributedUsd : null,
     asOf, available: contributedThb !== null };
-  const walletWasProvided = inputs.walletNative !== undefined || inputs.walletTokens !== undefined;
+  const walletWasProvided = inputs.walletNative !== undefined || inputs.walletTokens !== undefined || inputs.solana !== undefined;
   const walletNativeInputState = inputs.walletNative?.state ?? {
     status: "unavailable",
     asOf: null,
@@ -1223,36 +1240,45 @@ export function buildJoinedPortfolio(inputs: JoinedPortfolioInputs, asOf: string
       inputs.manualBasis?.[`nft:4663:${holding.collection}`]) };
   });
 
-  const walletNative = (inputs.walletNative?.data ?? []).map((balance): WalletNativeHolding => {
-    const valueUsd = convertAmount(balance.amount, ethToUsd);
+  const evmNative = combineNativeEth(inputs.walletNative?.data ?? [], ethToUsd,
+    fiatFx?.usdToThb ?? null, asOf, inputs.basisEvidence, inputs.manualBasis);
+  const solanaNative = (inputs.solana?.data?.native ?? []).map((balance): WalletNativeHolding => {
+    const valueUsd = balance.priceUsd === null ? null : balance.amount * balance.priceUsd;
     const valueThb = convertAmount(valueUsd, fiatFx?.usdToThb ?? null);
-    return { ...balance, valueUsd, valueThb, ...deriveOnchainPnl({
-      asOf, kind: "native", chainId: balance.chainId, assetId: "native",
-      // Never reconstruct exact units from a floating-point balance.
-      quantityRaw: balance.amountRaw ?? "", decimals: 18, valueUsd,
-    }, fiatFx?.usdToThb ?? null, inputs.basisEvidence?.[`native:${balance.chainId}:native`],
-      inputs.manualBasis?.[`native:${balance.chainId}:native`]) };
+    return { ...balance, key: "native:solana:native", valueUsd, valueThb,
+      chains: [{ chainId: "solana", chainName: balance.chainName, amount: balance.amount, valueUsd }],
+      ...deriveSolanaPnl(valueUsd, fiatFx?.usdToThb ?? null, inputs.manualBasis?.["native:solana:native"]) };
   });
+  const walletNative = [...evmNative, ...solanaNative];
 
-  const walletTokens = (inputs.walletTokens?.data ?? []).map((token): WalletTokenHolding => {
+  const joinToken = (token: NormalizedWalletTokenBalance): WalletTokenHolding => {
     const priced = token.priceUsd !== null;
     const valueUsd = priced ? token.amount * (token.priceUsd as number) : null;
     const valueThb = convertAmount(valueUsd, fiatFx?.usdToThb ?? null);
-    return { ...token, valueUsd, valueThb, priced, ...deriveOnchainPnl({
-      asOf, kind: "token", chainId: token.chainId, assetId: token.contract ?? "",
-      quantityRaw: token.amountRaw, decimals: token.decimals, valueUsd,
-    }, fiatFx?.usdToThb ?? null, token.contract ? inputs.basisEvidence?.[`token:${token.chainId}:${token.contract.toLowerCase()}`] : undefined,
-      token.contract ? inputs.manualBasis?.[`token:${token.chainId}:${token.contract.toLowerCase()}`] : undefined) };
-  });
+    const key = token.contract ? `token:${token.chainId}:${token.contract.toLowerCase()}` : "";
+    const pnl = token.chainId === "solana"
+      ? deriveSolanaPnl(valueUsd, fiatFx?.usdToThb ?? null, inputs.manualBasis?.[key])
+      : deriveOnchainPnl({ asOf, kind: "token", chainId: token.chainId, assetId: token.contract ?? "",
+        quantityRaw: token.amountRaw, decimals: token.decimals, valueUsd,
+      }, fiatFx?.usdToThb ?? null, inputs.basisEvidence?.[key], inputs.manualBasis?.[key]);
+    return { ...token, valueUsd, valueThb, priced, ...pnl };
+  };
+  const evmTokens = (inputs.walletTokens?.data ?? []).map(joinToken);
+  const solanaTokens = (inputs.solana?.data?.tokens ?? []).map(joinToken);
+  const walletTokens = [...evmTokens, ...solanaTokens];
 
   const t212PositionState = holdingSourceState(inputs.t212Positions.data === null ? null : investments,
     inputs.t212Positions.state, (row) => row.quantity, "Trading 212 position", fiatPricingAvailable);
   const nftState = holdingSourceState(inputs.nfts.data === null ? null : nfts,
     inputs.nfts.state, (row) => row.tokenCount, "NFT collection", ethPricingAvailable && fiatPricingAvailable);
-  const walletNativeState = holdingSourceState(inputs.walletNative?.data == null ? null : walletNative,
+  const walletNativeState = holdingSourceState(inputs.walletNative?.data == null ? null : evmNative,
     walletNativeInputState, (row) => row.amount, "Native wallet", ethPricingAvailable && fiatPricingAvailable);
-  const walletTokenState = holdingSourceState(inputs.walletTokens?.data == null ? null : walletTokens,
+  const walletTokenState = holdingSourceState(inputs.walletTokens?.data == null ? null : evmTokens,
     walletTokenInputState, (row) => row.amount, "Wallet token", fiatPricingAvailable);
+  const solanaState = holdingSourceState(inputs.solana?.data == null ? null : [...solanaNative, ...solanaTokens],
+    inputs.solana?.state ?? sourceState("unavailable", "Solana wallet was not included in this snapshot."),
+    (row) => row.amount, "Solana wallet", fiatPricingAvailable);
+
 
   const nftsEth = pricedSubtotal(nfts, nftState, (row) => row.tokenCount, (row) => row.valueEth);
   const nftsUsd = pricedSubtotal(nfts, nftState, (row) => row.tokenCount, (row) => row.valueUsd);
@@ -1263,10 +1289,18 @@ export function buildJoinedPortfolio(inputs: JoinedPortfolioInputs, asOf: string
   // Displayed position rows must never redefine either authoritative account figure.
   const t212Thb = summaryAvailable && accountToThb !== null
     ? convertAmount(summary.totalValue, accountToThb) : null;
-  const walletNativeUsd = pricedSubtotal(walletNative, walletNativeState, (row) => row.amount, (row) => row.valueUsd);
-  const walletNativeThb = pricedSubtotal(walletNative, walletNativeState, (row) => row.amount, (row) => row.valueThb);
-  const walletTokensUsd = pricedSubtotal(walletTokens, walletTokenState, (row) => row.amount, (row) => row.valueUsd);
-  const walletTokensThb = pricedSubtotal(walletTokens, walletTokenState, (row) => row.amount, (row) => row.valueThb);
+  const walletNativeUsd = combineWalletSubtotals(
+    pricedSubtotal(evmNative, walletNativeState, (row) => row.amount, (row) => row.valueUsd),
+    pricedSubtotal(solanaNative, solanaState, (row) => row.amount, (row) => row.valueUsd));
+  const walletNativeThb = combineWalletSubtotals(
+    pricedSubtotal(evmNative, walletNativeState, (row) => row.amount, (row) => row.valueThb),
+    pricedSubtotal(solanaNative, solanaState, (row) => row.amount, (row) => row.valueThb));
+  const walletTokensUsd = combineWalletSubtotals(
+    pricedSubtotal(evmTokens, walletTokenState, (row) => row.amount, (row) => row.valueUsd),
+    pricedSubtotal(solanaTokens, solanaState, (row) => row.amount, (row) => row.valueUsd));
+  const walletTokensThb = combineWalletSubtotals(
+    pricedSubtotal(evmTokens, walletTokenState, (row) => row.amount, (row) => row.valueThb),
+    pricedSubtotal(solanaTokens, solanaState, (row) => row.amount, (row) => row.valueThb));
   const walletUsd = combineWalletSubtotals(walletNativeUsd, walletTokensUsd);
   const walletThb = combineWalletSubtotals(walletNativeThb, walletTokensThb);
   const legacyGrandTotalThb = sumComplete([t212Thb, nftsThb]);
@@ -1301,8 +1335,8 @@ export function buildJoinedPortfolio(inputs: JoinedPortfolioInputs, asOf: string
       ...aggregatePnl({
         t212: { holdings: investments, sourceComplete: t212PositionState.status === "live" },
         nfts: { holdings: nfts, sourceComplete: nftState.status === "live" },
-        walletNative: { holdings: walletNative, sourceComplete: inputs.walletNative?.data != null && walletNativeState.status === "live" },
-        walletTokens: { holdings: walletTokens, sourceComplete: inputs.walletTokens?.data != null && walletTokenState.status === "live"
+        walletNative: { holdings: walletNative, sourceComplete: inputs.walletNative?.data != null && walletNativeState.status === "live" && solanaState.status === "live" },
+        walletTokens: { holdings: walletTokens, sourceComplete: inputs.walletTokens?.data != null && walletTokenState.status === "live" && solanaState.status === "live"
           && !walletTokens.some((row) => !shouldSuppressHolding(row) && row.priceVerified === false) },
       }, fiatFx?.usdToThb ?? null, valueBeforeManual !== null && usdBeforeManual !== null
         && inputs.t212Summary.state.status === "live" && inputs.fiatFx.state.status === "live" && inputs.ethPrice.state.status === "live"),
@@ -1330,6 +1364,7 @@ export function buildJoinedPortfolio(inputs: JoinedPortfolioInputs, asOf: string
       ethPrice: inputs.ethPrice.state,
       walletNative: walletNativeState,
       walletTokens: walletTokenState,
+      solana: solanaState,
       manualHoldings: manualState.status === "live" && (manualUsd === null || manualThb === null)
         ? { ...manualState, status: "partial", message: "Manual holdings conversion unavailable." } : manualState,
       capital: capitalState.status === "live" && (!capital.available || capital.contributedUsd === null)
@@ -1356,7 +1391,7 @@ let snapshotGeneration = 0;
 async function fetchPortfolioSnapshot(asOf: string): Promise<FetchedPortfolioSnapshot> {
   await ensureLedgerSchema();
   const wallet = process.env.NFT_WALLET || DEFAULT_NFT_WALLET;
-  const [t212, nfts, fiatFx, ethPrice, walletNative, walletTokens, manualHoldings, capitalEvents, basisEvidence, manualBasis] = await Promise.all([
+  const [t212, nfts, fiatFx, ethPrice, walletNative, walletTokens, manualHoldings, capitalEvents, basisEvidence, manualBasis, solana] = await Promise.all([
     fetchT212Sources(),
     fetchNftSource(),
     fetchFiatFxSource(),
@@ -1367,6 +1402,7 @@ async function fetchPortfolioSnapshot(asOf: string): Promise<FetchedPortfolioSna
     readCapitalEvents(asOf),
     readBasisEvidence(asOf).catch(() => ({})), // Evidence outages must not break other sources.
     readManualBasis(asOf).catch(() => ({})), // Desk statements fail independently of the chain cache.
+    fetchSolanaSource(process.env.SOL_WALLET || DEFAULT_SOL_WALLET, async (inventory) => (await priceWalletTokenInventory(inventory)).tokens),
   ]);
 
   return {
@@ -1382,6 +1418,7 @@ async function fetchPortfolioSnapshot(asOf: string): Promise<FetchedPortfolioSna
       capitalEvents,
       basisEvidence,
       manualBasis,
+      solana,
     },
     asOf,
   };
