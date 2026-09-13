@@ -250,6 +250,43 @@ describe("buildJoinedPortfolio", () => {
     expect(portfolio.totals.pnlCoverage).toMatchObject({ dust: 0, unpriced: 0 });
   });
 
+  it.each([0.999, 1, 1.01])("keeps the joined combined ETH display boundary exact at $%s", (valueUsd) => {
+    const inputs = fixtureInputs();
+    inputs.ethPrice = live(1);
+    inputs.walletNative = live([1, 8453].map((chainId) => ({ chainId, chainName: String(chainId), symbol: "ETH",
+      amount: valueUsd / 2, amountRaw: (BigInt(Math.round(valueUsd * 1000)) * BigInt("500000000000000")).toString() })));
+    inputs.manualBasis = Object.fromEntries([1, 8453].map((chainId) => [`native:${chainId}:native`,
+      { costUsd: 0.2, asOf: AS_OF.slice(0, 10), note: "Synthetic exact-boundary basis" }]));
+    const book = buildJoinedPortfolio(inputs, AS_OF);
+    const row = book.wallet.native[0];
+    expect(row.chains.map((chain) => chain.valueUsd)).toEqual([valueUsd / 2, valueUsd / 2]);
+    expect(row.valueUsd).toBe(valueUsd);
+    expect(book.wallet.native.filter((holding) => !shouldSuppressHolding(holding)).map((holding) => holding.valueUsd))
+      .toEqual(valueUsd < 1 ? [] : [valueUsd]);
+    expect(row.pnlEligibility).toBe(valueUsd < 1 ? "dust" : "eligible");
+    expect(row.costBasisUsd).toBe(valueUsd < 1 ? null : 0.4);
+  });
+
+  it.each(["valid", "missing", "invalid"])("requires %s basis on every positive sub-dollar constituent in joined $1.60 ETH", (basis) => {
+    const inputs = fixtureInputs();
+    inputs.ethPrice = live(1000);
+    inputs.walletNative = live([1, 8453, 42161, 4663].map((chainId) => ({ chainId, chainName: String(chainId), symbol: "ETH",
+      amount: 0.0004, amountRaw: "400000000000000" })));
+    const manual = Object.fromEntries([1, 8453, 42161, 4663].map((chainId) => [`native:${chainId}:native`,
+      { costUsd: 0.1, asOf: AS_OF.slice(0, 10), note: "Synthetic sub-dollar constituent basis" }]));
+    if (basis === "missing") delete manual["native:4663:native"];
+    if (basis === "invalid") manual["native:4663:native"].costUsd = -1;
+    inputs.manualBasis = manual;
+    const book = buildJoinedPortfolio(inputs, AS_OF);
+    const row = book.wallet.native[0];
+    expect(row.chains.map((chain) => chain.valueUsd)).toEqual([0.4, 0.4, 0.4, 0.4]);
+    expect(row.valueUsd).toBe(1.6);
+    expect(shouldSuppressHolding(row)).toBe(false);
+    expect(row.costBasisUsd).toBe(basis === "valid" ? 0.4 : null);
+    expect(row.pnlUsd).toBe(basis === "valid" ? 1.6 - 0.4 : null);
+    expect(row.pnlEligibility).toBe(basis === "valid" ? "eligible" : "not-recorded");
+  });
+
   it("preserves full market inventories and totals while the strict boundary limits display rows and coverage", () => {
     const inputs = fixtureInputs();
     const values = [null, 0, 0.99, 1, 1.01];
@@ -277,20 +314,25 @@ describe("buildJoinedPortfolio", () => {
     }
     expect(portfolio.wallet.native[0].chains.map((row) => row.valueUsd)).toEqual([0, 0.99, 1, 1.01]);
     expect(portfolio.wallet.native.map((row) => row.valueUsd)).toEqual([3]);
-    for (const rows of [portfolio.t212.investments, portfolio.nfts, portfolio.wallet.native, portfolio.wallet.tokens]) {
+    // Keep the original per-class exact $1/$1.01 boundaries, including the
+    // underlying native chain inventory; the combined row is an extra contract.
+    for (const rows of [portfolio.t212.investments, portfolio.nfts, portfolio.wallet.native[0].chains, portfolio.wallet.tokens]) {
       const displayed = rows.filter((row) => !shouldSuppressHolding(row));
       const suppressed = rows.filter(shouldSuppressHolding);
-      const combined = rows === portfolio.wallet.native;
-      expect(displayed.map((row) => row.valueUsd)).toEqual(combined ? [3] : [1, 1.01]);
-      expect(suppressed.length).toBe(combined ? 0 : 3);
+      expect(displayed.map((row) => row.valueUsd)).toEqual([1, 1.01]);
+      expect(suppressed.length).toBe(rows === portfolio.wallet.native[0].chains ? 2 : 3);
       const fullValue = rows.reduce((sum, row) => sum + (row.valueUsd ?? 0), 0);
       const displayedValue = displayed.reduce((sum, row) => sum + row.valueUsd!, 0);
       expect(fullValue).toBe(3);
-      expect(displayedValue).toBe(combined ? 3 : 2.01);
-      expect(fullValue - displayedValue).toBeCloseTo(combined ? 0 : 0.99, 12);
+      expect(displayedValue).toBe(2.01);
+      expect(fullValue - displayedValue).toBeCloseTo(0.99, 12);
       expect(suppressed.filter((row) => row.valueUsd !== null).every((row) => row.valueUsd! < 1)).toBe(true);
       expect(fullValue - displayedValue).toBeCloseTo(suppressed.reduce((sum, row) => sum + (row.valueUsd ?? 0), 0), 12);
     }
+    const displayedCombined = portfolio.wallet.native.filter((row) => !shouldSuppressHolding(row));
+    expect(displayedCombined.map((row) => row.valueUsd)).toEqual([3]);
+    expect(portfolio.wallet.native.filter(shouldSuppressHolding)).toEqual([]);
+    expect(displayedCombined.reduce((sum, row) => sum + row.valueUsd!, 0)).toBe(3);
     expect(portfolio.t212).toMatchObject({ cashAvailable: 5, totalValue: 100, investmentsCurrentValue: 95 });
     expect(portfolio.totals.t212Thb).toBe(100 * 36);
     expect(portfolio.totals.nftsUsd).toBe(3);
@@ -779,12 +821,39 @@ describe("getJoinedPortfolio", () => {
     const row = book.wallet.native.find((holding) => holding.key === "native:eth")!;
     expect(row).toMatchObject({ basisStatus: reject ? "not-recorded" : "arrival-priced",
       pnlEligibility: reject ? "not-recorded" : "eligible" });
+    const exactAmounts = [0.000781456655781755, 0.000099024468845735, 0.248395962372228, 0.000526354376236];
+    const exactRawAmounts = ["781456655781755", "99024468845735", "248395962372228000", "526354376236000"];
+    expect(row.chains.map((chain) => chain.amount)).toEqual(exactAmounts);
+    row.chains.forEach((chain) => expect(chain.valueUsd).toBe(chain.amount * 2000));
+    expect(row.amountRaw).toBe(exactRawAmounts.reduce((sum, raw) => sum + BigInt(raw), BigInt(0)).toString());
+    expect(row.valueUsd).toBe(exactAmounts.reduce((sum, amount) => sum + amount * 2000, 0));
+    expect(row.costBasisUsd).toBe(reject ? null : exactAmounts.reduce((sum, amount) => sum + amount * 1500, 0));
+    // Only the aggregate distributes multiplication over a floating-point sum:
+    // sum(amount * quote) and sum(amount) * quote can differ by ~1e-13 USD.
+    // Exact raw/per-chain assertions above and the single-chain test below stay exact.
     expect(row.valueUsd).toBeCloseTo(row.amount * 2000, 10);
-    if (reject) expect(row.costBasisUsd).toBeNull();
-    else expect(row.costBasisUsd).toBeCloseTo(row.amount * 1500, 10);
+    if (!reject) expect(row.costBasisUsd).toBeCloseTo(row.amount * 1500, 10);
     expect(book.t212.cashAvailable).toBe(487);
     expect(Object.keys(book.sources).sort()).toEqual(["capital", "ethPrice", "fiatFx", "manualHoldings", "nfts", "solana",
       "t212Positions", "t212Summary", "walletNative", "walletTokens"]);
+  });
+  it.each([false, true])("restores exact single-chain USD and basis cache contracts with rejection=%s", async (reject) => {
+    const inputs = fixtureInputs();
+    const amountRaw = "781456655781755";
+    inputs.walletNative = live([{ chainId: 1, chainName: "Ethereum", symbol: "ETH",
+      amount: 0.000781456655781755, amountRaw }]);
+    inputs.basisEvidence = reject ? {} : { "native:1:native": {
+      source: "rpc", chainId: 1, assetId: "native", decimals: 18, complete: true, hasDisposals: false,
+      lots: [{ transactionHash: `0x${"a".repeat(64)}`, acquiredAt: AS_OF, quantityRaw: amountRaw,
+        operation: "funding-arrival", success: true, allPaymentLegsObserved: true, acquiredAssetCount: 1,
+        nativeOutflowRaw: "0", tokenOutflows: [],
+        nativePrice: { provider: "defillama-historical", assetId: "native", timestamp: AS_OF, priceUsd: 1500 } }],
+    } };
+    const row = buildJoinedPortfolio(inputs, AS_OF).wallet.native[0];
+    expect(row.amountRaw).toBe(amountRaw);
+    expect(row.amount).toBe(0.000781456655781755);
+    expect(row.valueUsd).toBe(row.amount * 2000);
+    expect(row.costBasisUsd).toBe(reject ? null : row.amount * 1500);
   });
   it.each([
     { reservedForOrders: 50, inPies: 0 },
@@ -1005,6 +1074,35 @@ describe("getJoinedPortfolio", () => {
     expect(rpcCalls.every(([, init]) => init?.cache === "no-store")).toBe(true);
     expect(fetchMock.mock.calls.filter(([url]) => String(url).includes("coins.llama.fi"))).toHaveLength(1);
     expect(fetchMock.mock.calls.filter(([url]) => String(url).includes("simple/token_price/"))).toHaveLength(1);
+  });
+
+  it.each(["stale-basis", "missing-basis", "unavailable"])("L1 RPC zero provenance: %s does not become a fabricated zero", async (scenario) => {
+    vi.stubEnv("DATABASE_URL", "");
+    const liveFetch = walletNetworkFetchMock();
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      if (init?.method === "POST" && JSON.parse(String(init.body)).method === "eth_getBalance") {
+        if (String(input) === "https://ethereum-rpc.publicnode.com") return json({ result: "0xde0b6b3a7640000" });
+        if (String(input) === "https://mainnet.base.org" && scenario === "unavailable") return json({ error: "unavailable" }, 503);
+        return json({ result: "0x0000" });
+      }
+      return liveFetch(input, init);
+    }));
+    vi.spyOn(basisDb, "readBasisEvidence").mockResolvedValue({});
+    vi.spyOn(basisDb, "readManualBasis").mockResolvedValue({
+      "native:1:native": { costUsd: 1000, asOf: AS_OF.slice(0, 10), note: "Synthetic 1 ETH basis" },
+      ...(scenario === "stale-basis" ? { "native:8453:native": { costUsd: 500, asOf: AS_OF.slice(0, 10), note: "Synthetic stale zero-balance basis" } } : {}),
+    });
+    const book = await getJoinedPortfolio({ now: () => Date.parse(AS_OF) });
+    const row = book.wallet.native[0];
+    expect(row.amountRaw).toBe("1000000000000000000");
+    expect(row.amount).toBe(1);
+    expect(row.valueUsd).toBe(2000);
+    expect(book.sources.walletNative.status).toBe(scenario === "unavailable" ? "partial" : "live");
+    expect(row.chains.map((chain) => [chain.chainId, chain.amount, chain.valueUsd])).toEqual(scenario === "unavailable"
+      ? [[1, 1, 2000], [42161, 0, 0], [4663, 0, 0]] : [[1, 1, 2000], [8453, 0, 0], [42161, 0, 0], [4663, 0, 0]]);
+    expect(row.costBasisUsd).toBe(scenario === "unavailable" ? null : 1000);
+    expect(row.pnlUsd).toBe(scenario === "unavailable" ? null : 1000);
+    expect(row.pnlEligibility).toBe(scenario === "unavailable" ? "not-recorded" : "eligible");
   });
 
   it("keeps successful native chains visible when one RPC is unavailable", async () => {

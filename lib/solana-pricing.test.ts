@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { __resetSnapshotCacheForTests, getJoinedPortfolio } from "./live-data";
 import { DEFAULT_SOL_WALLET } from "./solana-wallet";
+import { joinedHoldingsMap } from "./holding-values";
 import * as basisDb from "./basis-db";
 
 vi.mock("./pnl-history", () => ({ recordPortfolioSnapshot: vi.fn(async () => "skipped") }));
@@ -28,7 +29,7 @@ describe("shared Solana and EVM wallet pricing path", () => {
     vi.stubEnv("SOL_WALLET", wallet);
     vi.spyOn(basisDb, "readManualBasis").mockResolvedValue({
       "native:solana:native": { costUsd: 4.705788, asOf: "2026-09-13", note: "fixture bridge basis" },
-      [`token:solana:${USDC_MINT.toLowerCase()}`]: { costUsd: 3, asOf: "2026-09-13", note: "fixture token basis" },
+      [`token:solana:${USDC_MINT}`]: { costUsd: 3, asOf: "2026-09-13", note: "fixture token basis" },
     });
     __resetSnapshotCacheForTests();
     const fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
@@ -62,6 +63,7 @@ describe("shared Solana and EVM wallet pricing path", () => {
     expect(native.priceUsd).toBe(provider === "wrong-case" ? null : 150);
     expect(token.priceUsd).toBe(provider === "wrong-case" ? null : 1);
     expect(token.contract).toBe(USDC_MINT);
+    expect(joinedHoldingsMap(book)[`token:solana:${USDC_MINT}`]).toBe(provider === "wrong-case" ? null : 2);
     expect(native.key).toBe("native:solana:native");
     expect(native.costBasisUsd).toBe(provider === "wrong-case" ? null : 4.705788);
     expect(token.costBasisUsd).toBe(provider === "wrong-case" ? null : 3);

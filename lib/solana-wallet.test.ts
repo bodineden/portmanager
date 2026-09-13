@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { NormalizedWalletTokenBalance } from "./live-data";
+import { isSolanaAddress } from "./solana-address";
 import { DEFAULT_SOL_WALLET, fetchSolanaSource, type SolanaPriceInventory } from "./solana-wallet";
 
 const SOL_MINT = "So11111111111111111111111111111111111111112";
@@ -51,6 +52,23 @@ function pricing(prices: Record<string, number | null> = { [SOL_MINT]: 150, [USD
 }
 
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+
+describe("exact Solana public-key validation", () => {
+  it.each([
+    DEFAULT_SOL_WALLET, SOL_MINT, SOL_MINT.toLowerCase(), USDC_MINT, CLASSIC, TOKEN_2022,
+    "1".repeat(32), `${"1".repeat(31)}2`, `${"1".repeat(30)}zz`,
+  ])("accepts a base58 address representing exactly 32 bytes: %s", (address) => {
+    expect(isSolanaAddress(address)).toBe(true);
+  });
+
+  it.each([
+    null, undefined, 123, "", "Z".repeat(32), "z".repeat(44),
+    "1".repeat(31), "1".repeat(33), "0".repeat(32), "O".repeat(32),
+    USDC_MINT.toLowerCase(), ` ${USDC_MINT}`, `${USDC_MINT} `,
+  ])("rejects malformed base58 or a decoded length other than 32 bytes: %s", (address) => {
+    expect(isSolanaAddress(address)).toBe(false);
+  });
+});
 
 describe("Solana live wallet reader", () => {
   it("uses the exact desk fallback and reads confirmed SOL plus both parsed token programs", async () => {
@@ -236,5 +254,93 @@ describe("Solana live wallet reader", () => {
       expect(result.state.status).toBe("unavailable");
       expect(result.data).toBeNull();
     }
+  });
+
+  it.each([
+    ["the review's duplicate account/mint with decimals 6 vs 3", account(), account(USDC_MINT, "1000000", 3, TOKEN_2022)],
+    ["a duplicate account with consistent decimals", account(), account(USDC_MINT, "1000000", 6, TOKEN_2022)],
+    ["a duplicate account reported for another mint", account(), account(CLASSIC, "1000000", 6, TOKEN_2022)],
+    ["one mint owned by both programs", account(), account(USDC_MINT, "1000000", 6, TOKEN_2022, DEFAULT_SOL_WALLET)],
+    ["one mint with distinct accounts and conflicting decimals", account(), account(USDC_MINT, "1000000", 3, TOKEN_2022, DEFAULT_SOL_WALLET)],
+    ["a zero account with conflicting mint ownership", account(), account(USDC_MINT, "0", 6, TOKEN_2022, DEFAULT_SOL_WALLET)],
+  ])("L4 regression: rejects %s across the complete token inventory before pricing", async (_, classic, token2022) => {
+    network((request) => request.method === "getBalance" ? undefined
+      : rpc([request.params[1].programId === CLASSIC ? classic : token2022]));
+    const price = pricing({ [SOL_MINT]: 150, [USDC_MINT]: 10, [CLASSIC]: 10 });
+    const result = await fetchSolanaSource(DEFAULT_SOL_WALLET, price);
+    expect(result.state.status).toBe("unavailable");
+    expect(result.state.message).toContain("combined SPL inventory");
+    expect(result.data).toBeNull();
+    expect(price).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [account(USDC_MINT, "0", 3), account(USDC_MINT, "1000000", 6, CLASSIC, DEFAULT_SOL_WALLET)],
+    [account(), account(USDC_MINT, "0", 3, CLASSIC, DEFAULT_SOL_WALLET)],
+    [account(USDC_MINT, "0"), account()],
+  ])("L4 regression: retains zero-account decimal and uniqueness evidence %#", async (first, second) => {
+    network((request) => request.params[1].programId === CLASSIC ? rpc([first, second]) : undefined);
+    const price = pricing();
+    const result = await fetchSolanaSource(DEFAULT_SOL_WALLET, price);
+    expect(result.state.status).toBe("unavailable");
+    expect(result.data).toBeNull();
+    expect(price).not.toHaveBeenCalled();
+  });
+
+  it.each(["1000000000", "0"])("L5 regression: rejects wrapped SOL with decimals 0 and raw %s before applying the 150 USD native price", async (raw) => {
+    network((request) => request.params[1].programId === CLASSIC ? rpc([account(SOL_MINT, raw, 0)]) : undefined);
+    const price = pricing({ [SOL_MINT]: 150 });
+    const result = await fetchSolanaSource(DEFAULT_SOL_WALLET, price);
+    expect(result.state.status).toBe("unavailable");
+    expect(result.data).toBeNull();
+    expect(price).not.toHaveBeenCalled();
+  });
+
+  it("L5 regression: rejects repeated non-native pricing identifiers with conflicting decimals", async () => {
+    network((request) => request.params[1].programId === CLASSIC ? rpc([
+      account(USDC_MINT, "1000000", 6),
+      account(USDC_MINT, "1000000", 3, CLASSIC, DEFAULT_SOL_WALLET),
+    ]) : undefined);
+    const price = pricing({ [SOL_MINT]: 150, [USDC_MINT]: 10 });
+    const result = await fetchSolanaSource(DEFAULT_SOL_WALLET, price);
+    expect(result.state.status).toBe("unavailable");
+    expect(result.data).toBeNull();
+    expect(price).not.toHaveBeenCalled();
+  });
+
+  it("L5 regression: prices native and wrapped SOL separately when their repeated identifier has consistent decimals", async () => {
+    network((request) => request.method === "getBalance" ? rpc(1_000_000_000)
+      : request.params[1].programId === CLASSIC ? rpc([account(SOL_MINT, "2000000000", 9)]) : undefined);
+    const price = pricing({ [SOL_MINT]: 150 });
+    const result = await fetchSolanaSource(DEFAULT_SOL_WALLET, price);
+    expect(result.state.status).toBe("live");
+    expect(price.mock.calls[0][0].map((row) => ({ mint: row.mint, decimals: row.decimals }))).toEqual([
+      { mint: SOL_MINT, decimals: 9 }, { mint: SOL_MINT, decimals: 9 },
+    ]);
+    expect(result.data?.native[0]).toMatchObject({ amountRaw: "1000000000", amount: 1, priceUsd: 150 });
+    expect(result.data?.tokens).toHaveLength(1);
+    expect(result.data?.tokens[0]).toMatchObject({ contract: SOL_MINT, amountRaw: "2000000000", amount: 2, decimals: 9, priceUsd: 150 });
+  });
+
+  it("rejects a regex-shaped 24-byte wallet before making RPC or price requests", async () => {
+    const fetch = network();
+    const price = pricing();
+    const result = await fetchSolanaSource("Z".repeat(32), price);
+    expect(result.state.status).toBe("unavailable");
+    expect(result.data).toBeNull();
+    expect(fetch).not.toHaveBeenCalled();
+    expect(price).not.toHaveBeenCalled();
+  });
+
+  it.each(["mint", "pubkey"])("rejects a regex-shaped 24-byte SPL %s before pricing", async (field) => {
+    const malformed = account();
+    if (field === "mint") malformed.account.data.parsed.info.mint = "Z".repeat(32);
+    else malformed.pubkey = "Z".repeat(32);
+    network((request) => request.params[1].programId === CLASSIC ? rpc([malformed]) : undefined);
+    const price = pricing();
+    const result = await fetchSolanaSource(DEFAULT_SOL_WALLET, price);
+    expect(result.state.status).toBe("unavailable");
+    expect(result.data).toBeNull();
+    expect(price).not.toHaveBeenCalled();
   });
 });

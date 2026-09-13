@@ -8,7 +8,7 @@ export const holdingId = {
   t212: (ticker: string) => `t212:${ticker}`,
   nft: (collection: string) => `nft:${collection}`,
   native: (chainId: number | "eth" | "solana") => chainId === "solana" ? "native:solana:native" : `native:${chainId}`,
-  token: (chainId: number | "solana", contract: string) => `token:${chainId}:${contract.toLowerCase()}`,
+  token: (chainId: number | "solana", contract: string) => `token:${chainId}:${chainId === "solana" ? contract : contract.toLowerCase()}`,
   manual: (label: string) => `manual:${label}`,
 };
 export function joinedHoldingsMap(portfolio: JoinedPortfolio): HoldingsValueMap {
@@ -26,6 +26,10 @@ export function joinedHoldingsMap(portfolio: JoinedPortfolio): HoldingsValueMap 
  */
 export function valueSetSignature(holdings: HoldingsValueMap | null | undefined, sources: SnapshotSources | null | undefined): string | null {
   if (!holdings || !sources || !VALUE_SOURCE_KEYS.every((key) => ["live", "partial", "unavailable"].includes(sources[key]?.status))) return null;
+  // The combined ID does not identify which RPCs responded. Two partial native
+  // inventories can hide different missing chains, including in old snapshots.
+  // Refuse both comparisons unless the complete native inventory was observed.
+  if (Object.hasOwn(holdings, "native:eth") && sources.walletNative.status !== "live") return null;
   return JSON.stringify({ holdings: Object.entries(holdings).sort(([a], [b]) => a.localeCompare(b)).map(([id, value]) => [id, typeof value === "number" && Number.isFinite(value) && value >= 0]),
     sources: Object.entries(sources).sort(([a], [b]) => a.localeCompare(b)).map(([key, source]) => [key, source.status]) });
 }

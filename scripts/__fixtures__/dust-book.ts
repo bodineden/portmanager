@@ -55,8 +55,33 @@ export function dustBook(scenario: string) {
       [`token:1:${TOKEN}`]: evidence(1, TOKEN, "1000000000000000000", 18),
     },
   };
-  if (scenario.startsWith("combined-solana")) {
-    const small = scenario === "combined-solana-dust";
+  if (scenario === "four-class-exact-one") {
+    inputs.t212Summary = live({ currency: "USD", totalValue: 1, cashAvailable: 0, investmentsCurrentValue: 1 });
+    inputs.t212Positions.data = inputs.t212Positions.data!.slice(0, 1);
+    inputs.nfts.data = inputs.nfts.data!.slice(0, 1);
+    inputs.walletTokens!.data = inputs.walletTokens!.data!.slice(0, 1);
+    inputs.manualHoldings = live([]);
+    inputs.walletNative = live([[1, "Ethereum"], [8453, "Base"], [42161, "Arbitrum One"], [4663, "Robinhood Chain"]].map(([chainId, chainName]) => ({
+      chainId: Number(chainId), chainName: String(chainName), symbol: "ETH", amount: 0.00025, amountRaw: "250000000000000",
+    })));
+    inputs.manualBasis = Object.fromEntries([1, 8453, 42161, 4663].map((chainId) => [`native:${chainId}:native`,
+      { costUsd: 0.1, asOf: "2026-09-01", note: "Synthetic quarter-dollar ETH constituent basis" }]));
+  } else if (scenario === "dynamic-solana") {
+    inputs.t212Summary = live({ currency: "USD", totalValue: 0, cashAvailable: 0, investmentsCurrentValue: 0 });
+    inputs.t212Positions = live([]);
+    inputs.nfts = live([]);
+    inputs.walletNative = live([]);
+    inputs.walletTokens = live([]);
+    inputs.manualHoldings = live([]);
+    inputs.solana = live({
+      native: [{ chainId: "solana", chainName: "Solana", symbol: "SOL", amount: 0.25, amountRaw: "250000000", priceUsd: 100 }],
+      tokens: [
+        { contract: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", amount: 2, amountRaw: "2000000", priceUsd: 1 },
+        { contract: "EpjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", amount: 0.5, amountRaw: "500000", priceUsd: 1 },
+      ].map((row, index) => ({ ...row, chainId: "solana", chainName: "Solana", symbol: `SPL${index}`, name: `Synthetic SPL ${index}`, decimals: 6 })),
+    });
+  } else if (scenario.startsWith("combined-solana")) {
+    const small = scenario.startsWith("combined-solana-dust");
     const chains = [[1, "Ethereum"], [8453, "Base"], [42161, "Arbitrum One"], [4663, "Robinhood Chain"]] as const;
     inputs.t212Summary = live({ currency: "USD", totalValue: 0, cashAvailable: 0, investmentsCurrentValue: 0 });
     inputs.t212Positions = live([]);
@@ -71,7 +96,8 @@ export function dustBook(scenario: string) {
     const manualBasis = Object.fromEntries(chains.map(([chainId], index) => [
       `native:${chainId}:native`, { costUsd: small ? 0.1 : (index + 1) * 10, asOf: "2026-09-01", note: "Synthetic per-chain fixture basis" },
     ]));
-    if (scenario === "combined-solana-missing") delete manualBasis["native:4663:native"];
+    if (scenario === "combined-solana-missing" || scenario === "combined-solana-dust-missing") delete manualBasis["native:4663:native"];
+    if (scenario === "combined-solana-dust-invalid") manualBasis["native:4663:native"].costUsd = -1;
     manualBasis["native:solana:native"] = { costUsd: 4.705788, asOf: "2026-09-13", note: "Synthetic browser basis using the desk's pinned SOL amount" };
     inputs.manualBasis = manualBasis;
     inputs.solana = scenario === "combined-solana-unavailable" ? unavailable() : live({

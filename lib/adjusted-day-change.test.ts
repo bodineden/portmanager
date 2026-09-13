@@ -176,6 +176,51 @@ describe("adjusted adjacent-day book value change", () => {
     expect(before.sources).toBeNull();
     expect(dailyChangeDetails([after, before], AS_OF)).toEqual({ change: null, reason: "source unavailable" });
   });
+  const nativeBook = (asOf: string, missingChain?: number, price = 1000) => buildJoinedPortfolio({
+    solana: live({ native: [], tokens: [] }),
+    t212Summary: live({ currency: "USD", cashAvailable: 0, totalValue: 0, investmentsCurrentValue: 0 }),
+    t212Positions: live([]), nfts: live([]), walletTokens: live([]),
+    walletNative: { data: [1, 8453, 42161, 4663].map((chainId, index) => ({
+      chainId, chainName: String(chainId), symbol: "ETH", amount: 2 ** index,
+      amountRaw: (BigInt(2 ** index) * BigInt("1000000000000000000")).toString(),
+    })).filter((row) => row.chainId !== missingChain),
+    state: { status: missingChain === undefined ? "live" : "partial", asOf, message: "fixture RPC inventory" } },
+    fiatFx: live({ usdToThb: 36, gbpToThb: 45, eurToThb: 40, asOf }), ethPrice: live(price),
+    capitalEvents: live([{ occurredAt: "2026-09-01T00:00:00Z", kind: "contribution", amountThb: 36000 }]), manualHoldings: live([]),
+  }, asOf);
+  it("L2: refuses the exact Base-outage $13000 to Arbitrum-outage $11000 false loss", async () => {
+    const beforeBook = nativeBook("2026-09-10T23:59:59Z", 8453);
+    const afterBook = nativeBook(AS_OF, 42161);
+    expect(joinedHoldingsMap(beforeBook)).toEqual({ "native:eth": 13000 });
+    expect(joinedHoldingsMap(afterBook)).toEqual({ "native:eth": 11000 });
+    expect(beforeBook.sources.walletNative.status).toBe("partial");
+    expect(afterBook.sources.walletNative.status).toBe("partial");
+    const before = await recordedBook(beforeBook);
+    const after = await recordedBook(afterBook);
+    expect(before.recordedSignature).toBeNull();
+    expect(after.recordedSignature).toBeNull();
+    expect(after.row.totalValueUsd! - before.row.totalValueUsd!).toBe(-2000);
+    expect(dailyChangeDetails([after.row, before.row], AS_OF)).toEqual({ change: null, reason: "value-set evidence unavailable" });
+  });
+  it("L2: compares an unchanged complete combined basket across adjacent days and price changes", async () => {
+    const before = await recordedBook(nativeBook("2026-09-10T23:59:59Z"));
+    const after = await recordedBook(nativeBook(AS_OF, undefined, 1100));
+    expect(before.recordedSignature).not.toBeNull();
+    expect(after.recordedSignature).toBe(before.recordedSignature);
+    expect(dailyChangeDetails([after.row, before.row], AS_OF)).toEqual({
+      change: { usd: 1500, thb: 54000, pct: 10, date: "2026-09-11", previousDate: "2026-09-10" }, reason: null,
+    });
+  });
+  it("L2: refuses legacy partial combined evidence and resumes with two complete observations", () => {
+    const before = snapshot("2026-09-10", 468000, 0, 36);
+    before.holdings = { "native:eth": 13000 };
+    before.sources = { ...before.sources!, walletNative: { status: "partial", asOf: null, message: "legacy partial RPC" } };
+    const after = snapshot("2026-09-11", 540000, 0, 36);
+    after.holdings = { "native:eth": 15000 };
+    expect(dailyChangeDetails([after, before], AS_OF)).toEqual({ change: null, reason: "value-set evidence unavailable" });
+    expect(dailyChangeDetails([{ ...after, date: "2026-09-12" }, after], "2026-09-12T00:00:00Z"))
+      .toMatchObject({ change: { usd: 0, thb: 0 }, reason: null });
+  });
 });
 describe("compact snapshot holdings and book columns", () => {
   const book = () => buildJoinedPortfolio({

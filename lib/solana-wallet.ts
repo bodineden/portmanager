@@ -1,4 +1,5 @@
 import type { LiveResult, NormalizedWalletTokenBalance } from "./live-data";
+import { isSolanaAddress } from "./solana-address";
 
 export const DEFAULT_SOL_WALLET = "3RV96nnpc3yvhGhH5my2fJLjFAQraVAiEfojbmHnaSeq";
 const SOL_MINT = "So11111111111111111111111111111111111111112";
@@ -7,7 +8,6 @@ const TOKEN_PROGRAMS = [
   "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
 ] as const;
 const RPC_ENDPOINTS = ["https://api.mainnet-beta.solana.com", "https://api.mainnet.solana.com"];
-const ADDRESS_PATTERN = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 const U64_MAX = BigInt("18446744073709551615");
 const RPC_TIMEOUT_MS = 8_000;
 
@@ -45,8 +45,7 @@ function object(value: unknown): Record<string, unknown> | null {
 }
 
 function inventoryRow(mint: string, amountRaw: string, decimals: number): SolanaPriceInventory {
-  // Keep base58 case in RPC and provider identifiers. Only the joined book's
-  // persisted basis keys use the required lowercase-mint vocabulary.
+  // Base58 case is significant in RPC, pricing identifiers and persisted keys.
   const digits = amountRaw.padStart(decimals + 1, "0");
   const amount = Number(decimals === 0 ? digits : `${digits.slice(0, -decimals)}.${digits.slice(-decimals)}`);
   if (!Number.isFinite(amount) || amount < 0) throw new Error("Invalid token quantity.");
@@ -66,10 +65,41 @@ function parseBalance(value: unknown): string {
   return String(value);
 }
 
-function parseTokenAccounts(value: unknown, wallet: string, program: string): SolanaPriceInventory[] {
-  if (!Array.isArray(value)) throw new Error("Invalid SPL inventory.");
+type SolanaTokenAccount = {
+  pubkey: string;
+  program: string;
+  mint: string;
+  amountRaw: string;
+  decimals: number;
+};
+
+function aggregateTokenAccounts(accounts: SolanaTokenAccount[]): SolanaPriceInventory[] {
   const rows = new Map<string, SolanaPriceInventory>();
-  const accounts = new Set<string>();
+  const seenAccounts = new Set<string>();
+  const mintPrograms = new Map<string, string>();
+  const mintDecimals = new Map<string, number>([[SOL_MINT, 9]]);
+  for (const account of accounts) {
+    if (seenAccounts.has(account.pubkey)) throw new Error("Duplicate SPL token account.");
+    seenAccounts.add(account.pubkey);
+    const owner = mintPrograms.get(account.mint);
+    if (owner !== undefined && owner !== account.program) throw new Error("Conflicting SPL mint ownership.");
+    mintPrograms.set(account.mint, account.program);
+    const decimals = mintDecimals.get(account.mint);
+    if (decimals !== undefined && decimals !== account.decimals) throw new Error("Inconsistent SPL mint decimals.");
+    mintDecimals.set(account.mint, account.decimals);
+    // Zero accounts still carry account, program and mint-decimal evidence.
+    if (BigInt(account.amountRaw) === BigInt(0)) continue;
+    const existing = rows.get(account.mint);
+    const amountRaw = (BigInt(existing?.amountRaw ?? "0") + BigInt(account.amountRaw)).toString();
+    if (BigInt(amountRaw) > U64_MAX) throw new Error("Invalid SPL aggregate balance.");
+    rows.set(account.mint, inventoryRow(account.mint, amountRaw, account.decimals));
+  }
+  return [...rows.values()];
+}
+
+function parseTokenAccounts(value: unknown, wallet: string, program: string): SolanaTokenAccount[] {
+  if (!Array.isArray(value)) throw new Error("Invalid SPL inventory.");
+  const accounts: SolanaTokenAccount[] = [];
   for (const entry of value) {
     const row = object(entry);
     const account = object(row?.account);
@@ -79,24 +109,20 @@ function parseTokenAccounts(value: unknown, wallet: string, program: string): So
     const mint = info?.mint;
     const raw = tokenAmount?.amount;
     const decimals = tokenAmount?.decimals;
-    if (typeof row?.pubkey !== "string" || !ADDRESS_PATTERN.test(row.pubkey)
-      || accounts.has(row.pubkey) || account?.owner !== program
+    if (!isSolanaAddress(row?.pubkey) || account?.owner !== program
       || parsed?.type !== "account" || info?.owner !== wallet
-      || typeof mint !== "string" || !ADDRESS_PATTERN.test(mint)
+      || !isSolanaAddress(mint)
       || typeof raw !== "string" || !/^\d+$/.test(raw) || raw.length > 20
       || BigInt(raw) > U64_MAX
       || typeof decimals !== "number" || !Number.isInteger(decimals) || decimals < 0 || decimals > 255) {
       throw new Error("Malformed SPL token account.");
     }
-    accounts.add(row.pubkey);
-    if (BigInt(raw) === BigInt(0)) continue;
-    const existing = rows.get(mint);
-    if (existing && existing.decimals !== decimals) throw new Error("Inconsistent SPL mint decimals.");
-    const amountRaw = (BigInt(existing?.amountRaw ?? "0") + BigInt(raw)).toString();
-    if (BigInt(amountRaw) > U64_MAX) throw new Error("Invalid SPL aggregate balance.");
-    rows.set(mint, inventoryRow(mint, amountRaw, decimals));
+    accounts.push({ pubkey: row.pubkey, program, mint, amountRaw: raw, decimals });
   }
-  return [...rows.values()];
+  // Retain per-read validation so a malformed endpoint can still fail over.
+  // Return account evidence so validation can also span both token programs.
+  aggregateTokenAccounts(accounts);
+  return accounts;
 }
 
 async function readRpc<T>(method: string, params: unknown[], parse: (value: unknown) => T): Promise<{
@@ -129,7 +155,7 @@ export async function fetchSolanaSource(
   wallet: string,
   priceTokens: (inventory: SolanaPriceInventory[]) => Promise<NormalizedWalletTokenBalance[]>,
 ): Promise<LiveResult<SolanaWalletBalances>> {
-  if (!ADDRESS_PATTERN.test(wallet)) {
+  if (!isSolanaAddress(wallet)) {
     return { data: null, state: { status: "unavailable", asOf: null, message: "The configured Solana wallet address is invalid." } };
   }
   const readTokens = (program: string) => readRpc("getTokenAccountsByOwner", [
@@ -149,10 +175,29 @@ export async function fetchSolanaSource(
   // unavailable valuation is excluded from wallet subtotals.
   if (unavailableCount > 0) return { data: null, state: { status: "unavailable", asOf: null, message } };
 
+  let tokenInventory: SolanaPriceInventory[];
+  try {
+    tokenInventory = aggregateTokenAccounts([...(classic.data ?? []), ...(token2022.data ?? [])]);
+  } catch {
+    return { data: null, state: {
+      status: "unavailable", asOf: null,
+      message: "The combined SPL inventory has conflicting account, mint ownership or decimal evidence.",
+    } };
+  }
   const nativeInventory = balance.data === null ? null : {
     ...inventoryRow(SOL_MINT, balance.data, 9), symbol: "SOL", name: "Solana",
   };
-  const inventory = [...(nativeInventory ? [nativeInventory] : []), ...(classic.data ?? []), ...(token2022.data ?? [])];
+  const inventory = [...(nativeInventory ? [nativeInventory] : []), ...tokenInventory];
+  const pricingDecimals = new Map<string, number>();
+  for (const token of inventory) {
+    const decimals = pricingDecimals.get(token.contract);
+    if (decimals !== undefined && decimals !== token.decimals) {
+      return { data: null, state: {
+        status: "unavailable", asOf: null, message: "The Solana pricing inventory has conflicting decimals.",
+      } };
+    }
+    pricingDecimals.set(token.contract, token.decimals);
+  }
   // Native SOL uses the wrapped SOL mint in the existing wallet-token pricing
   // path. SPL token symbols/names remain honest mint labels when RPC supplies no metadata.
   let priced: NormalizedWalletTokenBalance[] = [];
@@ -160,7 +205,7 @@ export async function fetchSolanaSource(
   const prices = new Map(priced.filter((token) => token.chainId === "solana"
     && typeof token.priceUsd === "number" && Number.isFinite(token.priceUsd) && token.priceUsd > 0)
     .map((token) => [token.contract, token.priceUsd]));
-  const tokens = [...(classic.data ?? []), ...(token2022.data ?? [])].map((token): NormalizedWalletTokenBalance => ({
+  const tokens = tokenInventory.map((token): NormalizedWalletTokenBalance => ({
     chainId: token.chainId, chainName: token.chainName, symbol: token.symbol, name: token.name,
     contract: token.contract, amountRaw: token.amountRaw, decimals: token.decimals, amount: token.amount,
     priceUsd: prices.get(token.contract) ?? null,

@@ -16,6 +16,7 @@ import { recordPortfolioSnapshot } from "./pnl-history";
 import { shouldSuppressHolding } from "./dust-filter";
 import { combineNativeEth, deriveSolanaPnl } from "./wallet-pnl";
 import { DEFAULT_SOL_WALLET, fetchSolanaSource, type SolanaWalletBalances } from "./solana-wallet";
+import { holdingId } from "./holding-values";
 
 export type SourceStatus = "live" | "partial" | "unavailable";
 
@@ -1241,7 +1242,7 @@ export function buildJoinedPortfolio(inputs: JoinedPortfolioInputs, asOf: string
   });
 
   const evmNative = combineNativeEth(inputs.walletNative?.data ?? [], ethToUsd,
-    fiatFx?.usdToThb ?? null, asOf, inputs.basisEvidence, inputs.manualBasis);
+    fiatFx?.usdToThb ?? null, asOf, inputs.basisEvidence, inputs.manualBasis, walletNativeInputState.status === "live");
   const solanaNative = (inputs.solana?.data?.native ?? []).map((balance): WalletNativeHolding => {
     const valueUsd = balance.priceUsd === null ? null : balance.amount * balance.priceUsd;
     const valueThb = convertAmount(valueUsd, fiatFx?.usdToThb ?? null);
@@ -1255,7 +1256,7 @@ export function buildJoinedPortfolio(inputs: JoinedPortfolioInputs, asOf: string
     const priced = token.priceUsd !== null;
     const valueUsd = priced ? token.amount * (token.priceUsd as number) : null;
     const valueThb = convertAmount(valueUsd, fiatFx?.usdToThb ?? null);
-    const key = token.contract ? `token:${token.chainId}:${token.contract.toLowerCase()}` : "";
+    const key = token.contract ? holdingId.token(token.chainId, token.contract) : "";
     const pnl = token.chainId === "solana"
       ? deriveSolanaPnl(valueUsd, fiatFx?.usdToThb ?? null, inputs.manualBasis?.[key])
       : deriveOnchainPnl({ asOf, kind: "token", chainId: token.chainId, assetId: token.contract ?? "",

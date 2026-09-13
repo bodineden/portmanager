@@ -32,23 +32,30 @@ export function deriveSolanaPnl(value: number | null, rate: number | null, basis
 /** Combine only joined ETH assembly: exact per-chain quantities and basis keys stay intact. */
 export function combineNativeEth(balances: NormalizedWalletNativeBalance[], ethPrice: number | null,
   rate: number | null, asOf: string, evidence?: Readonly<Record<string, AcquisitionEvidence>>,
-  manual?: Readonly<Record<string, ManualBasis>>): WalletNativeHolding[] {
+  manual?: Readonly<Record<string, ManualBasis>>, inventoryComplete = true): WalletNativeHolding[] {
   if (!balances.length) return [];
   const chains = balances.map((row) => ({ chainId: row.chainId, chainName: row.chainName, amount: row.amount,
     valueUsd: row.amount === 0 ? 0 : ethPrice === null ? null : row.amount * ethPrice }));
   const valueUsd = chains.some((row) => row.valueUsd === null) ? null : chains.reduce((sum, row) => sum + row.valueUsd!, 0);
+  // A normalized exact raw zero proves that this observed chain contributes no basis.
+  // Keep it in the breakdown; missing raw quantities and failed reads never prove zero.
+  const contributors = balances.filter((balance) => !(balance.amount === 0
+    && typeof balance.amountRaw === "string" && /^0{1,100}$/.test(balance.amountRaw)));
   // Apply the engine's exclusion gate to the combined holding value. Chain quantities,
   // evidence and manual keys are unchanged; only basis results are used from each call.
   // This allows recorded sub-$1 constituents to contribute to a displayable ETH holding.
-  const bases = balances.map((balance) => deriveOnchainPnl({ asOf, kind: "native", chainId: balance.chainId,
+  const bases = contributors.map((balance) => deriveOnchainPnl({ asOf, kind: "native", chainId: balance.chainId,
     assetId: "native", quantityRaw: balance.amountRaw ?? "", decimals: 18, valueUsd }, rate,
   evidence?.[`native:${balance.chainId}:native`], manual?.[`native:${balance.chainId}:native`]));
   const missing = bases.find((basis) => basis.pnlEligibility !== "eligible" || basis.costBasisUsd === null || basis.basisStatus === "not-recorded");
   const status = bases.some((basis) => basis.basisStatus === "operator-recorded") ? "operator-recorded"
     : bases.some((basis) => basis.basisStatus === "arrival-priced") ? "arrival-priced"
       : bases.some((basis) => basis.basisStatus === "onchain-derived") ? "onchain-derived" : "airdrop-free";
-  const notes = bases.map((basis, index) => `${balances[index].chainName}: ${basis.basisNote}`).join("; ");
-  const pnl = missing ? { ...unknown(`Combined ETH requires basis for every chain. ${notes}`, missing.pnlEligibility),
+  const notes = bases.map((basis, index) => `${contributors[index].chainName}: ${basis.basisNote}`).join("; ");
+  const pnl = !inventoryComplete ? unknown("Combined ETH native balance inventory is incomplete; basis/P&L unavailable")
+    : contributors.some((balance) => balance.amount === 0) ? unknown("Combined ETH contains a zero amount without validated exact raw zero")
+    : bases.length === 0 ? unknown("Dust: validated zero ETH balance; basis derivation skipped", "dust")
+    : missing ? { ...unknown(`Combined ETH requires basis for every contributing chain. ${notes}`, missing.pnlEligibility),
     // A basis failure can never promote a combined holding to eligible.
     pnlEligibility: missing.pnlEligibility === "eligible" ? "not-recorded" as const : missing.pnlEligibility }
     : recorded(valueUsd!, bases.reduce((sum, basis) => sum + basis.costBasisUsd!, 0), rate, status, notes);
