@@ -82,6 +82,22 @@ beforeEach(() => { vi.stubGlobal("React", React); });
 afterEach(() => { vi.unstubAllGlobals(); });
 
 describe("rendered per-asset P&L honesty (offline fixtures)", () => {
+  it("shows priced stablecoins as value only and removes their P&L from current display totals", () => {
+    const book = fixture();
+    book.wallet.tokens.find(({ symbol }) => symbol === "PURCHASED")!.symbol = "USDC";
+    const before = JSON.stringify(book);
+    const html = markup(book);
+    const row = rowNamed(html, "USDC");
+    expect(cell(row, "value")).toContain("US$60.00");
+    for (const name of ["basis", "pnl"] as const) expect(cell(row, name)).not.toMatch(/[\d$฿%]/);
+    expect(row).toContain('data-cash-token="true"');
+    expect(row).not.toContain('data-pnl-eligibility=');
+    expect(text(row)).toContain("Stablecoin · value only · no P&L");
+    const footer = text(html.match(/<tfoot>([\s\S]*?)<\/tfoot>/)![1]);
+    expect(footer).toContain("2 of 5 holdings");
+    expect(footer).toContain("US$50.00");
+    expect(JSON.stringify(book)).toBe(before);
+  });
   it("omits an unpriceable NFT entirely while the other five keep the book valued", () => {
     const book = buildJoinedPortfolio({
     solana: live({ native: [], tokens: [] }),

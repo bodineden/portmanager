@@ -19,9 +19,10 @@ export async function auditCapitalFixtures(browser, url, viewport, check) {
       const hero = await page.locator(".pnl-hero-value").innerText();
       const expected = new Intl.NumberFormat("en-GB", { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 2 }).format((2000 + 9.62) * 44.6154 / 33.003871);
       assert(hero === expected, `full book hero ${hero} differs from ${expected}`);
-      assert(await page.locator(".pnl-class-values [data-value-class]").count() === 2, "allocation must contain exactly two grouped classes");
-      assert(await page.locator('[data-value-class="t212"] strong').innerText() === expected, "Stocks Port omits or double counts broker/manual cash");
-      assert(await page.locator('[data-value-class="cash"]').count() === 0, "cash must be included in Stocks Port, not a separate class");
+      assert(await page.locator(".pnl-class-values [data-value-class]").count() === 3, "allocation must contain exactly three grouped classes");
+      const money = (value) => new Intl.NumberFormat("en-GB", { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value);
+      assert(await page.locator('[data-value-class="t212"] strong').innerText() === money((9.62 - 0.28) * 44.6154 / 33.003871), "Stocks Port must exclude broker/manual cash");
+      assert(await page.locator('[data-value-class="cash"] strong').innerText() === money((2000 + 0.28) * 44.6154 / 33.003871), "Cash must include broker cash plus manual pot exactly once");
       assert(await page.locator('[data-value-class="crypto"] small').innerText() === "Crypto Port", "Crypto Port class missing");
       return "THB 120000 opening basis · full GBP 2000 pot included · book USD/THB/%";
     });

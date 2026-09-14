@@ -68,11 +68,24 @@ export async function startUiFixtureServer() {
           if (id === virtualData) return `
             import fixture from ${JSON.stringify(fixturePath)};
             export { formatCurrency, formatEth, formatThb, formatUsd } from ${JSON.stringify(path.join(projectRoot, "lib/live-data.ts"))};
+            import { cashBookInputs } from ${JSON.stringify(path.join(projectRoot, "lib/__fixtures__/cash-book.ts"))};
+            import { buildJoinedPortfolio, normalizeNftFloor } from ${JSON.stringify(path.join(projectRoot, "lib/live-data.ts"))};
             import { capitalBook } from ${JSON.stringify(path.join(projectRoot, "lib/__fixtures__/capital-book.ts"))};
             import { dustBook } from ${JSON.stringify(path.join(projectRoot, "scripts/__fixtures__/dust-book.ts"))};
             import { joinedHoldingsMap } from ${JSON.stringify(path.join(projectRoot, "lib/holding-values.ts"))};
             export async function getJoinedPortfolio() {
               const scenario = new URLSearchParams(location.search).get("scenario");
+              if (scenario?.startsWith("cash-class-")) {
+                const inputs = cashBookInputs();
+                // Source fixtures only; rendering and allocation are real production code.
+                if (scenario.includes("no-capital")) inputs.capitalEvents.data = [];
+                if (scenario.includes("no-value")) inputs.manualHoldings.state.status = "unavailable";
+                if (scenario.includes("usd-floor")) inputs.nfts.data.push({ collection: "prspct", collectionName: "prspct", tokenCount: 3,
+                  ...normalizeNftFloor({ floor_price: 0.4, floor_price_symbol: "USDG" }) });
+                inputs.manualBasis = { "token:solana:EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": { costUsd: 95.786161, asOf: "2026-09-14", note: "Synthetic stablecoin basis for display-exclusion control" },
+                  "token:4663:0x5fc5360d0400a0fd4f2af552add042d716f1d168": { costUsd: 1.475469, asOf: "2026-09-14", note: "Synthetic stablecoin basis for display-exclusion control" } };
+                return buildJoinedPortfolio(inputs, "2026-09-14T14:51:00Z");
+              }
               if (scenario?.startsWith("capital-")) return capitalBook(scenario !== "capital-empty");
               if (scenario?.startsWith("dust-")) {
                 const portfolio = dustBook(scenario.replace(/^dust-/, "").replace(/-(home|registry)$/, ""));
@@ -122,6 +135,7 @@ export async function startUiFixtureServer() {
             export async function recordPortfolioSnapshot() { throw new Error("Fixture must never record snapshots"); }
             export async function readPortfolioSnapshotHistory() {
               const scenario = new URLSearchParams(location.search).get("scenario");
+              if (scenario?.startsWith("cash-class-")) return { snapshots: [], available: true };
               if (scenario?.startsWith("capital-")) {
                 const portfolio = capitalBook(scenario !== "capital-empty");
                 const current = { date: "2026-09-11", totalValueUsd: portfolio.totals.grandTotalUsd,

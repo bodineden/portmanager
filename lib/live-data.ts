@@ -17,6 +17,7 @@ import { shouldSuppressHolding } from "./dust-filter";
 import { combineNativeEth, deriveSolanaPnl } from "./wallet-pnl";
 import { DEFAULT_SOL_WALLET, fetchSolanaSource, type SolanaWalletBalances } from "./solana-wallet";
 import { holdingId } from "./holding-values";
+import { isStablecoinSymbol } from "./cash-class";
 
 export type SourceStatus = "live" | "partial" | "unavailable";
 
@@ -57,6 +58,10 @@ export type NftFloorHolding = {
   collectionName: string;
   tokenCount: number;
   floorEth: number | null;
+  /** Explicit provider quote; optional only for pre-normalized ETH fixtures. */
+  floorAmount?: number | null;
+  floorSymbol?: string | null;
+  floorUsd?: number | null;
 };
 
 export type JoinedNftHolding = NftFloorHolding & HoldingPnl & {
@@ -601,6 +606,16 @@ function collectionNameFromSlug(slug: string): string {
     .join(" ") || slug;
 }
 
+/** OpenSea amounts have no meaning without an explicitly supported quote currency. */
+export function normalizeNftFloor(total: Record<string, unknown>) {
+  const symbol = typeof total.floor_price_symbol === "string" ? total.floor_price_symbol.toUpperCase() : null;
+  const eth = symbol === "ETH" || symbol === "WETH";
+  const stable = isStablecoinSymbol(symbol);
+  const amount = eth || stable ? nonNegativeNumber(total.floor_price) : null;
+  return { floorAmount: amount, floorSymbol: amount === null ? null : symbol,
+    floorEth: eth ? amount : null, floorUsd: stable ? amount : null };
+}
+
 async function fetchNftSource(): Promise<LiveResult<NftFloorHolding[]>> {
   const key = process.env.OPENSEA_API_KEY;
   if (!key) return unavailable("OpenSea API credentials are not configured.");
@@ -654,7 +669,7 @@ async function fetchNftSource(): Promise<LiveResult<NftFloorHolding[]>> {
         collection,
         collectionName: liveName?.trim() || collectionNameFromSlug(collection),
         tokenCount,
-        floorEth: nonNegativeNumber(total.floor_price),
+        ...normalizeNftFloor(total),
       };
     }),
   );
@@ -1231,8 +1246,12 @@ export function buildJoinedPortfolio(inputs: JoinedPortfolioInputs, asOf: string
   });
 
   const nfts = (inputs.nfts.data ?? []).map((holding): JoinedNftHolding => {
-    const valueEth = holding.floorEth === null ? null : holding.floorEth * holding.tokenCount;
-    const valueUsd = valueEth === 0 ? 0 : convertAmount(valueEth, ethToUsd);
+    const usdQuoted = isStablecoinSymbol(holding.floorSymbol) && holding.floorUsd != null;
+    // Preserve the exact ETH operation order; USD quotes must never pass through ETH multiplication.
+    const ethValue = holding.floorEth === null ? null : holding.floorEth * holding.tokenCount;
+    const valueUsd = usdQuoted ? convertAmount(holding.floorUsd!, holding.tokenCount)
+      : ethValue === 0 ? 0 : convertAmount(ethValue, ethToUsd);
+    const valueEth = usdQuoted ? valueUsd !== null && ethToUsd !== null && ethToUsd > 0 ? valueUsd / ethToUsd : null : ethValue;
     const valueThb = valueUsd === 0 ? 0 : convertAmount(valueUsd, fiatFx?.usdToThb ?? null);
     return { ...holding, valueEth, valueUsd, valueThb, ...deriveOnchainPnl({
       asOf, kind: "nft", chainId: 4663, assetId: holding.collection,
@@ -1270,8 +1289,11 @@ export function buildJoinedPortfolio(inputs: JoinedPortfolioInputs, asOf: string
 
   const t212PositionState = holdingSourceState(inputs.t212Positions.data === null ? null : investments,
     inputs.t212Positions.state, (row) => row.quantity, "Trading 212 position", fiatPricingAvailable);
+  // USD floors remain valued without ETH/USD; only their ETH mirror is unavailable.
+  const nftPricingAvailable = fiatPricingAvailable && (ethPricingAvailable
+    || nfts.some((row) => isStablecoinSymbol(row.floorSymbol) && row.valueUsd !== null));
   const nftState = holdingSourceState(inputs.nfts.data === null ? null : nfts,
-    inputs.nfts.state, (row) => row.tokenCount, "NFT collection", ethPricingAvailable && fiatPricingAvailable);
+    inputs.nfts.state, (row) => row.tokenCount, "NFT collection", nftPricingAvailable);
   const walletNativeState = holdingSourceState(inputs.walletNative?.data == null ? null : evmNative,
     walletNativeInputState, (row) => row.amount, "Native wallet", ethPricingAvailable && fiatPricingAvailable);
   const walletTokenState = holdingSourceState(inputs.walletTokens?.data == null ? null : evmTokens,

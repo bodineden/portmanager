@@ -16,7 +16,7 @@ let scenario = new URLSearchParams(location.search).get("scenario") ?? "recent";
 const root = createRoot(document.getElementById("root")!);
 
 async function mount() {
-  if (scenario.startsWith("dust-")) {
+  if (scenario.startsWith("dust-") || scenario.startsWith("cash-class-")) {
     root.render(scenario.endsWith("-registry") ? await AssetListPage() : await Home());
     return;
   }

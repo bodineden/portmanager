@@ -42,7 +42,7 @@ export default async function PortfolioPage() {
   const { snapshots, available: snapshotHistoryAvailable } = await readPortfolioSnapshotHistory();
   const mascot = deriveMascotState({ ...portfolio, snapshotHistoryAvailable }, new Date());
 
-  const [stocks, crypto] = valueAllocation(portfolio);
+  const [stocks, crypto] = valueAllocation(portfolio); // Cash remains in the existing total card.
   const liveDate = portfolio.asOf.slice(0, 10);
   const liveValueAvailable = portfolio.totals.grandTotalUsd !== null;
   const valueSourcesComplete = Object.entries(portfolio.sources).every(([key, source]) => key === "capital" || source.status === "live");
@@ -55,7 +55,7 @@ export default async function PortfolioPage() {
           <div className="page-title-group">
             <p className="eyebrow">READ-ONLY ANALYTICS / LIVE PORTFOLIO</p>
             <h1 className="page-title">Portfolio Value</h1>
-            <p className="page-subtitle">Live Stocks Port and Crypto Port value, with the recorded daily snapshots.</p>
+            <p className="page-subtitle">Live Stocks Port, Crypto Port and Cash value, with the recorded daily snapshots.</p>
           </div>
           <div className="header-tools">
             <span className={`header-status ${liveValueAvailable && valueSourcesComplete ? "" : "is-partial"}`}>
@@ -126,7 +126,7 @@ export default async function PortfolioPage() {
                       <span className="ledger-date">{shortDate(liveDate)}</span>
                       <small>{formatAsOf(portfolio.asOf)} UTC</small>
                     </td>
-                    <td><span className="coverage-primary">Stocks Port + Crypto Port</span><small>Current live snapshot</small></td>
+                    <td><span className="coverage-primary">Stocks Port + Crypto Port + Cash</span><small>Current live snapshot</small></td>
                     <td className="numeric value-cell">{formatUsd(portfolio.totals.grandTotalUsd)}<small>{formatThb(portfolio.totals.grandTotalThb)}</small></td>
                     <td className="numeric muted">Not compared</td>
                   </tr>

@@ -1,5 +1,6 @@
-import type { FiatRates, JoinedPortfolio } from "./live-data";
-import type { BasisStatus, PnlClass, PnlCoverage, PnlEligibility } from "./pnl";
+import type { FiatRates, JoinedPortfolio, NftFloorHolding } from "./live-data";
+import { isCashToken } from "./cash-class";
+import { aggregatePnl, type BasisStatus, type PnlClass, type PnlCoverage, type PnlEligibility } from "./pnl";
 import type { PortfolioSnapshot } from "./pnl-history";
 import { valueSetSignature, VALUE_SOURCE_KEYS } from "./holding-values";
 
@@ -47,6 +48,13 @@ export function formatHoldingQuantity(value: number | null | undefined, maxDigit
   if (!finite(value)) return "—";
   const digits = Number.isInteger(maxDigits) && maxDigits >= 0 && maxDigits <= 20 ? maxDigits : 4;
   return value.toLocaleString("en-US", { maximumFractionDigits: digits });
+}
+
+export function formatNftFloor(holding: NftFloorHolding): string {
+  const explicit = holding.floorSymbol !== undefined || holding.floorAmount !== undefined;
+  const amount = explicit ? holding.floorAmount : holding.floorEth;
+  const symbol = explicit ? holding.floorSymbol : "ETH";
+  return finite(amount) && symbol ? `${formatHoldingQuantity(amount, 8)} ${symbol}` : "—";
 }
 
 export function formatSnapshotAsOf(value: string | null | undefined): string {
@@ -108,7 +116,7 @@ export function snapshotFiatUsd(
 }
 
 export type ValueAllocation = {
-  key: PnlClass | "crypto";
+  key: PnlClass | "crypto" | "cash";
   label: string;
   valueUsd: number | null;
   valueThb: number | null;
@@ -132,30 +140,54 @@ export function valueAllocation(portfolio: JoinedPortfolio): ValueAllocation[] {
   // Account remainder, not a second sum of positions: account total is authoritative.
   const stocksUsd = finite(accountUsd) && finite(brokerCashUsd) && accountUsd >= brokerCashUsd ? accountUsd - brokerCashUsd : null;
   const stocksThb = finite(totals.t212Thb) && finite(brokerCashThb) && totals.t212Thb >= brokerCashThb ? totals.t212Thb - brokerCashThb : null;
-  const cashUsd = completeValueSum([brokerCashUsd, totals.manualUsd]);
-  const cashThb = completeValueSum([brokerCashThb, totals.manualThb]);
+  const stablecoins = portfolio.wallet.tokens.filter(isCashToken);
+  const stableUsd = completeValueSum(stablecoins.map((row) => row.valueUsd));
+  const stableThb = completeValueSum(stablecoins.map((row) => row.valueThb));
+  // Subtract from the full token subtotal: priced dust and unknown inventory stay intact.
+  const nonStableUsd = completeValueSum([totals.walletTokensUsd, finite(stableUsd) ? -stableUsd : null]);
+  const nonStableThb = completeValueSum([totals.walletTokensThb, finite(stableThb) ? -stableThb : null]);
+  const cashUsd = completeValueSum([brokerCashUsd, totals.manualUsd, stableUsd]);
+  const cashThb = completeValueSum([brokerCashThb, totals.manualThb, stableThb]);
   const values: Omit<ValueAllocation, "sharePct">[] = [
     { key: "t212", label: "Stocks Port",
-      valueUsd: completeValueSum([stocksUsd, cashUsd]), valueThb: completeValueSum([stocksThb, cashThb]) },
+      valueUsd: stocksUsd, valueThb: stocksThb },
     { key: "crypto", label: "Crypto Port",
-      valueUsd: completeValueSum([totals.nftsUsd, totals.walletNativeUsd, totals.walletTokensUsd]),
-      valueThb: completeValueSum([totals.nftsThb, totals.walletNativeThb, totals.walletTokensThb]) },
+      valueUsd: completeValueSum([totals.nftsUsd, totals.walletNativeUsd, nonStableUsd]),
+      valueThb: completeValueSum([totals.nftsThb, totals.walletNativeThb, nonStableThb]) },
+    { key: "cash", label: "Cash", valueUsd: cashUsd, valueThb: cashThb },
   ];
   // Every constituent class stays individually fail-closed: a negative subtotal must
   // never be masked by a positive sibling before shares are derived.
-  const complete = [stocksUsd, cashUsd, totals.nftsUsd, totals.walletNativeUsd, totals.walletTokensUsd]
+  const complete = [stocksUsd, brokerCashUsd, totals.manualUsd, stableUsd, nonStableUsd, cashUsd, totals.nftsUsd, totals.walletNativeUsd, totals.walletTokensUsd, ...stablecoins.map((row) => row.valueUsd)]
     .every((value) => finite(value) && value >= 0)
     && values.every(({ valueUsd }) => finite(valueUsd) && valueUsd >= 0);
   const sum = complete ? values.reduce((total, { valueUsd }) => total + valueUsd!, 0) : null;
   return values.map((value) => ({ ...value, sharePct: finite(sum) && sum > 0 ? value.valueUsd! / sum * 100 : null }));
 }
 
+/** Current display only: historical holdings, recorded totals and book P&L stay untouched. */
+export function marketPnl(portfolio: JoinedPortfolio) {
+  if (!portfolio.wallet.tokens.some(isCashToken)) return portfolio.totals;
+  const sourceComplete = (key: PnlClass) => portfolio.totals.pnlByClass[key].pnlCoverage.sourcesComplete;
+  return aggregatePnl({
+    t212: { holdings: portfolio.t212.investments, sourceComplete: sourceComplete("t212") },
+    nfts: { holdings: portfolio.nfts, sourceComplete: sourceComplete("nfts") },
+    walletNative: { holdings: portfolio.wallet.native, sourceComplete: sourceComplete("walletNative") },
+    walletTokens: { holdings: portfolio.wallet.tokens.filter((row) => !isCashToken(row)), sourceComplete: sourceComplete("walletTokens") },
+  }, portfolio.fx.usdToThb, portfolio.totals.pnlCoverage.sourcesComplete);
+}
+
 /** Display grouping only: recorded-subset sums are independent of value completeness. */
 export function allocationPnl(portfolio: JoinedPortfolio, key: ValueAllocation["key"]) {
   // Cash contributes value only: no recorded basis, P&L or eligible holdings.
-  if (key !== "crypto") return portfolio.totals.pnlByClass[key];
+  if (key === "cash") return { pnlUsd: null, costBasisUsd: null, pnlCoverage: {
+    totalHoldings: 0, eligible: 0, notRecorded: 0, unreconciled: 0, dust: 0, unpriced: 0,
+    status: "complete" as const, sourcesComplete: true,
+  } };
+  const totals = marketPnl(portfolio);
+  if (key !== "crypto") return totals.pnlByClass[key];
   const classes = ["nfts", "walletNative", "walletTokens"] as const;
-  const summaries = classes.map((name) => portfolio.totals.pnlByClass[name]);
+  const summaries = classes.map((name) => totals.pnlByClass[name]);
   const recordedSum = (field: "pnlUsd" | "costBasisUsd") => {
     const known = summaries.map((summary) => summary[field]).filter(finite);
     return known.length ? completeValueSum(known) : null;

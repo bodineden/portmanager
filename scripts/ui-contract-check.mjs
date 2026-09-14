@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { chromium } from "playwright";
 import { browserFixture, recordedSnapshotFixtures, startUiFixtureServer } from "./ui-fixture-server.mjs";
 import { auditCapitalFixtures } from "./capital-ui-checks.mjs";
+import { auditCashClassFixtures } from "./cash-class-ui-checks.mjs";
 
 const baseUrl = process.env.UI_BASE_URL ?? "http://127.0.0.1:8125";
 const configuredBrowser = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH;
@@ -426,7 +427,7 @@ async function assertRecordedPnlEvidence(page, portfolio) {
         `${thbKey}/percentage footer differs from independent recorded subset`);
     }
   }
-  if (counts.unreconciled) requireCondition((await assets.locator(".pnl-panel-note").innerText()).includes("Unreconciled holdings are excluded from P&L totals."),
+  if (counts.unreconciled) requireCondition((await assets.locator(".pnl-panel-note").innerText()).includes("only holdings with a recorded, matching purchase cost count"),
     "unreconciled exclusion explanation disappeared");
   return { ...counts, state: counts.eligible === 0 ? "none" : coverage.split(" ")[0] };
 }
@@ -463,7 +464,7 @@ async function checkPnlContract(page) {
     if (dailyState === "unavailable") {
       const metric = compactText((await daily.locator(".pnl-metric-line").textContent()) ?? "");
       requireCondition(metric.includes("—") && !/\d/.test(metric), "unavailable daily change invents a value or percentage");
-      requireCondition(/Awaiting comparable snapshots/i.test((await daily.textContent()) ?? ""), "unavailable daily change lacks its history explanation");
+      requireCondition(/Waiting for two comparable days/i.test((await daily.textContent()) ?? ""), "unavailable daily change lacks its history explanation");
     }
     return `P&L state: ${state}`;
   });
@@ -568,14 +569,14 @@ async function checkPnlContract(page) {
     const allocation = page.locator(".pnl-allocation");
     const text = compactText((await allocation.textContent()) ?? "");
     requireCondition(/Allocation by class/i.test(text), "value allocation title is missing");
-    for (const label of ["Stocks Port", "Crypto Port"]) {
+    for (const label of ["Stocks Port", "Crypto Port", "Cash"]) {
       requireCondition(new RegExp(label, "i").test(text), `allocation class ${label} is missing`);
     }
     requireCondition(/value|USD/i.test(text), "allocation is not identified as current value");
     const labels = await allocation.locator(".pnl-allocation-item > div:first-child > span").allTextContents();
-    requireCondition(JSON.stringify(labels.map(compactText)) === JSON.stringify(["Stocks Port", "Crypto Port"]), "allocation must contain exactly the two grouped classes in order");
+    requireCondition(JSON.stringify(labels.map(compactText)) === JSON.stringify(["Stocks Port", "Crypto Port", "Cash"]), "allocation must contain exactly the three grouped classes in order");
     const keys = await page.locator("[data-value-class]").evaluateAll((rows) => rows.map((row) => row.dataset.valueClass));
-    requireCondition(JSON.stringify(keys) === JSON.stringify(["t212", "crypto"]), "value-class keys must be exactly t212/crypto");
+    requireCondition(JSON.stringify(keys) === JSON.stringify(["t212", "crypto", "cash"]), "value-class keys must be exactly t212/crypto/cash");
     return JSON.stringify({ keys, allocation: await allocation.locator(".pnl-allocation-item").allTextContents() });
   });
 
@@ -645,7 +646,7 @@ async function checkHomeContract(page) {
     requireCondition(await hero.count() === 1, "value hero is missing or duplicated");
     const text = compactText((await hero.textContent()) ?? "");
     requireCondition(/Portfolio value/i.test(text), "portfolio value label is missing");
-    requireCondition(/live joined portfolio/i.test(text), "live joined portfolio label is missing");
+    requireCondition(/your money today/i.test(text), "plain-language money label is missing");
     const primary = hero.locator('[data-value-currency="USD"]');
     requireCondition(await primary.count() === 1, "value hero lacks its primary USD value");
     requireCondition(/THB/i.test((await hero.locator(".pnl-secondary").textContent()) ?? ""), "value hero lacks its secondary THB value");
@@ -654,7 +655,7 @@ async function checkHomeContract(page) {
       return Boolean(secondary && (element.compareDocumentPosition(secondary) & Node.DOCUMENT_POSITION_FOLLOWING));
     });
     requireCondition(usdFirst, "THB precedes USD in the value hero");
-    for (const label of ["Stocks Port", "Crypto Port"]) {
+    for (const label of ["Stocks Port", "Crypto Port", "Cash"]) {
       requireCondition(new RegExp(label, "i").test(text), `class mini-value ${label} is missing`);
     }
     const strip = page.locator(".pnl-metric-strip");
@@ -769,7 +770,7 @@ async function checkAssetWalletContract(page) {
     const rowsBefore = await panel.locator("tr[data-wallet-kind]").allTextContents();
     const totalsBefore = await panel.locator("tfoot").allTextContents();
     const summary = compactText((await page.locator(".asset-registry-kpi").last().textContent()) ?? "");
-    const match = summary.match(/([\d,]+)\s+Crypto Port assets?\b/i);
+    const match = summary.match(/([\d,]+)\s+wallet and NFT assets?\b/i);
     const nftCount = await page.locator(".asset-nft-table tbody tr").count();
     requireCondition(match && parseGroupedCount(match[1], "registry crypto count") === rowCount + nftCount, "registry crypto summary differs from displayed NFT and wallet rows");
     requireCondition(compactText((await panel.locator(".asset-wallet-count .panel-count").textContent()) ?? "") === `${rowCount} ASSETS`, "registry header differs from displayed rows");
@@ -1518,7 +1519,7 @@ async function checkPortfolioContract(page, independentPortfolio) {
     const width = page.viewportSize().width;
     requireCondition(columns === (width > 1220 ? 3 : width > 700 ? 2 : 1), `unexpected ${columns}-column KPI grid at ${width}px`);
     requireCondition(await page.locator(".portfolio-table tbody tr").count() === 1 && await page.locator(".live-ledger-row .series-badge.is-live").count() === 1, "register is not exactly one live row");
-    requireCondition(compactText(await page.locator(".page-subtitle").innerText()) === "Live Stocks Port and Crypto Port value, with the recorded daily snapshots.", "portfolio subtitle changed");
+    requireCondition(compactText(await page.locator(".page-subtitle").innerText()) === "Live Stocks Port, Crypto Port and Cash value, with the recorded daily snapshots.", "portfolio subtitle changed");
     for (const [selector, copy] of [[".eyebrow", "VALUATION LEDGER"], [".panel-subtitle", "Live values are USD first."], [".panel-count", "1 LIVE"]]) {
       requireCondition(compactText(await page.locator(`.portfolio-ledger ${selector}`).innerText()) === copy, `register ${selector} changed`);
     }
@@ -2200,7 +2201,7 @@ async function auditDustFixtures(browser, fixtureUrl, viewport) {
             requireCondition(compactText(await nfts.locator(".panel-count").innerText()) === `${collections} COLLECTIONS · ${tokens} TOKENS`, "NFT header counts suppressed collections/tokens");
             const summary = page.locator(".asset-registry-kpi").last();
             requireCondition(compactText(await summary.locator("strong").innerText()) === String(positions + collections + walletCount), "registry grand entry count differs from DOM");
-            requireCondition(compactText(await summary.locator("small").innerText()) === `${positions} Stocks Port · ${collections + walletCount} Crypto Port assets`, "registry class summary differs from displayed rows");
+            requireCondition(compactText(await summary.locator("small").innerText()) === `${positions} Stocks Port · ${collections + walletCount} wallet and NFT assets`, "registry class summary differs from displayed rows");
           }
           if (walletCount === 0) {
             requireCondition(compactText(await wallet.locator(surface === "home" ? ".home-empty strong" : ".asset-empty-state strong").innerText()) === "No wallet holdings to display in this snapshot.", "neutral wallet empty copy changed");
@@ -2232,7 +2233,7 @@ async function auditDustFixtures(browser, fixtureUrl, viewport) {
           requireCondition(compactText(await heroThb.innerText()) === `${expectedThb(expectedTotalThb)}${surface === "home" ? " THB" : ""}`,
             "THB hero omits suppressed holdings or loses outage null");
           if (surface === "home") {
-            if (unavailable) requireCondition((await page.locator(".pnl-value-hero").innerText()).includes("Value unavailable"), "outage lost the unavailable hero");
+            if (unavailable) requireCondition((await page.locator(".pnl-value-hero").innerText()).includes("Live values unavailable"), "outage lost the unavailable hero");
             const expectedCash = ["empty", "wholesale", "eth-outage", "fiat-outage"].includes(scenario) ? [] : [0.25, 0];
             const cash = await page.locator('[data-manual-cash="true"] [data-pnl-cell="value"]').evaluateAll((cells) => cells.map((cell) => cell.firstChild?.textContent ?? ""));
             requireCondition(JSON.stringify(cash.map(parseDisplayedUsd)) === JSON.stringify(expectedCash), "manual quarter/zero cash pot exemption changed");
@@ -2268,11 +2269,11 @@ async function auditDustFixtures(browser, fixtureUrl, viewport) {
             requireCondition(portfolio.sources.nfts.status === (scenario === "inventory" ? "partial" : "live"), "NFT status conflates incomplete inventory and missing individual price");
             requireCondition(portfolio.totals.pnlCoverage.status === (scenario === "inventory" ? "partial" : "complete"), "suppression caused partial P&L or inventory incompleteness disappeared");
             if (surface === "home") {
-              for (const [key, value] of [["t212", 1.999 + 0.25], ["crypto", 1.999 * 3]]) {
+              for (const [key, value] of [["t212", 1.999], ["crypto", 1.999 * 3], ["cash", 0.25]]) {
                 requireCondition(compactText(await page.locator(`[data-value-class="${key}"] strong`).innerText()) === expectedUsd(value), `${key} class value differs from full joined holdings`);
               }
               const allocationValues = await page.locator(".pnl-allocation-item > div:first-child > strong").allTextContents();
-              requireCondition(JSON.stringify(allocationValues.map(compactText)) === JSON.stringify([1.999 + 0.25, 1.999 * 3].map(expectedUsd)), "allocation values differ from full joined class sums");
+              requireCondition(JSON.stringify(allocationValues.map(compactText)) === JSON.stringify([1.999, 1.999 * 3, 0.25].map(expectedUsd)), "allocation values differ from full joined class sums");
             }
             return "$8.246 / ฿296.856 hero/book = $5.249 displayed + three $0.999 holdings ($2.997 < $3); all 12 joined recording identities retained, including combined ETH";
           } else if (scenario === "empty") {
@@ -2319,13 +2320,13 @@ async function auditDustFixtures(browser, fixtureUrl, viewport) {
             requireCondition(compactText(await heroUsd.innerText()) === "—", "conversion outage renders a zero USD book total");
             requireCondition(compactText(await heroThb.innerText()) === (surface === "home" ? "— THB" : "—"), "conversion outage renders a zero THB book total");
             if (surface === "home") {
-              requireCondition(compactText(await page.locator(".pnl-hero-asof .pnl-status").innerText()) === "Value unavailable", "conversion outage is rendered as a finite partial joined value");
+              requireCondition(compactText(await page.locator(".pnl-hero-asof .pnl-status").innerText()) === "Live values unavailable", "conversion outage is rendered as a finite partial joined value");
               for (const key of [...unavailableClasses, ethOutage ? "ethPrice" : "fiatFx"]) {
                 requireCondition(compactText(await page.locator(`[data-source-key="${key}"] .live-source-badge`).innerText()) === "unavailable", `${key} failed dependency is missing its unavailable source badge`);
               }
-              for (const key of ethOutage ? ["crypto"] : ["t212", "crypto"]) {
+              for (const key of ethOutage ? ["crypto"] : ["t212", "crypto", "cash"]) {
                 const valueClass = page.locator(`[data-value-class="${key}"]`);
-                requireCondition(compactText(await valueClass.locator(":scope > span:last-child").innerText()) === "—", `${key} renders a zero THB class subtotal`);
+                requireCondition(compactText(await valueClass.locator(".pnl-class-secondary").innerText()) === "—", `${key} renders a zero THB class subtotal`);
                 if (ethOutage) requireCondition(compactText(await valueClass.locator("strong").innerText()) === "—", `${key} renders a zero USD class subtotal`);
               }
             } else {
@@ -2937,9 +2938,9 @@ async function auditMascotInteractions(browser, viewport) {
     });
     await check(`${prefix} DOM resting occlusion leaves home class legend visible and hittable`, async () => {
       await assertMascotResting(page);
-      requireCondition(await page.locator(".pnl-class-values [data-value-class]").count() === 2, "home class legend does not contain exactly Stocks Port and Crypto Port");
-      for (const key of ["t212", "crypto"]) requireCondition(await page.locator(`.pnl-class-values [data-value-class="${key}"]`).count() === 1, `missing or duplicate value class ${key}`);
-      return assertHomeMascotOcclusion(page, ".pnl-class-values [data-value-class] > small, .pnl-class-values [data-value-class] > strong, .pnl-class-values [data-value-class] > span:not(.pnl-class-dot)", "two-class legend labels and USD/THB values");
+      requireCondition(await page.locator(".pnl-class-values [data-value-class]").count() === 3, "home class legend does not contain exactly Stocks Port, Crypto Port and Cash");
+      for (const key of ["t212", "crypto", "cash"]) requireCondition(await page.locator(`.pnl-class-values [data-value-class="${key}"]`).count() === 1, `missing or duplicate value class ${key}`);
+      return assertHomeMascotOcclusion(page, ".pnl-class-values [data-value-class] > small, .pnl-class-values [data-value-class] > strong, .pnl-class-values [data-value-class] > span:not(.pnl-class-dot)", "three-class legend labels and USD/THB values");
     });
     await check(`${prefix} DOM WebGL 3D click expands the live viewer; panel stays expanded`, async () => {
       await page.locator("[data-mascot-toggle]").click();
@@ -3168,6 +3169,7 @@ try {
     if (started) {
       for (const viewport of viewports) {
         await auditCapitalFixtures(browser, fixtureServer.url, viewport, check);
+        await auditCashClassFixtures(browser, fixtureServer.url, viewport, check);
         await auditPopulatedFixtures(browser, fixtureServer.url, viewport);
         await auditCombinedSolanaFixtures(browser, fixtureServer.url, viewport);
         await auditRestoredBoundaryFixtures(browser, fixtureServer.url, viewport);

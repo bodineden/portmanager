@@ -34,6 +34,12 @@ export default async function Home() {
   const classes = valueAllocation(portfolio).map((item) => ({
     ...item, pnl: allocationPnl(portfolio, item.key),
   }));
+  const classSubtitles: Record<string, string> = {
+    t212: "Shares and ETFs on Trading 212", crypto: "NFTs and crypto in your wallet",
+    cash: "Broker cash, cash pot and stablecoins",
+  };
+  const canCompareCapital = portfolio.capital.available && portfolio.capital.contributedThb !== null
+    && Number.isFinite(portfolio.capital.contributedThb) && totals.grandTotalThb !== null && Number.isFinite(totals.grandTotalThb);
   const walletAssetCount = [...wallet.native, ...wallet.tokens].filter((row) => !shouldSuppressHolding(row)).length;
   const walletTokens = [...wallet.tokens].sort((left, right) => Number(right.priced) - Number(left.priced));
   const nativeRows = [...wallet.native].sort((left, right) => Number(right.valueUsd !== null) - Number(left.valueUsd !== null)).map((holding) => ({
@@ -61,40 +67,45 @@ export default async function Home() {
           <div className="page-title-group">
             <p className="eyebrow">YOUR PORTFOLIO / AT A GLANCE</p>
             <h1 className="page-title">Portfolio overview</h1>
-            <p className="page-subtitle">A clear view of value, recorded P&amp;L and the evidence behind it.</p>
+            <p className="page-subtitle">What you have, what it is worth and how it has changed.</p>
           </div>
           <div className="header-status"><span className="status-light" aria-hidden="true" />USD primary · THB secondary</div>
         </header>
         <div className="page-content home-content">
-          <section className="panel pnl-value-hero" aria-label="Joined live portfolio summary">
+          <section className="panel pnl-value-hero" aria-label="Live portfolio summary">
             <div className="pnl-hero-top">
               <div>
-                <p className="eyebrow">LIVE JOINED PORTFOLIO</p><h2>Portfolio value</h2>
+                <p className="eyebrow">YOUR MONEY TODAY</p><h2>Portfolio value</h2>
                 <strong className="pnl-hero-value" data-value-currency="USD">{formatUsd(totals.grandTotalUsd)}</strong>
                 <p className="pnl-secondary">{formatThb(totals.grandTotalThb)} <span>THB</span></p>
               </div>
               <div className="pnl-hero-asof">
-                <span className={`pnl-status ${!valueSourcesComplete ? "is-partial" : ""}`}>{totals.grandTotalUsd === null ? "Value unavailable" : !valueSourcesComplete ? "Partial joined value" : "Joined snapshot"}</span>
+                <span className={`pnl-status ${!valueSourcesComplete ? "is-partial" : ""}`}>{totals.grandTotalUsd === null ? "Live values unavailable" : !valueSourcesComplete ? "Some prices are missing" : "All prices live"}</span>
                 <small>As of {formatSnapshotAsOf(portfolio.asOf)}</small>
-                <p>{totals.grandTotalUsd === null ? "One or more sources are unavailable. Known class values remain visible below." : !valueSourcesComplete ? "Known value is shown; source coverage is incomplete. See source status below." : "Account cash, manual cash pot, securities, NFT floors and priced wallet balances."}</p>
+                <p>{totals.grandTotalUsd === null ? "Missing values show —; the values we know remain below." : !valueSourcesComplete ? "Known values only; check the price sources below." : "Stocks, crypto and cash at current prices."}</p>
               </div>
             </div>
             <div className="pnl-class-values">
               {classes.map((item) => <div key={item.key} data-value-class={item.key}>
                 <span className={`pnl-class-dot is-${item.key}`} aria-hidden="true" /><small>{item.label}</small>
-                <strong>{formatUsd(item.valueUsd)}</strong><span>{formatThb(item.valueThb)}</span>
+                <strong>{formatUsd(item.valueUsd)}</strong><span className="pnl-class-secondary">{formatThb(item.valueThb)}</span>
+                <span className="pnl-class-share">{item.sharePct === null ? "—" : `${item.sharePct.toFixed(1)}% of portfolio`}</span>
+                <p className="pnl-class-subtitle">{classSubtitles[item.key]}</p>
               </div>)}
             </div>
+            <p className="pnl-capital-comparison" data-capital-comparison={canCompareCapital ? "available" : "unavailable"}>{canCompareCapital
+              ? `You put in ${formatThb(portfolio.capital.contributedThb)}. The book is worth ${formatThb(totals.grandTotalThb)} today.`
+              : "Not enough live data to compare with what you put in."}</p>
             <div className="pnl-hero-foot"><span data-wallet-summary-count={walletAssetCount}>{walletAssetCount} wallet assets</span><span>Cash contributes to value only; it has no P&amp;L.</span></div>
           </section>
-          <section className="pnl-metric-strip" aria-label="P&L and coverage">
+          <section className="pnl-metric-strip" aria-label="Profit, loss and daily change">
             <BookPnlMetric portfolio={portfolio} />
             <article className="panel pnl-metric" data-daily-change={change ? "available" : "unavailable"}>
-              <p className="eyebrow">SNAPSHOT VALUE / DAY TO DAY</p><h2>Daily change</h2>
+              <p className="eyebrow">VALUE / DAY TO DAY</p><h2>Daily change</h2>
               <div className="pnl-metric-line"><strong className={dayDirection === "up" ? "positive is-up" : dayDirection === "down" ? "negative is-down" : dayDirection === "flat" ? "muted is-flat" : ""}>{dayDirection === "up" ? "↑ " : dayDirection === "down" ? "↓ " : dayDirection === "flat" ? "→ " : ""}{formatPnlMoney(change?.usd)}</strong><span>{formatPnlPercent(change?.pct)}</span></div>
               <small>{formatPnlMoney(change?.thb, "THB")} THB</small>
-              <p>{change ? `${change.previousDate} → ${change.date} · first daily observations.` : `Awaiting comparable snapshots — ${changeReason}.`}</p>
-              <p className="muted">Adjusted day change · deposits and withdrawals excluded. THB first, USD at snapshot FX; % uses the previous THB book value. Not investment P&amp;L.</p>
+              <p>{change ? `${change.previousDate} → ${change.date} · first daily observations.` : `Waiting for two comparable days — ${changeReason}.`}</p>
+              <p className="muted">Value change with deposits and withdrawals excluded, measured in baht against the previous day; not investment P&amp;L.</p>
             </article>
           </section>
           <div className="pnl-analysis-grid">
@@ -104,10 +115,11 @@ export default async function Home() {
               <div className="pnl-allocation-list">{classes.map((item) => <div className="pnl-allocation-item" key={item.key}>
                 <div><span><i className={`pnl-class-dot is-${item.key}`} />{item.label}</span><strong>{formatUsd(item.valueUsd)}</strong></div>
                 <div className="pnl-allocation-track"><span className={`is-${item.key}`} style={{ width: item.sharePct === null ? "0%" : `${item.sharePct}%` }} /></div>
-                <small>{item.sharePct === null ? "Share unavailable" : `${formatHoldingQuantity(item.sharePct, 1)}% of priced value`} · {formatThb(item.valueThb)}</small>
-                <small className="pnl-class-pnl">P&amp;L (recorded): {formatUsd(item.pnl.pnlCoverage.eligible > 0 ? item.pnl.pnlUsd : null)} · {item.pnl.pnlCoverage.eligible} eligible</small>
+                <small>{item.sharePct === null ? "Share unavailable" : `${formatHoldingQuantity(item.sharePct, 1)}% of portfolio`} · {formatThb(item.valueThb)}</small>
+                {item.key === "cash" ? <small className="pnl-class-pnl">Value only · no P&amp;L</small>
+                  : <small className="pnl-class-pnl">P&amp;L (recorded): {formatUsd(item.pnl.pnlCoverage.eligible > 0 ? item.pnl.pnlUsd : null)} · {item.pnl.pnlCoverage.eligible} holdings with a purchase cost</small>}
               </div>)}</div>
-              <p className="pnl-panel-note">Shares describe current class values; shares are unavailable when a class has no known subtotal.</p>
+              <p className="pnl-panel-note">Percentages need a known value for every class.</p>
             </section>
           </div>
           <PnlCalendar snapshots={history} asOf={portfolio.asOf} />
@@ -122,7 +134,7 @@ export default async function Home() {
               <div><strong>{sourceNames[key]}</strong><SourceBadge state={sources[key]} /></div><small>{formatSnapshotAsOf(sources[key].asOf)}</small><p>{sources[key].message}</p>
             </article>)}</div>
           </section>
-          <footer className="home-footnote"><p>USD is the primary view. THB uses this snapshot’s FX. NFT values use collection floors, not sale proceeds.</p><Link href="/asset-list" className="toolbar-link">Browse asset registry →</Link></footer>
+          <footer className="home-footnote"><p>Baht uses the same exchange rates; NFT floor estimates are not sale proceeds.</p><Link href="/asset-list" className="toolbar-link">Browse asset registry →</Link></footer>
         </div>
       </section>
       <MascotCompanion state={mascot} />

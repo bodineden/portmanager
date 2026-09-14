@@ -3,6 +3,7 @@ import { combineNativeEth, deriveSolanaPnl } from "./wallet-pnl";
 import { buildJoinedPortfolio, type JoinedPortfolioInputs, type LiveResult } from "./live-data";
 import { joinedHoldingsMap, VALUE_SOURCE_KEYS, valueSetSignature } from "./holding-values";
 import { readManualBasis } from "./basis-db";
+import { allocationPnl, valueAllocation } from "./pnl-view";
 import type { AcquisitionEvidence, ManualBasis } from "./pnl";
 
 const DATE = "2026-09-13T12:00:00.000Z";
@@ -115,6 +116,29 @@ describe("combined native ETH", () => {
 });
 
 describe("Solana joined wiring and basis keys", () => {
+  it("regroups stablecoins without changing token values, book P&L or historical keys", () => {
+    const data = inputs();
+    data.walletNative = live([{ chainId: 1, chainName: "Ethereum", symbol: "ETH", amount: 0.01 }]);
+    data.nfts = live([{ collection: "pnl-fixture", collectionName: "Synthetic P&L fixture", tokenCount: 1, floorEth: 0.01 }]);
+    data.solana = live({ native: [], tokens: [
+      { chainId: "solana", chainName: "Solana", symbol: "USDC", name: "Synthetic USDC", contract: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", amountRaw: "1", amount: 1, decimals: 0, priceUsd: 89.4168 },
+      { chainId: "solana", chainName: "Solana", symbol: "USDG", name: "Synthetic USDG", contract: "synthetic-usdg", amountRaw: "1", amount: 1, decimals: 0, priceUsd: 2.1886 },
+    ] });
+    // Synthetic acquisition costs reproduce the brief's P&L amounts, not live evidence.
+    data.manualBasis = { "native:1:native": basis(14.41), "nft:4663:pnl-fixture": basis(141.28),
+      "token:solana:EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": basis(95.7868), "token:solana:synthetic-usdg": basis(1.4786) };
+    const book = buildJoinedPortfolio(data, DATE); const before = JSON.stringify(book);
+    const previous = ["nfts", "walletNative", "walletTokens"] as const;
+    expect(previous.reduce((s, key) => s + book.totals.pnlByClass[key].pnlUsd!, 0)).toBeCloseTo(-121.35, 10);
+    expect(allocationPnl(book, "crypto").pnlUsd).toBeCloseTo(-115.69, 10);
+    expect(allocationPnl(book, "cash").pnlUsd).toBeNull();
+    expect(valueAllocation(book)[2].valueUsd).toBeCloseTo(91.6054, 10);
+    expect(JSON.stringify(book)).toBe(before);
+    expect(joinedHoldingsMap(book)["token:solana:EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"]).toBe(89.4168);
+    // Metadata fallback is deliberately unknown, despite the mint being familiar.
+    book.wallet.tokens[0].symbol = "EPjF…Dt1v";
+    expect(valueAllocation(book)[2].valueUsd).toBeCloseTo(2.1886, 10);
+  });
   it("adds exactly one live native SOL row to Crypto Port value and P&L with ten sources", () => {
     const book = buildJoinedPortfolio(inputs(), DATE);
     expect(book.wallet.native).toHaveLength(2);

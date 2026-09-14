@@ -90,6 +90,34 @@ describe("honest presentation formatting", () => {
 });
 
 describe("snapshot currency and value allocation", () => {
+  it("moves only priced stablecoin value and removes its recorded P&L without mutating the book", () => {
+    const portfolio = book();
+    const token = (symbol: string, valueUsd: number | null, pnlUsd: number | null, priced = true) => ({
+      chainId: 4663 as const, chainName: "Robinhood Chain", symbol, name: symbol, contract: symbol,
+      amountRaw: "13000000000000000000", decimals: 18, amount: 13, priceUsd: priced ? 1 : null,
+      valueUsd, valueThb: valueUsd === null ? null : valueUsd * 36, priced,
+      costBasisUsd: valueUsd === null || pnlUsd === null ? null : valueUsd - pnlUsd,
+      costBasisThb: valueUsd === null || pnlUsd === null ? null : (valueUsd - pnlUsd) * 36,
+      pnlUsd, pnlThb: pnlUsd === null ? null : pnlUsd * 36, pnlPct: 1,
+      basisStatus: "operator-recorded" as const, basisNote: "Fixture", pnlEligibility: "eligible" as const,
+    });
+    portfolio.wallet.tokens = [token("USDC", 89.4168, -6.37), token("USDG", 2.1886, 0.71),
+      token("MEME", 12.1034, 2), token("USDG", null, null, false)];
+    portfolio.totals.walletTokensUsd = 103.7088;
+    portfolio.totals.walletTokensThb = 103.7088 * 36;
+    const before = JSON.stringify(portfolio);
+    const [stocks, crypto, cash] = valueAllocation(portfolio);
+    expect(stocks.valueUsd).toBe(0);
+    expect(crypto.valueUsd).toBeCloseTo(1080 + 12.1034, 10);
+    expect(cash.valueUsd).toBeCloseTo(608.75 + 91.6054, 10);
+    expect(allocationPnl(portfolio, "crypto").pnlUsd).toBe(2);
+    expect(allocationPnl(portfolio, "crypto").pnlCoverage.eligible).toBe(1);
+    expect(allocationPnl(portfolio, "cash")).toMatchObject({ pnlUsd: null, costBasisUsd: null, pnlCoverage: { eligible: 0 } });
+    expect(JSON.stringify(portfolio)).toBe(before);
+    portfolio.wallet.tokens[0].valueThb = null;
+    expect(valueAllocation(portfolio)[2]).toMatchObject({ valueUsd: cash.valueUsd, valueThb: null });
+    expect(valueAllocation(portfolio)[1].valueThb).toBeNull();
+  });
   it("uses only current snapshot FX and keeps known USD when FX is absent", () => {
     expect(snapshotFiatUsd(487, "GBP", fx)).toBe(608.75);
     expect(snapshotFiatUsd(36, "THB", fx)).toBe(1);
@@ -107,12 +135,12 @@ describe("snapshot currency and value allocation", () => {
     const portfolio = book();
     expect(portfolio.totals.pnlUsd).toBeNull();
     const allocation = valueAllocation(portfolio);
-    expect(allocation.map(({ key }) => key)).toEqual(["t212", "crypto"]);
-    expect(allocation.map(({ label }) => label)).toEqual(["Stocks Port", "Crypto Port"]);
-    expect(allocation.map(({ valueUsd }) => valueUsd)).toEqual([608.75, 1080]);
+    expect(allocation.map(({ key }) => key)).toEqual(["t212", "crypto", "cash"]);
+    expect(allocation.map(({ label }) => label)).toEqual(["Stocks Port", "Crypto Port", "Cash"]);
+    expect(allocation.map(({ valueUsd }) => valueUsd)).toEqual([0, 1080, 608.75]);
     expect(allocation[1].valueThb).toBe(38_880);
     expect(allocation.reduce((sum, { sharePct }) => sum + sharePct!, 0)).toBeCloseTo(100);
-    expect(allocation[0].valueThb).toBe(21_915);
+    expect(allocation[2].valueThb).toBe(21_915);
   });
 
   it("keeps suppressed values in every class allocation and the authoritative account remainder", () => {
@@ -138,13 +166,13 @@ describe("snapshot currency and value allocation", () => {
     expect(portfolio.t212.totalValue).toBe(101.5);
     expect(portfolio.t212.investmentsCurrentValue).toBe(1.5);
     expect(portfolio.totals.t212Thb).toBe(3_654);
-    expect(allocation.map(({ valueUsd }) => valueUsd)).toEqual([101.5, 1.5]);
+    expect(allocation.map(({ valueUsd }) => valueUsd)).toEqual([1.5, 1.5, 100]);
     for (const rows of [portfolio.nfts, portfolio.wallet.native, portfolio.wallet.tokens]) {
       expect(rows.map((row) => row.valueUsd)).toEqual([0.5]);
       expect(rows.filter((row) => !shouldSuppressHolding(row))).toHaveLength(0);
     }
     expect(portfolio.totals.grandTotalUsd).toBe(103);
-    expect(allocation[0].valueThb).toBe(3_654);
+    expect(allocation[0].valueThb).toBe(54);
     expect(allocation.reduce((sum, { valueUsd }) => sum + valueUsd!, 0)).toBe(portfolio.totals.grandTotalUsd);
     expect(allocation.reduce((sum, { sharePct }) => sum + sharePct!, 0)).toBeCloseTo(100);
   });
@@ -161,8 +189,8 @@ describe("snapshot currency and value allocation", () => {
       nfts: live([]), walletNative: live([]), walletTokens: live([]), fiatFx: live(fx), ethPrice: live(2_400),
     }, DATE);
     const allocation = valueAllocation(portfolio);
-    expect(allocation.map(({ valueUsd }) => valueUsd)).toEqual([160, 0]);
-    expect(allocation.map(({ valueThb }) => valueThb)).toEqual([5_760, 0]);
+    expect(allocation.map(({ valueUsd }) => valueUsd)).toEqual([150, 0, 10]);
+    expect(allocation.map(({ valueThb }) => valueThb)).toEqual([5_400, 0, 360]);
     expect(allocation.reduce((sum, { valueUsd }) => sum + valueUsd!, 0)).toBe(160);
     expect(allocation.reduce((sum, { valueUsd }) => sum + valueUsd!, 0)).toBe(portfolio.totals.grandTotalUsd);
     expect(allocation.reduce((sum, { sharePct }) => sum + sharePct!, 0)).toBeCloseTo(100);
@@ -228,7 +256,7 @@ describe("snapshot currency and value allocation", () => {
     if (group === "crypto") portfolio.totals.walletTokensUsd = -1;
     else { portfolio.t212.totalValue = 1000; portfolio.totals.manualUsd = -700; }
     const allocation = valueAllocation(portfolio);
-    expect(allocation.every((row) => row.valueUsd !== null && row.valueUsd > 0)).toBe(true);
+    expect(allocation.some((row) => row.valueUsd !== null && row.valueUsd > 0)).toBe(true);
     expect(allocation.every((row) => row.sharePct === null)).toBe(true);
   });
 
@@ -241,7 +269,7 @@ describe("snapshot currency and value allocation", () => {
     expect(allocation.every((row) => row.sharePct === null)).toBe(true);
   });
 
-  it("requires both the account remainder and cash constituents for Stocks Port", () => {
+  it("keeps unavailable Stocks and Cash constituents independent", () => {
     for (const missing of ["account", "brokerCash", "manualUsd", "manualThb", "remainder"] as const) {
       const portfolio = book();
       if (missing === "account") portfolio.t212.totalValue = null;
@@ -249,8 +277,10 @@ describe("snapshot currency and value allocation", () => {
       if (missing === "manualUsd") portfolio.totals.manualUsd = null;
       if (missing === "manualThb") portfolio.totals.manualThb = null;
       if (missing === "remainder") portfolio.t212.totalValue = portfolio.t212.cashAvailable! - 1;
-      const stocks = valueAllocation(portfolio)[0];
-      const unknown = missing === "manualThb" ? stocks.valueThb : stocks.valueUsd;
+      const [stocks, crypto, cash] = valueAllocation(portfolio);
+      const unknown = missing === "manualThb" ? cash.valueThb : missing === "manualUsd" ? cash.valueUsd : stocks.valueUsd;
+      expect(crypto.valueUsd).toBe(1080);
+      if (missing.startsWith("manual")) expect(stocks.valueUsd).toBe(0);
       expect(unknown).toBeNull();
       expect(formatViewUsd(unknown)).toBe("—");
       if (missing !== "manualThb") expect(valueAllocation(portfolio).every((row) => row.sharePct === null)).toBe(true);
@@ -280,7 +310,7 @@ describe("snapshot currency and value allocation", () => {
     portfolio.t212.totalValue = 487;
     portfolio.totals.t212Thb = null;
     portfolio.fx.usdToThb = null;
-    expect(valueAllocation(portfolio)[0]).toMatchObject({ valueUsd: 487, valueThb: null });
+    expect(valueAllocation(portfolio)[0]).toMatchObject({ valueUsd: 0, valueThb: null });
   });
 });
 

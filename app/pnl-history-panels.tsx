@@ -76,10 +76,10 @@ export function PnlPerformance({ snapshots, asOf }: { snapshots: PortfolioSnapsh
       <div className="pnl-periods" role="group" aria-label="Performance period">{periods.map((option) => <button key={option} type="button" disabled={snapshots.length === 0} aria-pressed={period === option} onClick={() => { setChartError(false); setPeriod(option); }}>{option}</button>)}</div>
     </div>
     <div className="pnl-chart-legend"><span><i />Portfolio value</span><span><i className="is-cost" />Recorded cost basis</span></div>
-    {rows.length === 0 ? <div className="pnl-history-empty"><span className="pnl-empty-symbol" aria-hidden="true">↗</span><h3>{snapshots.length === 0 ? "History starts today" : "No snapshots in this period"}</h3><p>{snapshots.length === 0 ? "Daily observations will appear as snapshots are recorded. There is no backfilled performance history." : "Choose All to view earlier recorded observations."}</p><small>No historical value or cost basis is inferred.</small></div>
+    {rows.length === 0 ? <div className="pnl-history-empty"><span className="pnl-empty-symbol" aria-hidden="true">↗</span><h3>{snapshots.length === 0 ? "History starts today" : "No snapshots in this period"}</h3><p>{snapshots.length === 0 ? "Daily values appear only after they are recorded." : "Choose All to view earlier recorded observations."}</p><small>Missing history is never estimated.</small></div>
       : chartError || valueRows.length === 0 ? <div className="pnl-history-empty"><h3>Chart unavailable</h3><p>The recorded observations are available in the table below.</p></div>
         : <div className="pnl-chart-host" ref={target} role="img" aria-label={`${rows.length} daily snapshots in USD. Portfolio value and eligible recorded cost basis are separate series; their difference is not whole-portfolio P&L when coverage is partial.`} />}
-    <p className="pnl-panel-note">Cost covers eligible holdings only; value includes cash and excluded holdings. The gap between the lines is not whole-portfolio P&amp;L. Missing days and basis remain gaps.</p>
+    <p className="pnl-panel-note">Recorded costs cover only some holdings, so the gap is not whole-portfolio P&amp;L; missing records stay blank.</p>
     {rows.length > 0 && <details className="pnl-history-details"><summary>Recorded observations · {rows.length}</summary><div className="table-scroll"><table className="data-table"><caption className="sr-only">Performance observations and coverage</caption><thead><tr><th>UTC date</th><th>Value · USD / THB</th><th>Basis · USD / THB</th><th>Coverage</th></tr></thead><tbody>{rows.map((row) => <tr key={row.date}><td>{row.date}</td><td>{formatViewUsd(row.totalValueUsd)}<small className="sub-cell">{formatViewThb(row.totalValueThb)}</small></td><td>{formatViewUsd(row.costBasisUsd)}<small className="sub-cell">{formatViewThb(row.costBasisThb)}</small></td><td>{row.coverage.status}<small className="sub-cell">{row.coverage.eligible}/{row.coverage.totalHoldings} eligible</small></td></tr>)}</tbody></table></div></details>}
   </section>;
 }
@@ -120,8 +120,8 @@ export function PnlCalendar({ snapshots, asOf }: { snapshots: PortfolioSnapshot[
         <div><dt>Portfolio value</dt><dd>{formatViewUsd(selected.totalValueUsd)}<small>{formatViewThb(selected.totalValueThb)}</small></dd></div>
         <div><dt>Recorded basis</dt><dd>{formatViewUsd(selected.coverage.eligible > 0 ? selected.costBasisUsd : null)}<small>{formatViewThb(selected.coverage.eligible > 0 ? selected.costBasisThb : null)}</small></dd></div>
         <div><dt>Coverage</dt><dd>{selected.coverage.status}<small>{selected.coverage.eligible} / {selected.coverage.totalHoldings} holdings eligible</small></dd></div></dl>
-    </> : <><span className="pnl-empty-symbol" aria-hidden="true">▦</span><h3>{snapshots.length === 0 ? "History starts today" : "No snapshots this month"}</h3><p>No recorded daily P&amp;L is available. Future observations will show their value, basis and coverage here.</p></>}
+    </> : <><span className="pnl-empty-symbol" aria-hidden="true">▦</span><h3>{snapshots.length === 0 ? "History starts today" : "No snapshots this month"}</h3><p>Daily profit or loss appears here once recorded.</p></>}
     </aside></div>
-    <p className="pnl-panel-note">Each day shows that snapshot’s unrealized P&amp;L, not a daily return. Day cells use compact USD; select a recorded day for exact USD/THB. Blank days have no observation. First qualifying observation per UTC day; no backfill.</p>
+    <p className="pnl-panel-note">Each day shows its first recorded profit or loss, not a daily return; select it for exact USD/THB, while missing days stay blank.</p>
   </section>;
 }

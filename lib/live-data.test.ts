@@ -897,7 +897,7 @@ describe("getJoinedPortfolio", () => {
         return json({ nfts: scenario === "metadata-only" ? [{}] : [{ collection: "known" }, ...(scenario === "missing-metadata" ? [{}] : [])],
           ...(scenario === "pagination" ? { next: "page-2" } : {}) });
       }
-      if (url.includes("api.opensea.io/api/v2/collections/")) return json({ total: { floor_price: 0.01 } });
+      if (url.includes("api.opensea.io/api/v2/collections/")) return json({ total: { floor_price: 0.01, floor_price_symbol: "ETH" } });
       return otherFetch(input, init);
     }));
     const book = await getJoinedPortfolio({ now: () => Date.parse(AS_OF) });
@@ -977,7 +977,7 @@ describe("getJoinedPortfolio", () => {
         const row = observedNftFloors.find((item) => url.endsWith(`/${item.collection}/stats`))!;
         statsCalls.push(row.collection);
         if (scenario === "no-floors" || (scenario === "one-stats-401" && row.collection === "wasteland-art")) return json({}, 401);
-        return json({ total: { floor_price: row.floorEth } });
+        return json({ total: { floor_price: row.floorEth, floor_price_symbol: "ETH" } });
       }
       return otherFetch(input, init);
     }));
@@ -993,6 +993,24 @@ describe("getJoinedPortfolio", () => {
       expect(book.nfts.filter((row) => row.valueUsd === null)).toHaveLength(scenario === "one-stats-401" ? 1 : 0);
       if (scenario === "one-stats-401") expect(book.nfts.find((row) => row.collection === "wasteland-art")).toMatchObject({ valueUsd: null });
     }
+  });
+
+  it.each(["ETH", "WETH", "USDG", "usdc", "BTC", undefined])("honors OpenSea floor quote %s, never guessing ETH", async (symbol) => {
+    vi.stubEnv("DATABASE_URL", "");
+    vi.stubEnv("OPENSEA_API_KEY", "opensea-test-only");
+    const otherFetch = walletNetworkFetchMock();
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("api.opensea.io/api/v2/chain/")) return json({ nfts: [{ collection: "prspct" }] });
+      if (url.includes("api.opensea.io/api/v2/collections/")) return json({ total: { floor_price: 0.4, floor_price_symbol: symbol } });
+      return otherFetch(input, init);
+    }));
+    const portfolio = await getJoinedPortfolio({ now: () => Date.parse(AS_OF) });
+    const row = portfolio.nfts[0];
+    if (symbol === "ETH" || symbol === "WETH") expect(row).toMatchObject({ floorEth: 0.4, valueUsd: 800 });
+    else if (symbol === "USDG" || symbol === "usdc") {
+      expect(row).toMatchObject({ floorAmount: 0.4, floorSymbol: symbol.toUpperCase(), floorUsd: 0.4, valueUsd: 0.4, valueEth: 0.4 / 2000 });
+    } else expect(row).toMatchObject({ floorEth: null, floorAmount: null, valueUsd: null, valueEth: null });
   });
 
   it("wires the live endpoints with Basic auth and no-store fetches", async () => {

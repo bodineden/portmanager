@@ -15,7 +15,7 @@ import {
   type SourceStatus,
 } from "@/lib/live-data";
 import "./asset-list.css";
-import { snapshotFiatUsd, valueAllocation } from "@/lib/pnl-view";
+import { snapshotFiatUsd, valueAllocation, formatNftFloor } from "@/lib/pnl-view";
 import { shouldSuppressHolding } from "@/lib/dust-filter";
 import { holdingId } from "@/lib/holding-values";
 
@@ -97,7 +97,7 @@ export default async function AssetListPage() {
     valueThb: formatThb(holding.valueThb),
     priced: holding.priced,
   }));
-  const [stocks, crypto] = valueAllocation(portfolio);
+  const [stocks, crypto, cash] = valueAllocation(portfolio);
   const positionCount = positions.length;
   const nftInventoryUnavailable = portfolio.sources.nfts.status === "unavailable";
   const nftCollectionCount = nfts.length;
@@ -133,7 +133,7 @@ export default async function AssetListPage() {
           <div className="page-title-group">
             <p className="eyebrow">LIVE PORTFOLIO / READ-ONLY REGISTRY</p>
             <h1 className="page-title">Asset List</h1>
-            <p className="page-subtitle">Stocks Port and Crypto Port in one live registry</p>
+            <p className="page-subtitle">Stocks Port, Crypto Port and Cash in one live registry</p>
           </div>
           <div className="header-tools">
             <span className="header-meta">
@@ -165,9 +165,9 @@ export default async function AssetListPage() {
               <small>{formatThb(stocks.valueThb)}</small>
             </article>
             <article className="panel asset-registry-kpi">
-              <span className="asset-kpi-index">02 / CASH AVAILABLE</span>
-              <strong className="numeric">{formatUsd(snapshotFiatUsd(portfolio.t212.cashAvailable, accountCurrency, portfolio.fx))}</strong>
-              <small>{formatCurrency(portfolio.t212.cashAvailable, accountCurrency)} in account · cash has no P&L</small>
+              <span className="asset-kpi-index">02 / Cash</span>
+              <strong className="numeric">{formatUsd(cash.valueUsd)}</strong>
+              <small>{formatThb(cash.valueThb)} · Broker cash, cash pot and stablecoins · no P&L</small>
             </article>
             <article className="panel asset-registry-kpi">
               <span className="asset-kpi-index">03 / Crypto Port</span>
@@ -177,7 +177,7 @@ export default async function AssetListPage() {
             <article className="panel asset-registry-kpi">
               <span className="asset-kpi-index">04 / LIVE REGISTRY</span>
               <strong className="numeric">{formatCount(liveEntryCount)}</strong>
-              <small>{formatCount(positionCount)} Stocks Port · {formatCount(nftCollectionCount + walletEntryCount)} Crypto Port assets</small>
+              <small>{formatCount(positionCount)} Stocks Port · {formatCount(nftCollectionCount + walletEntryCount)} wallet and NFT assets</small>
             </article>
           </section>
 
@@ -365,7 +365,7 @@ export default async function AssetListPage() {
                     <tr>
                       <th scope="col">Collection</th>
                       <th scope="col" className="asset-cell-right">Tokens</th>
-                      <th scope="col" className="asset-cell-right">Floor (ETH)</th>
+                      <th scope="col" className="asset-cell-right">Floor</th>
                       <th scope="col" className="asset-cell-right">Value (ETH)</th>
                       <th scope="col" className="asset-cell-right">Value (USD)</th>
                       <th scope="col" className="asset-cell-right">Value (THB)</th>
@@ -379,7 +379,7 @@ export default async function AssetListPage() {
                           <small className="asset-row-name mono">{holding.collection}</small>
                         </td>
                         <td className="asset-cell-right numeric">{holding.tokenCount.toLocaleString("en-US")}</td>
-                        <td className="asset-cell-right numeric">{holding.floorEth === null ? "—" : `${formatNumber(holding.floorEth, 8)} ETH`}</td>
+                        <td className="asset-cell-right numeric">{formatNftFloor(holding)}</td>
                         <td className="asset-cell-right numeric">{formatEth(holding.valueEth)}</td>
                         <td className="asset-cell-right numeric asset-usd-value">{formatUsd(holding.valueUsd)}</td>
                         <td className="asset-cell-right numeric asset-thb-value">{formatThb(holding.valueThb)}</td>
