@@ -40,6 +40,9 @@ export async function auditCashClassFixtures(browser, url, viewport, check) {
     await page.locator('[data-value-class="cash"]').waitFor();
     await check(`${prefix} positive control: three classes reconcile to pinned $3278.16`, async () => {
       await assertClasses(page);
+      const solanaUsdc = await page.evaluate(() => window.__cashFixturePortfolio.wallet.tokens.find((row) => row.chainId === "solana" && row.symbol === "EPjF…Dt1v"));
+      assert(solanaUsdc?.contract === "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+        && solanaUsdc.name === "SPL token " + solanaUsdc.contract && solanaUsdc.priced === true, "Solana fixture no longer mirrors real mint-label output");
       assert(await page.locator(".pnl-hero-value").innerText() === "US$3,278.16", "grand total changed");
       const labels = await page.locator(".pnl-allocation-item > div:first-child > span").allTextContents();
       assert(JSON.stringify(labels.map(compact)) === JSON.stringify(expected.map((row) => row[1])), "allocation panel lost class order");
@@ -60,6 +63,23 @@ export async function auditCashClassFixtures(browser, url, viewport, check) {
       try { await rejects(() => assertClasses(page), /wrong crypto value/); }
       finally { await number.evaluate((node, text) => { node.textContent = text; }, text); }
       await assertClasses(page);
+    });
+    await check(`${prefix} negative control: unknown Solana contract must fail stablecoin Cash checks`, async () => {
+      try {
+        await page.goto(`${url}/?scenario=cash-class-unknown-contract-home`);
+        await page.locator('[data-value-class="cash"]').waitFor();
+        const row = await page.evaluate(() => window.__cashFixturePortfolio.wallet.tokens.find((row) => row.chainId === "solana" && row.symbol === "EPjF…Dt1v"));
+        assert(row?.contract === "unknown-mint" && row.priced === true && Number.isFinite(row.valueUsd), "unknown-contract variant did not reach the real join");
+        assert(await page.locator(".pnl-hero-value").innerText() === "US$3,278.16", "negative control changed the book instead of classification");
+        await rejects(() => assertClasses(page), /wrong crypto value: stablecoins must be Cash/);
+        await rejects(() => assertStablecoinNoPnl(page), /priced USDC\/USDG must stay displayed/);
+      } finally {
+        await page.goto(`${url}/?scenario=cash-class-home`);
+        await page.locator('[data-value-class="cash"]').waitFor();
+      }
+      await assertClasses(page);
+      await assertStablecoinNoPnl(page);
+      return "unknown mint rejected by real allocation and value-only row checks; canonical mint restored";
     });
     await check(`${prefix} negative control: a stablecoin numeric P&L must fail`, async () => {
       const cell = page.locator('[data-cash-token="true"] [data-pnl-cell="pnl"]').first(); const html = await cell.innerHTML();

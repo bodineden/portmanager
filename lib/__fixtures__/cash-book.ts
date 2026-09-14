@@ -21,8 +21,8 @@ export function cashBookInputs(): JoinedPortfolioInputs {
       { chainId: 4663, chainName: "Robinhood Chain", symbol: "DUST-FIXTURE", name: "Combined priced dust fixture", amountRaw: "1", decimals: 0, amount: 1, priceUsd: 0.2090 },
     ]),
     solana: live({ native: [{ chainId: "solana", chainName: "Solana", symbol: "SOL", amountRaw: "1045197959", amount: 1.045197959, priceUsd: 106.2058 / 1.045197959 }], tokens: [
-      { chainId: "solana", chainName: "Solana", symbol: "USDC", name: "USDC", contract: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", amountRaw: "89432083", decimals: 6, amount: 89.432083, priceUsd: 89.4168 / 89.432083 },
-      { chainId: "solana", chainName: "Solana", symbol: "MEME-FIXTURE", name: "Non-stable token fixture", contract: "HcRLc9…DeJR", amountRaw: "1", decimals: 0, amount: 1, priceUsd: 12.1034 },
+      { chainId: "solana", chainName: "Solana", symbol: "EPjF…Dt1v", name: "SPL token EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", contract: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", amountRaw: "89432083", decimals: 6, amount: 89.432083, priceUsd: 89.4168 / 89.432083 },
+      { chainId: "solana", chainName: "Solana", symbol: "HcRL…DeJR", name: "SPL token HcRLc9VDgjLeK154xDawfb1dmVJ98DoSqcwTHGqiDeJR", contract: "HcRLc9VDgjLeK154xDawfb1dmVJ98DoSqcwTHGqiDeJR", amountRaw: "1", decimals: 0, amount: 1, priceUsd: 12.1034 },
     ] }),
     ethPrice: live(2507.03), fiatFx: live({ usdToThb: 33.076908, gbpToThb: 44.72977472098751, eurToThb: null, asOf: DATE }),
   };

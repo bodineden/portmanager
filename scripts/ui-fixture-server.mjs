@@ -77,14 +77,19 @@ export async function startUiFixtureServer() {
               const scenario = new URLSearchParams(location.search).get("scenario");
               if (scenario?.startsWith("cash-class-")) {
                 const inputs = cashBookInputs();
-                // Source fixtures only; rendering and allocation are real production code.
+                // Source fixtures retain SPL mint labels; allocation/rendering are production code.
+                const solanaStablecoin = inputs.solana.data.tokens[0];
+                // Data-level negative control, not a precomputed allocation or DOM override.
+                if (scenario.includes("unknown-contract")) solanaStablecoin.contract = "unknown-mint";
                 if (scenario.includes("no-capital")) inputs.capitalEvents.data = [];
                 if (scenario.includes("no-value")) inputs.manualHoldings.state.status = "unavailable";
                 if (scenario.includes("usd-floor")) inputs.nfts.data.push({ collection: "prspct", collectionName: "prspct", tokenCount: 3,
                   ...normalizeNftFloor({ floor_price: 0.4, floor_price_symbol: "USDG" }) });
-                inputs.manualBasis = { "token:solana:EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": { costUsd: 95.786161, asOf: "2026-09-14", note: "Synthetic stablecoin basis for display-exclusion control" },
+                inputs.manualBasis = { ["token:solana:" + solanaStablecoin.contract]: { costUsd: 95.786161, asOf: "2026-09-14", note: "Synthetic stablecoin basis for display-exclusion control" },
                   "token:4663:0x5fc5360d0400a0fd4f2af552add042d716f1d168": { costUsd: 1.475469, asOf: "2026-09-14", note: "Synthetic stablecoin basis for display-exclusion control" } };
-                return buildJoinedPortfolio(inputs, "2026-09-14T14:51:00Z");
+                const portfolio = buildJoinedPortfolio(inputs, "2026-09-14T14:51:00Z");
+                window.__cashFixturePortfolio = portfolio;
+                return portfolio;
               }
               if (scenario?.startsWith("capital-")) return capitalBook(scenario !== "capital-empty");
               if (scenario?.startsWith("dust-")) {
