@@ -249,6 +249,56 @@ const WALLET_CHAINS: readonly WalletChain[] = Object.freeze([
   },
 ]);
 
+/**
+ * Arc (chain 5042) is a separate wallet chain from WALLET_CHAINS because its native
+ * gas asset is USDC (18 decimals), not ETH — it must never be joined into the
+ * combined `native:eth` row or priced with `ethToUsd`. See fetchArcTokenInventory.
+ */
+const ARC_CHAIN = Object.freeze({
+  chainId: 5042,
+  chainName: "Arc",
+  rpcUrl: "https://rpc.mainnet.arc.io",
+  llamaChain: "arc",
+  coinGeckoPlatform: "arc",
+});
+
+/**
+ * Synthetic contract key for Arc's native USDC gas balance (18 decimals). This is
+ * DELIBERATELY distinct from the ERC-20 wrapper `0x3600...` (6 decimals): both read
+ * live as the same underlying USDC asset, and design decision #2 (BRIEF-ARC-INVENTORY)
+ * is to count the native balance only and exclude the wrapper from the token
+ * inventory, so the two interfaces are never double counted.
+ */
+export const ARC_NATIVE_USDC_KEY = "arc-native-usdc-gas-token";
+/** The ERC-20 USDC wrapper on Arc; intentionally excluded from ARC_ERC20_REGISTRY (see ARC_NATIVE_USDC_KEY). */
+export const ARC_USDC_ERC20_WRAPPER = "0x3600000000000000000000000000000000000000";
+
+type ArcErc20RegistryEntry = {
+  symbol: string;
+  name: string;
+  contract: string;
+  decimals: number;
+  priceCandidate: boolean;
+};
+
+/**
+ * Static Arc ERC-20 inventory. Route chosen 2026-09-22 per BRIEF-ARC-INVENTORY step 3:
+ * the keyless Blockscout-compatible endpoint (`api.arc-scan.org/api/v2/addresses/.../tokens`)
+ * returned HTTP 404 (probed live from this host), so option (a) was not viable; this
+ * static registry + `eth_call balanceOf` (option (b), same pattern as RH_ERC20_REGISTRY)
+ * is the route actually shipped. Revisit if ArcScan starts answering.
+ */
+export const ARC_ERC20_REGISTRY_VERIFIED_AT = "2026-09-22";
+export const ARC_ERC20_REGISTRY_SOURCE_NOTE =
+  "api.arc-scan.org/api/v2/addresses/{wallet}/tokens returned HTTP 404 on 2026-09-22; "
+  + "falling back to a static registry read live by eth_call balanceOf, matching fetchRhTokenInventory.";
+export const ARC_ERC20_REGISTRY: readonly ArcErc20RegistryEntry[] = Object.freeze([
+  { symbol: "TOLLY", name: "Tolly", contract: "0xBc43CE8DEc648EA298C4275559b81D6261c90b67", decimals: 18, priceCandidate: true },
+  { symbol: "Architects", name: "Architects", contract: "0x8bcb94279FC2c984EC34e0C1f2192df8c69EA4F0", decimals: 18, priceCandidate: true },
+  { symbol: "ARCAT", name: "ARCAT", contract: "0x07704B06981eA962b87296362a1281484d160000", decimals: 18, priceCandidate: true },
+  { symbol: "ARCBAT", name: "ARCBAT", contract: "0xbE0CaD585Ea2D13DE2f4E36376be755C0AfD8B97", decimals: 18, priceCandidate: true },
+]);
+
 type RhErc20RegistryEntry = {
   symbol: string;
   name: string;
@@ -279,6 +329,7 @@ export const RH_ERC20_REGISTRY: readonly RhErc20RegistryEntry[] = Object.freeze(
   { symbol: "CROC", name: "Croc Cat", contract: "0x01C7bA09dA5C14d2F3ac74B1BEbA24ABAea7236f", decimals: 18, priceCandidate: false },
   { symbol: "Semen", name: "Semen People", contract: "0x00192589e3f943bF8EbB9a42e705e59507Be1769", decimals: 18, priceCandidate: false },
   { symbol: "USDG", name: "United States Global Dollar (imposter 18-dec contract)", contract: "0x5411257CedF60bC40F4beaD410BF8D02079056A2", decimals: 18, priceCandidate: false },
+  { symbol: "par", name: "PAR", contract: "0x507B6F349a80114097A67B8b4677367acC15b220", decimals: 18, priceCandidate: true },
 ]);
 
 const WALLET_ADDRESS_PATTERN = /^0x[0-9a-fA-F]{40}$/;
@@ -976,11 +1027,150 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * Arc (5042) ERC-20 + native-USDC inventory.
+ *
+ * Route chosen (BRIEF-ARC-INVENTORY step 3): the keyless Blockscout-compatible
+ * endpoint `api.arc-scan.org/api/v2/addresses/{wallet}/tokens?type=ERC-20` was
+ * probed live on 2026-09-22 and returned HTTP 404 (`{"detail":"Not Found"}`), so
+ * `fetchBlockscoutTokenInventory` cannot be reused for Arc. This falls back to
+ * option (b): a static `ARC_ERC20_REGISTRY` read live by `eth_call balanceOf`,
+ * exactly like `fetchRhTokenInventory`.
+ *
+ * Arc's native gas asset is USDC (18 decimals, NOT ETH) — design decision #1
+ * (BRIEF-ARC-INVENTORY) requires it land in Cash at $1.00 par as a wallet-token
+ * row (symbol "USDC", priced true) rather than in the combined `native:eth` row,
+ * so it is read here via `eth_getBalance` and emitted as a synthetic token row
+ * keyed by ARC_NATIVE_USDC_KEY, priced directly at par (no external price feed).
+ * Design decision #2: the ERC-20 USDC wrapper at ARC_USDC_ERC20_WRAPPER (6dp) is
+ * the SAME underlying asset read through a different interface, so it is
+ * deliberately excluded from ARC_ERC20_REGISTRY to avoid double counting.
+ */
+async function fetchArcTokenInventory(wallet: string): Promise<LiveResult<WalletTokenInventoryRow[]>> {
+  if (!WALLET_ADDRESS_PATTERN.test(wallet)) return unavailable("The configured EVM wallet address is invalid.");
+  const balanceOfData = `0x70a08231${wallet.slice(2).toLowerCase().padStart(64, "0")}`;
+
+  const nativeResponse = await fetchJsonRpc(ARC_CHAIN.rpcUrl, "eth_getBalance", [wallet, "latest"]);
+  const nativeParsed = nativeResponse.ok ? amountFromRpcHex(nativeResponse.data, 18) : null;
+  const nativeSucceeded = nativeResponse.ok && nativeParsed !== null;
+  const nativeRow: WalletTokenInventoryRow | null =
+    nativeSucceeded && nativeParsed!.amountRaw !== "0"
+      ? {
+          chainId: ARC_CHAIN.chainId,
+          chainName: ARC_CHAIN.chainName,
+          symbol: "USDC",
+          name: "Arc native USDC (gas token)",
+          contract: ARC_NATIVE_USDC_KEY,
+          amountRaw: nativeParsed!.amountRaw,
+          decimals: 18,
+          amount: nativeParsed!.amount,
+          // Cash at $1.00 par (design decision #1) — never priced via ethToUsd or an external feed.
+          priceHintUsd: 1,
+          priceCandidate: false,
+          llamaChain: ARC_CHAIN.llamaChain,
+          coinGeckoPlatform: ARC_CHAIN.coinGeckoPlatform,
+        }
+      : null;
+
+  const erc20Results = await Promise.all(ARC_ERC20_REGISTRY.map(async (entry): Promise<{
+    row: WalletTokenInventoryRow | null;
+    asOf: string | null;
+    succeeded: boolean;
+  }> => {
+    const response = await fetchJsonRpc(
+      ARC_CHAIN.rpcUrl,
+      "eth_call",
+      [{ to: entry.contract, data: balanceOfData }, "latest"],
+    );
+    if (!response.ok) return { row: null, asOf: null, succeeded: false };
+    const parsed = amountFromRpcHex(response.data, entry.decimals);
+    if (!parsed) return { row: null, asOf: null, succeeded: false };
+    if (parsed.amountRaw === "0") return { row: null, asOf: response.asOf, succeeded: true };
+    return {
+      row: {
+        chainId: ARC_CHAIN.chainId,
+        chainName: ARC_CHAIN.chainName,
+        symbol: entry.symbol,
+        name: entry.name,
+        contract: entry.contract,
+        amountRaw: parsed.amountRaw,
+        decimals: entry.decimals,
+        amount: parsed.amount,
+        priceHintUsd: null,
+        priceCandidate: entry.priceCandidate,
+        llamaChain: ARC_CHAIN.llamaChain,
+        coinGeckoPlatform: ARC_CHAIN.coinGeckoPlatform,
+      } satisfies WalletTokenInventoryRow,
+      asOf: response.asOf,
+      succeeded: true,
+    };
+  }));
+
+  const succeeded = (nativeSucceeded ? 1 : 0) + erc20Results.filter((result) => result.succeeded).length;
+  if (succeeded === 0) return unavailable("Arc token/native balances are unavailable from RPC.");
+  const failed = ARC_ERC20_REGISTRY.length + 1 - succeeded;
+  const tokens = [nativeRow, ...erc20Results.map((result) => result.row)]
+    .filter((row): row is WalletTokenInventoryRow => row !== null);
+  return {
+    data: tokens,
+    state: sourceState(
+      failed === 0 ? "live" : "partial",
+      failed === 0
+        ? "Arc native USDC + ERC-20 balances are live from RPC."
+        : `${failed} Arc balance${failed === 1 ? " is" : "s are"} unavailable.`,
+      latestTimestamp([nativeResponse.asOf, ...erc20Results.map((result) => result.asOf)]),
+    ),
+  };
+}
+
+/**
+ * DexScreener fallback for Arc token pricing (design decision #4). Only used for
+ * tokens still unpriced after the DefiLlama pass (e.g. ARCAT, which DefiLlama
+ * does not cover as of 2026-09-22 — `coins.llama.fi` returns `{"coins":{}}`).
+ * The search endpoint returns an object `{"pairs": [...]}`, unlike the per-chain
+ * token endpoint's bare list — filtered to `chainId === "arc"` AND a matching
+ * `baseToken.address`, keeping the highest-liquidity pair.
+ */
+async function fetchArcDexScreenerFallbackPrices(
+  tokens: WalletTokenInventoryRow[],
+): Promise<{ prices: Map<string, number>; timestamps: string[] }> {
+  const prices = new Map<string, number>();
+  const timestamps: string[] = [];
+  for (const token of tokens) {
+    const response = await fetchJson(
+      `https://api.dexscreener.com/latest/dex/search?q=${encodeURIComponent(token.contract)}`,
+    );
+    if (!response.ok || !response.data || typeof response.data !== "object" || Array.isArray(response.data)) continue;
+    const payload = response.data as Record<string, unknown>;
+    const pairs = Array.isArray(payload.pairs) ? payload.pairs : [];
+    const matches = pairs.filter((pair): pair is Record<string, unknown> => {
+      if (!pair || typeof pair !== "object") return false;
+      const row = pair as Record<string, unknown>;
+      const baseToken = row.baseToken as Record<string, unknown> | undefined;
+      const address = typeof baseToken?.address === "string" ? baseToken.address : "";
+      return row.chainId === "arc" && address.toLowerCase() === token.contract.toLowerCase();
+    });
+    if (matches.length === 0) continue;
+    const best = matches.reduce((highest, candidate) => {
+      const highestLiquidity = positiveNumber((highest.liquidity as Record<string, unknown> | undefined)?.usd) ?? 0;
+      const candidateLiquidity = positiveNumber((candidate.liquidity as Record<string, unknown> | undefined)?.usd) ?? 0;
+      return candidateLiquidity > highestLiquidity ? candidate : highest;
+    });
+    const price = positiveNumber(best.priceUsd);
+    if (price !== null) {
+      prices.set(tokenKey(token.chainId, token.contract), price);
+      timestamps.push(response.asOf);
+    }
+  }
+  return { prices, timestamps };
+}
+
 async function fetchWalletTokenSource(wallet: string): Promise<LiveResult<NormalizedWalletTokenBalance[]>> {
   if (!WALLET_ADDRESS_PATTERN.test(wallet)) return unavailable("The configured EVM wallet address is invalid.");
   const inventoryResults = await Promise.all([
     ...BLOCKSCOUT_CHAINS.map((chain) => fetchBlockscoutTokenInventory(chain, wallet)),
     fetchRhTokenInventory(wallet),
+    fetchArcTokenInventory(wallet),
   ]);
   const availableInventories = inventoryResults.filter((result) => result.data !== null);
   if (availableInventories.length === 0) {
@@ -1077,6 +1267,17 @@ async function priceWalletTokenInventory(inventory: WalletTokenInventoryRow[]) {
         pricingTimestamps.push(response.asOf);
       }
     }
+  }
+
+  // Design decision #4 (BRIEF-ARC-INVENTORY): Arc coverage on DefiLlama is partial
+  // (ARCAT returns {"coins":{}} as of 2026-09-22) — fall back to DexScreener for any
+  // Arc token still unpriced after the DefiLlama pass, before spending CoinGecko calls.
+  const arcUnpriced = inventory.filter((token) =>
+    token.priceCandidate && token.chainId === 5042 && !prices.has(tokenKey(token.chainId, token.contract)));
+  if (arcUnpriced.length > 0) {
+    const fallback = await fetchArcDexScreenerFallbackPrices(arcUnpriced);
+    for (const [key, price] of fallback.prices) prices.set(key, price);
+    pricingTimestamps.push(...fallback.timestamps);
   }
 
   const coinGeckoCandidates = inventory

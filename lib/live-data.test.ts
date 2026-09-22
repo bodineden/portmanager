@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as basisDb from "./basis-db";
+import { isCashToken } from "./cash-class";
 import { shouldSuppressHolding } from "./dust-filter";
 import { joinedHoldingsMap, valueSetSignature } from "./holding-values";
 import { observedNftFloors, oneUnpricedNft } from "./__fixtures__/nft-floors";
@@ -7,6 +8,11 @@ import {
   __resetSnapshotCacheForTests,
   amountFromRawUnits,
   amountFromRpcHex,
+  ARC_ERC20_REGISTRY,
+  ARC_ERC20_REGISTRY_SOURCE_NOTE,
+  ARC_ERC20_REGISTRY_VERIFIED_AT,
+  ARC_NATIVE_USDC_KEY,
+  ARC_USDC_ERC20_WRAPPER,
   buildJoinedPortfolio,
   getJoinedPortfolio,
   normalizeT212Positions,
@@ -108,6 +114,7 @@ function walletNetworkFetchMock() {
     if (url.includes("coins.llama.fi")) {
       return json({ coins: { [`robinhood:${USDG}`]: { price: 1 } } });
     }
+    if (url.includes("dexscreener.com")) return json({ pairs: [] });
     if (url.includes("simple/token_price/")) return json({});
     if (init?.method === "POST" && url in nativeByRpc) {
       const body = JSON.parse(String(init.body)) as {
@@ -122,6 +129,11 @@ function walletNetworkFetchMock() {
         const raw = call.to?.toLowerCase() === USDG.toLowerCase() ? BigInt("1475469") : BigInt(0);
         return json({ jsonrpc: "2.0", id: 1, result: `0x${raw.toString(16)}` });
       }
+    }
+    if (init?.method === "POST" && url === "https://rpc.mainnet.arc.io") {
+      const body = JSON.parse(String(init.body)) as { method: string };
+      // No Arc holdings in this fixture wallet; every read succeeds as an exact zero.
+      return json({ jsonrpc: "2.0", id: 1, result: body.method === "eth_getBalance" ? "0x0" : "0x0" });
     }
     throw new Error(`Unexpected URL: ${url}`);
   });
@@ -220,6 +232,60 @@ describe("buildJoinedPortfolio", () => {
     expect(portfolio.totals.walletUsd).toBeCloseTo(501.081064746183, 12);
     expect(portfolio.totals.walletThb).toBeCloseTo(18_038.918330862588, 10);
     expect(portfolio.totals.grandTotalThb).toBeCloseTo(53_138.22713086259, 10);
+  });
+
+  it("classifies Arc native USDC as Cash and joins PAR without double counting the USDC wrapper", () => {
+    const inputs = fixtureInputs();
+    inputs.walletNative = live([]);
+    inputs.walletTokens = live([
+      {
+        chainId: 5042,
+        chainName: "Arc",
+        symbol: "USDC",
+        name: "Arc native USDC (gas token)",
+        contract: ARC_NATIVE_USDC_KEY,
+        amountRaw: "2087206449200009300",
+        decimals: 18,
+        amount: 2.0872064492000093,
+        priceUsd: 1,
+      },
+      {
+        chainId: 5042,
+        chainName: "Arc",
+        symbol: "TOLLY",
+        name: "Tolly",
+        contract: "0xBc43CE8DEc648EA298C4275559b81D6261c90b67",
+        amountRaw: "5049135398252920000000",
+        decimals: 18,
+        amount: 5049.13539825292,
+        priceUsd: 0.004105,
+      },
+      {
+        chainId: 4663,
+        chainName: "Robinhood Chain",
+        symbol: "par",
+        name: "PAR",
+        contract: "0x507B6F349a80114097A67B8b4677367acC15b220",
+        amountRaw: "24403792301924360000000",
+        decimals: 18,
+        amount: 24403.79230192436,
+        priceUsd: 0.002844,
+      },
+    ]);
+
+    const portfolio = buildJoinedPortfolio(inputs, AS_OF);
+    const arcUsdc = portfolio.wallet.tokens.find((row) => row.contract === ARC_NATIVE_USDC_KEY);
+    const par = portfolio.wallet.tokens.find((row) => row.symbol === "par");
+    const tolly = portfolio.wallet.tokens.find((row) => row.symbol === "TOLLY");
+
+    expect(arcUsdc).toMatchObject({ chainId: 5042, priced: true, valueUsd: 2.0872064492000093 });
+    expect(isCashToken(arcUsdc!)).toBe(true);
+    // Design decision #2: the ERC-20 wrapper must never appear as a separate token row.
+    expect(portfolio.wallet.tokens.some((row) => row.contract?.toLowerCase() === ARC_USDC_ERC20_WRAPPER.toLowerCase())).toBe(false);
+    expect(tolly).toMatchObject({ valueUsd: 5049.13539825292 * 0.004105 });
+    expect(isCashToken(tolly!)).toBe(false);
+    expect(par).toMatchObject({ chainId: 4663, priced: true, valueUsd: 24403.79230192436 * 0.002844 });
+    expect(portfolio.wallet.tokens).toHaveLength(3);
   });
 
   it("keeps a wholly unpriced non-empty wallet null rather than inventing zero", () => {
@@ -728,8 +794,26 @@ describe("wallet amount parsing", () => {
       { symbol: "CROC", name: "Croc Cat", contract: "0x01C7bA09dA5C14d2F3ac74B1BEbA24ABAea7236f", decimals: 18, priceCandidate: false },
       { symbol: "Semen", name: "Semen People", contract: "0x00192589e3f943bF8EbB9a42e705e59507Be1769", decimals: 18, priceCandidate: false },
       { symbol: "USDG", name: "United States Global Dollar (imposter 18-dec contract)", contract: "0x5411257CedF60bC40F4beaD410BF8D02079056A2", decimals: 18, priceCandidate: false },
+      { symbol: "par", name: "PAR", contract: "0x507B6F349a80114097A67B8b4677367acC15b220", decimals: 18, priceCandidate: true },
     ]);
-    expect(new Set(keys).size).toBe(13);
+    expect(new Set(keys).size).toBe(14);
+  });
+
+  it("keeps the Arc ERC-20 registry complete and deduplicated", () => {
+    const keys = ARC_ERC20_REGISTRY.map((token) => token.contract.toLowerCase());
+
+    expect(ARC_ERC20_REGISTRY_VERIFIED_AT).toBe("2026-09-22");
+    expect(ARC_ERC20_REGISTRY_SOURCE_NOTE).toContain("HTTP 404");
+    expect(ARC_ERC20_REGISTRY).toEqual([
+      { symbol: "TOLLY", name: "Tolly", contract: "0xBc43CE8DEc648EA298C4275559b81D6261c90b67", decimals: 18, priceCandidate: true },
+      { symbol: "Architects", name: "Architects", contract: "0x8bcb94279FC2c984EC34e0C1f2192df8c69EA4F0", decimals: 18, priceCandidate: true },
+      { symbol: "ARCAT", name: "ARCAT", contract: "0x07704B06981eA962b87296362a1281484d160000", decimals: 18, priceCandidate: true },
+      { symbol: "ARCBAT", name: "ARCBAT", contract: "0xbE0CaD585Ea2D13DE2f4E36376be755C0AfD8B97", decimals: 18, priceCandidate: true },
+    ]);
+    expect(new Set(keys).size).toBe(4);
+    // Design decision #2: the ERC-20 USDC wrapper must never appear alongside the
+    // native gas balance in the token registry, or the two interfaces double count.
+    expect(keys).not.toContain(ARC_USDC_ERC20_WRAPPER.toLowerCase());
   });
 });
 
@@ -1087,8 +1171,8 @@ describe("getJoinedPortfolio", () => {
     const rpcCalls = fetchMock.mock.calls.filter(([, init]) => init?.method === "POST");
     const balanceCalls = rpcCalls.filter(([, init]) => JSON.parse(String(init?.body)).method === "eth_getBalance");
     const tokenCalls = rpcCalls.filter(([, init]) => JSON.parse(String(init?.body)).method === "eth_call");
-    expect(balanceCalls).toHaveLength(4);
-    expect(tokenCalls).toHaveLength(13);
+    expect(balanceCalls).toHaveLength(5);
+    expect(tokenCalls).toHaveLength(18);
     expect(rpcCalls.every(([, init]) => init?.cache === "no-store")).toBe(true);
     expect(fetchMock.mock.calls.filter(([url]) => String(url).includes("coins.llama.fi"))).toHaveLength(1);
     expect(fetchMock.mock.calls.filter(([url]) => String(url).includes("simple/token_price/"))).toHaveLength(1);
