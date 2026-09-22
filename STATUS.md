@@ -1,6 +1,21 @@
 # PortManager — Status
 
-As of: 2026-09-14 (UTC)
+As of: 2026-09-22 (UTC)
+
+## 2026-09-22: Capital returned (฿85,000) + cash-ISA pot re-reported at £67.17; Arc/PAR inventory gap dispatched
+- **Owner instruction (verbatim):** *"Yea ISA cash pot is now changed. Make it 67.17 pounds."* + *"85,000 capital has been returned, so must reduce the contributed capital likewise"* (he chose option **A** of the three-frame question: book the ฿85,000 against the ฿120,000 basis, pot NOT zeroed).
+- **Data ops (one transaction, direct Neon SQL, operator-reported — never inferred):**
+  - `capital_events` INSERT: `kind='withdrawal'`, `amount_thb=85000`, occurred 2026-09-22 → **contributed capital ฿120,000 → ฿35,000** (`sumContributedCapital` arithmetic re-read in SQL after commit).
+  - `manual_holdings` INSERT: label `T212 cash pot`, GBP **2000.00 → 67.17**. Append-only `recorded_at`/`created_at` ordering means the newest report replaces the older one by LABEL (`latestManualHoldings`) — the 2026-09-11 row stays as history.
+  - Pre-write assertions: exactly 1 capital row summing 120,000 and the newest pot row = GBP 2000.00; both held, so the write aborted loudly on any stale assumption.
+- **Live probe after the write:** grand total **$663.03 / ฿22,050.80**; Stocks Port $54.66 / Crypto Port $378.80 / Cash $229.57; book P&L **−฿12,949 (−37.0%)**. Cash fell from 86.5% of the book to 34.6% because the pot left it.
+- **Recorded history is NOT restated.** The 2026-09-22 snapshot row was written at 01:36Z (before this instruction) and keeps `contributed_capital_thb = 120000`; dates are never re-recorded (`ON CONFLICT DO NOTHING`). The corrected basis takes effect from the next recorded day (2026-09-23 01:00Z).
+- **Token-inventory gap (owner: *"its not showing PAR and stuff on Arc"*), diagnosed live on-chain — TWO distinct causes, not one:**
+  - **ARC (5042) is not read by the app at all** — `WALLET_CHAINS` (lib/live-data.ts) covers Ethereum/Base/Arbitrum/Robinhood Chain + Solana only. Live Arc balances invisible: native USDC **2.0872064492000093** (18dp — Arc's gas token IS USDC, not ETH), TOLLY 5,049.13539825292, Architects 22,989.26977015662, ARCAT 13,028.139641357559, ARCBAT 27,868.138983183242 ≈ **$41.13**.
+  - **PAR is NOT on Arc — it is on Robinhood Chain (4663)**, contract `0x507B6F349a80114097A67B8b4677367acC15b220`, symbol `par`, live balance **24,403.79230192436** ≈ **$69.40** — invisible because `RH_ERC20_REGISTRY` is a 13-entry hardcoded allowlist (the same defect class as the 2026-09-12 WETH miss).
+  - Total missing **$110.53 ≈ 3.4%** of the then-book. Fix briefed and dispatched as a worker run on branch `feat/arc-inventory-2026-09-22` (revert tag `pre-arc-inventory-2026-09-22` + snapshot `backups/site-pre-arc-inventory-2026-09-22/`). NOT merged/deployed at time of writing.
+- **Channel note:** this run is delegated to **Claude Sonnet 5 (medium)** via Hermes delegation — the markets profile's `delegation.provider/model` was switched from `openai-codex`/`gpt-6-astra` for it, at Bodin's instruction, because the ChatGPT OAuth pool was still inside its 7-day limit window. The standing GPT route should be restored once the pool resets.
+
 
 ## 2026-09-14: Three headline classes (Cash split out) + plain-language Home + NFT floor-currency fix (GPT gpt-6-astra ultra)
 - **Owner ask (verbatim):** *"we now display stocks port, crypto port values but actually can we take out cash position (including stablecoins) so we got 3 headlines"* + *"the whole thing is difficult to see and understand, we need to simplify it much further down not functionalities but in simplicity terms"*.
